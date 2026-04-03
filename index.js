@@ -98,15 +98,16 @@ async function initializeWhatsApp(chatId, targetPhoneNumber) {
 
     let pairingCodeRequested = false;
 
-    waClient = new Client({
+        waClient = new Client({
         authStrategy: new RemoteAuth({
             clientId: 'ultar_bot_session',
             store: store,
-            backupSyncIntervalMs: 300000 // Syncs session to Postgres every 5 minutes
+            backupSyncIntervalMs: 300000 
         }),
         puppeteer: {
             headless: true,
-            executablePath: process.env.GOOGLE_CHROME_BIN || null,
+            // UPDATE THIS LINE TO CATCH THE NEW BUILDPACK
+            executablePath: process.env.CHROME_BIN || process.env.GOOGLE_CHROME_BIN || 'chrome',
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -118,6 +119,7 @@ async function initializeWhatsApp(chatId, targetPhoneNumber) {
             ]
         }
     });
+
 
     // The 'qr' event fires when the browser has successfully loaded the WhatsApp Web DOM.
     // This is the absolute safest time to inject the Pairing Code request.
