@@ -1,0 +1,18 @@
+{
+  "name": "ultar-wa-web-postgres",
+  "version": "1.0.0",
+  "description": "WhatsApp Web JS with PostgreSQL RemoteAuth",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "node-telegram-bot-api": "^0.64.0",
+    "pg": "^8.11.3",
+    "qrcode": "^1.5.3",
+    "whatsapp-web.js": "^1.23.0",
+    "wwebjs-postgres": "^1.0.0"
+  }
+}
+
