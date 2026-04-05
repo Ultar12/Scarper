@@ -396,13 +396,18 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
         await updateStatus(`[SYSTEM] Balance is ${balanceData}. Automatically selecting tier: ${targetAmount}`);
 
-        // Step 4: Teleport to Withdrawal Page
+                // Step 4: Teleport to Withdrawal Page
         await updateStatus('[SYSTEM] Jumping to withdrawal page to execute...');
         await page.goto('https://www.wsjobs-ng.com/withdrawal', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
 
-        // Click the target tier block
-                // If target is 12000, skip clicking since it is selected by default!
+        // --- NEW: SEND SCREENSHOT IF TIER IS ABOVE 12000 ---
+        if (targetAmount > 12000) {
+            const debugSnap = await page.screenshot({ type: 'png' });
+            await bot.sendPhoto(chatId, debugSnap, { caption: `[DEBUG] Attempting to find and click tier: ${targetAmount}` });
+        }
+
+        // If target is 12000, skip clicking since it is selected by default!
         if (targetAmount !== 12000) {
             await updateStatus(`[SYSTEM] Selecting tier: ${targetAmount}...`);
             const clickedTier = await page.evaluate((amt) => {
@@ -425,6 +430,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         } else {
             await updateStatus(`[SYSTEM] Target is 12000 (Default). Skipping tier selection...`);
         }
+
 
 
         await updateStatus(`[SYSTEM] Clicking "Withdrawal Now"...`);
