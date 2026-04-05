@@ -629,6 +629,166 @@ bot.onText(/\/status/, (msg) => {
 });
 
 
+// --- THE M4U WITHDRAW COMMAND ---
+// Usage: /withdraw m4u
+bot.onText(/\/withdraw\s+m4u/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Initiating M4U Auto-Withdrawal Protocol...`);
+
+    const updateStatus = async (text) => {
+        await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+    };
+
+    try {
+        // --- 1. ENGINE WARM-UP & AUTHENTICATION ---
+        if (!m4uBrowser || !m4uPage) {
+            await updateStatus('[SYSTEM] Cold Boot: Launching background Chrome engine...');
+            m4uBrowser = await puppeteer.launch({
+                headless: true,
+                executablePath: getChromePath(),
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+            });
+            
+            const context = m4uBrowser.defaultBrowserContext();
+            await context.overridePermissions('https://taskm4u.com', ['clipboard-read', 'clipboard-write']);
+
+            m4uPage = await m4uBrowser.newPage();
+            await m4uPage.setViewport({ width: 412, height: 915 }); 
+            await m4uPage.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+
+            // Login
+            await updateStatus('[SYSTEM] Logging into TaskM4U...');
+            await m4uPage.goto('https://taskm4u.com/#/login', { waitUntil: 'networkidle2' });
+            
+            const inputs = await m4uPage.$$('input');
+            if (inputs.length >= 2) {
+                await inputs[0].type('Staring', { delay: 50 });
+                await inputs[1].type('Emmama', { delay: 50 });
+                await new Promise(r => setTimeout(r, 1000));
+                await m4uPage.evaluate(() => {
+                    Array.from(document.querySelectorAll('*')).forEach(el => {
+                        if (el.innerText && el.innerText.trim() === 'Login') el.click();
+                    });
+                });
+            }
+            await m4uPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+            await new Promise(r => setTimeout(r, 3000));
+            
+            // Clear popups
+            await m4uPage.evaluate(() => {
+                Array.from(document.querySelectorAll('*')).forEach(el => {
+                    if (el.innerText && el.innerText.trim() === 'Close' && el.offsetParent !== null) el.click();
+                });
+            });
+            await new Promise(r => setTimeout(r, 1500));
+        }
+
+        // --- 2. TELEPORT TO MINE & SCAN BALANCE ---
+        await updateStatus('[SYSTEM] Teleporting to User Profile to scan balance...');
+        await m4uPage.goto('https://taskm4u.com/#/mine', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 3000));
+
+        const balanceData = await m4uPage.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('*'));
+            for (let i = 0; i < elements.length; i++) {
+                const text = (elements[i].innerText || '').trim();
+                // Find the label, the balance is usually the next major element
+                if (text === 'Account Balance') {
+                    // Look around for the big number (e.g., 6,057.50)
+                    const containerText = elements[i].parentElement.innerText || '';
+                    const match = containerText.match(/[\d,]+\.\d{2}/); 
+                    if (match) return match[0];
+                }
+            }
+            return null;
+        });
+
+        if (!balanceData) {
+            throw new Error("Could not detect Account Balance on the page.");
+        }
+
+        // Convert formatted string "6,057.50" to clean float 6057.50
+        const rawBalance = parseFloat(balanceData.replace(/,/g, ''));
+        
+        if (rawBalance < 6000) {
+            await updateStatus(`[FAILED] Current balance is ${balanceData}. You need at least 6000 to withdraw.`);
+            return; // Abort safely
+        }
+
+        await updateStatus(`[SYSTEM] Balance verified: ${balanceData}. Proceeding to withdraw all...`);
+
+        // --- 3. EXECUTE WITHDRAWAL ---
+        await m4uPage.goto('https://taskm4u.com/#/withdraw', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 3000));
+
+        // Enter Amount
+        await updateStatus(`[SYSTEM] Entering amount...`);
+        const allInputs = await m4uPage.$$('input');
+        for (let input of allInputs) {
+            const ph = await m4uPage.evaluate(el => el.placeholder || '', input);
+            if (ph.toLowerCase().includes('amount')) {
+                await input.click();
+                // Type the exact clean number without commas
+                await input.type(rawBalance.toString(), { delay: 100 });
+                break;
+            }
+        }
+        await new Promise(r => setTimeout(r, 1500));
+
+        // Click Withdraw Now
+        await updateStatus(`[SYSTEM] Clicking "Withdraw Now"...`);
+        await m4uPage.evaluate(() => {
+            Array.from(document.querySelectorAll('*')).forEach(el => {
+                if (el.innerText && el.innerText.trim() === 'Withdraw Now' && el.offsetParent !== null) el.click();
+            });
+        });
+        await new Promise(r => setTimeout(r, 3000));
+
+        // --- 4. CONFIRMATION PAGE & POPUP ---
+        await updateStatus(`[SYSTEM] Submitting primary confirmation...`);
+        await m4uPage.evaluate(() => {
+            Array.from(document.querySelectorAll('*')).forEach(el => {
+                // Ensure it's the Confirm button and it's visible
+                if (el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null) {
+                    el.click();
+                }
+            });
+        });
+        await new Promise(r => setTimeout(r, 2000));
+
+        await updateStatus(`[SYSTEM] Bypassing "Kind Reminder" modal...`);
+        // The modal appears over the screen. We grab the LAST 'Confirm' button in the DOM (which is usually the modal popup)
+        await m4uPage.evaluate(() => {
+            const confirmBtns = Array.from(document.querySelectorAll('*')).filter(el => 
+                el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null
+            );
+            if (confirmBtns.length > 0) {
+                // Click the highest z-index / most recent one in the DOM
+                confirmBtns[confirmBtns.length - 1].click();
+            }
+        });
+        await new Promise(r => setTimeout(r, 4000));
+
+        // --- 5. SNAPSHOT & FINISH ---
+        await updateStatus(`[SUCCESS] Full withdrawal of ${balanceData} executed successfully!`);
+        const snap = await m4uPage.screenshot({ type: 'png' });
+        await bot.sendPhoto(chatId, snap, { caption: `[SUCCESS] Withdrawal Final State` });
+
+    } catch (err) {
+        await updateStatus(`[ERROR] Withdrawal failed: ${err.message}`);
+        if (m4uPage) {
+            try {
+                const errSnap = await m4uPage.screenshot({ type: 'png' });
+                await bot.sendPhoto(chatId, errSnap, { caption: '[DIAGNOSTIC] Screen state at failure.' });
+            } catch (e) {}
+        }
+    }
+});
+
+
+
 
 // --- GLOBAL VARIABLES FOR M4U PAIRING ---
 let m4uSession = null;
@@ -660,6 +820,7 @@ bot.onText(/\/pair\s+m4u/i, async (msg) => {
     m4uSession = { state: 'WAITING_COUNTRY', country: null, linkedCount: 0 };
     bot.sendMessage(chatId, '[SYSTEM] M4U Pairing Protocol Initiated.\n\nPlease reply with the Country Code you want to use (e.g., +234 or 234):\n\n(Idle timeout set to 30 minutes)');
 });
+
 
 // --- UNIFIED MESSAGE LISTENER ---
 bot.on('message', async (msg) => {
@@ -758,7 +919,7 @@ bot.on('message', async (msg) => {
                     }
                 }
 
-                // Step 3: Open the Popup (If not already open)
+                // Step 3: Open the Popup
                 await bot.editMessageText(`[SYSTEM] Accessing country selector...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
                 
                 const isPopupOpen = await m4uPage.evaluate(() => {
@@ -775,7 +936,7 @@ bot.on('message', async (msg) => {
                     await new Promise(r => setTimeout(r, 2000));
                 }
 
-                // Directly click the current country code button (e.g., +234) to open the list
+                // Directly click the current country code button to open the list
                 await m4uPage.evaluate(() => {
                     const elements = Array.from(document.querySelectorAll('*'));
                     for (let el of elements) {
@@ -847,21 +1008,35 @@ bot.on('message', async (msg) => {
             return;
         }
 
-        // --- PHASE B: THE CONTINUOUS NUMBER LOOP WITH SMART EXTRACTION ---
-        if (m4uSession.state === 'WAITING_NUMBER') {
+        // --- PHASE B: NUMBER PROCESSING AND MONITORING ---
+        if (m4uSession.state === 'WAITING_NUMBER' || m4uSession.state === 'WAITING_FOR_LINK') {
             const targetNumber = msg.text.trim().replace(/[^0-9]/g, '');
             let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Processing number ${targetNumber}...`);
             resetM4uTimer(chatId); 
 
+            // If we were waiting for a previous link, it means you want to skip/abort it.
+            const wasWaitingForLink = (m4uSession.state === 'WAITING_FOR_LINK');
+            m4uSession.state = 'FETCHING_CODE'; // Changing state kills the background monitoring loop safely
+
             try {
-                // THE FIX: Check if the popup closed from a previous successful link. If so, reopen it!
-                const isPopupOpen = await m4uPage.evaluate(() => {
+                // If you are overriding a pending link, close the old popup to wipe the slate clean
+                if (wasWaitingForLink) {
+                    await bot.editMessageText(`[SYSTEM] Aborting previous number. Resetting popup for ${targetNumber}...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                    await m4uPage.evaluate(() => {
+                        Array.from(document.querySelectorAll('*')).forEach(el => {
+                            if (el.innerText && el.innerText.trim() === 'Close' && el.offsetParent !== null) el.click();
+                        });
+                    });
+                    await new Promise(r => setTimeout(r, 1500));
+                }
+
+                // Check if popup is open. If not, click "Add" to get a fresh empty box
+                const isPopupOpenNow = await m4uPage.evaluate(() => {
                     const phoneInput = Array.from(document.querySelectorAll('input')).find(i => i.placeholder && i.placeholder.toLowerCase().includes('phone number'));
                     return phoneInput && phoneInput.offsetParent !== null;
                 });
 
-                if (!isPopupOpen) {
-                    await bot.editMessageText(`[SYSTEM] Popup was closed. Re-opening for ${targetNumber}...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                if (!isPopupOpenNow) {
                     await m4uPage.evaluate(() => {
                         Array.from(document.querySelectorAll('*')).forEach(el => {
                             if (el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null) el.click();
@@ -894,7 +1069,7 @@ bot.on('message', async (msg) => {
                     });
                 });
 
-                // --- SMART DETECTION LOOP (WAIT FOR LOADING TO FINISH) ---
+                // --- SMART DETECTION LOOP ---
                 let fetchResult = null;
                 
                 for (let i = 0; i < 15; i++) {
@@ -931,29 +1106,99 @@ bot.on('message', async (msg) => {
 
                 // --- PROCESS THE RESULT ---
                 if (!fetchResult || fetchResult.status === 'pending') {
+                    m4uSession.state = 'WAITING_NUMBER';
                     const errSnap = await m4uPage.screenshot({ type: 'png' });
                     await bot.sendPhoto(chatId, errSnap, { caption: `[TIMEOUT] Could not detect code or failure message after 15 seconds. Here is the screen state:` });
                 } 
                 else if (fetchResult.status === 'error') {
+                    m4uSession.state = 'WAITING_NUMBER';
                     bot.sendMessage(chatId, `[ERROR] For number ${targetNumber}:\n${fetchResult.message}`);
                 } 
                 else if (fetchResult.status === 'success') {
-                    m4uSession.linkedCount++; // Increment the counter!
                     
-                    const successMsg = `[SUCCESS] Code obtained for ${targetNumber}!\n\nTap code below to copy:\n\`${fetchResult.code}\`\n\nTotal numbers processed: ${m4uSession.linkedCount}\nSend the next number to continue.`;
+                    // SEND THE INLINE COPY BUTTON
+                    const successMsg = `[SUCCESS] Code obtained for ${targetNumber}!\n\nWaiting for you to enter it in WhatsApp... (Monitoring popup)`;
                     
-                    bot.sendMessage(chatId, successMsg, { parse_mode: 'Markdown' });
+                    bot.sendMessage(chatId, successMsg, { 
+                        parse_mode: 'Markdown',
+                        reply_markup: {
+                            inline_keyboard: [[
+                                { text: `📋 Tap to Copy: ${fetchResult.code}`, copy_text: { text: fetchResult.code } }
+                            ]]
+                        }
+                    });
+
+                    // --- ENTER BACKGROUND MONITORING MODE ---
+                    m4uSession.state = 'WAITING_FOR_LINK';
+
+                    // Fire-and-forget background loop (Waits up to 30 mins for the popup to close automatically)
+                    (async () => {
+                        let popupClosed = false;
+                        
+                        for(let i = 0; i < 900; i++) { // 900 loops * 2 seconds = 30 minutes
+                            // If you send a new number, the state changes and this loop safely kills itself!
+                            if (!m4uSession || m4uSession.state !== 'WAITING_FOR_LINK') return; 
+
+                            const isClosed = await m4uPage.evaluate(() => {
+                                const phoneInput = Array.from(document.querySelectorAll('input')).find(i => i.placeholder && i.placeholder.toLowerCase().includes('phone number'));
+                                return !phoneInput || phoneInput.offsetParent === null;
+                            });
+
+                            if(isClosed) {
+                                popupClosed = true;
+                                break;
+                            }
+                            await new Promise(r => setTimeout(r, 2000));
+                        }
+
+                        // Verify state didn't change while we were sleeping
+                        if (!m4uSession || m4uSession.state !== 'WAITING_FOR_LINK') return;
+
+                        if (popupClosed) {
+                            m4uSession.linkedCount++; // Increment the counter!
+                            bot.sendMessage(chatId, `🎉 [VERIFIED] Number successfully linked!\n\n🏆 Total numbers processed: ${m4uSession.linkedCount}\n\nRe-opening popup for the next number...`);
+                            
+                            // Re-open popup for the next one
+                            await m4uPage.evaluate(() => {
+                                Array.from(document.querySelectorAll('*')).forEach(el => {
+                                    if (el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null) el.click();
+                                });
+                            });
+                            await new Promise(r => setTimeout(r, 2000));
+                            
+                            m4uSession.state = 'WAITING_NUMBER';
+                            bot.sendMessage(chatId, `[SYSTEM] Ready! Send the next number.`);
+                        } else {
+                            // 30 mins timeout reached without linking
+                            bot.sendMessage(chatId, `[TIMEOUT] The popup didn't close within 30 minutes. Resetting the popup for a new number...`);
+                            
+                            await m4uPage.evaluate(() => {
+                                Array.from(document.querySelectorAll('*')).forEach(el => {
+                                    if (el.innerText && el.innerText.trim() === 'Close' && el.offsetParent !== null) el.click();
+                                });
+                            });
+                            await new Promise(r => setTimeout(r, 1500));
+                            
+                            await m4uPage.evaluate(() => {
+                                Array.from(document.querySelectorAll('*')).forEach(el => {
+                                    if (el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null) el.click();
+                                });
+                            });
+                            await new Promise(r => setTimeout(r, 2000));
+                            
+                            m4uSession.state = 'WAITING_NUMBER';
+                        }
+                    })(); // Executes asynchronously
                 }
 
             } catch (err) {
                 bot.sendMessage(chatId, `[ERROR] Sequence crashed: ${err.message}`);
+                m4uSession.state = 'WAITING_NUMBER';
             }
             return;
         }
     }
 });
-
-
 
 
 // --- 5. WHATSAPP CLIENT INITIALIZATION ---
