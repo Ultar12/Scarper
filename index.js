@@ -456,7 +456,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         });
         await new Promise(r => setTimeout(r, 3000));
 
-                await updateStatus('[SYSTEM] Entering withdrawal PIN...');
+      await updateStatus('[SYSTEM] Entering withdrawal PIN...');
         const pinInputs = await page.$$('input');
         const visiblePinInputs = [];
         for (let input of pinInputs) {
@@ -465,15 +465,21 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             }
         }
 
+        const pin = '111111'; // Ensure this matches your actual withdrawal password
+        
         if (visiblePinInputs.length > 0) {
-            // Click only the very first box to lock cursor focus
+            // Click the very first box to lock cursor focus
             await visiblePinInputs[0].click();
             await new Promise(r => setTimeout(r, 500));
             
-            // Type the entire PIN slowly. The website will automatically jump the cursor to the next boxes.
-            await page.keyboard.type('111111', { delay: 200 });
+            // Human-mimic typing: Press key -> Wait for website to move cursor -> Press next key
+            for (let i = 0; i < pin.length; i++) {
+                await page.keyboard.press(pin[i]);
+                await new Promise(r => setTimeout(r, 400)); // 400ms gives the website's JS time to jump boxes
+            }
         }
         await new Promise(r => setTimeout(r, 1500));
+
 
 
         await updateStatus('[SYSTEM] Submitting final confirmation...');
@@ -1412,7 +1418,7 @@ bot.on('message', async (msg) => {
                         parse_mode: 'Markdown',
                         reply_markup: {
                             inline_keyboard: [[
-                                { text: `📋 Tap to Copy: ${fetchResult.code}`, copy_text: { text: fetchResult.code } }
+                                { text: `Copy: ${fetchResult.code}`, copy_text: { text: fetchResult.code } }
                             ]]
                         }
                     });
@@ -1445,7 +1451,7 @@ bot.on('message', async (msg) => {
 
                         if (popupClosed) {
                             m4uSession.linkedCount++; // Increment the counter!
-                            bot.sendMessage(chatId, `🎉 [VERIFIED] Number successfully linked!\n\n🏆 Total numbers processed: ${m4uSession.linkedCount}\n\nRe-opening popup for the next number...`);
+                            bot.sendMessage(chatId, `[VERIFIED] Number successfully linked!\n\nTotal numbers processed: ${m4uSession.linkedCount}\n\nRe-opening popup for the next number...`);
                             
                             // Re-open popup for the next one
                             await m4uPage.evaluate(() => {
