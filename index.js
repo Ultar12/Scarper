@@ -190,7 +190,6 @@ bot.onText(/\/checknum\s+(.+)/, async (msg, match) => {
 });
 
 // Usage: /withdraw 12000
-// Usage: /withdraw 12000
 bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -207,7 +206,7 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         });
 
         const page = await browser.newPage();
-        await page.setViewport({ width: 412, height: 915 }); // Mobile viewport
+        await page.setViewport({ width: 412, height: 915 }); 
         await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
         // --- STEP 1: LOGIN ---
@@ -218,37 +217,25 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         if (inputs.length >= 2) {
             await inputs[0].type('09163916311', { delay: 50 });
             await inputs[1].type('Emmamama', { delay: 50 });
-        } else {
-            throw new Error("Could not find the login input boxes.");
         }
-
-        // --- NEW PUPPETEER V22 XPATH SYNTAX ---
-        // We use waitForSelector with the "xpath/" prefix. It waits up to 5 seconds for the button.
+        
         const loginBtn = await page.waitForSelector("xpath///*[contains(text(), 'Login')]", { timeout: 5000 }).catch(() => null);
         if (loginBtn) await loginBtn.click();
         
-        await new Promise(r => setTimeout(r, 4000)); // Hard pause to let the login process finish
-        bot.sendMessage(chatId, '[SYSTEM] Login successful. Navigating to Account...');
+        await new Promise(r => setTimeout(r, 4000)); // Wait for login to process
 
-        // --- STEP 2: NAVIGATE TO ACCOUNT ---
-        const accountTab = await page.waitForSelector("xpath///*[contains(text(), 'Account')]", { timeout: 5000 }).catch(() => null);
-        if (accountTab) await accountTab.click();
-        await new Promise(r => setTimeout(r, 2000)); 
+        // --- THE MASTER SHORTCUT: DIRECT URL NAVIGATION ---
+        // Instead of clicking tabs and fighting popups, we teleport straight to the target!
+        bot.sendMessage(chatId, '[SYSTEM] Login successful. Teleporting directly to Withdrawal page...');
+        await page.goto('https://www.wsjobs-ng.com/withdrawal', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 2000)); // Let the page render
 
-        const withdrawalLink = await page.waitForSelector("xpath///*[contains(text(), 'Account Withdrawal')]", { timeout: 5000 }).catch(() => null);
-        if (withdrawalLink) await withdrawalLink.click();
-        await new Promise(r => setTimeout(r, 3000)); 
-
-                // --- STEP 3: SELECT AMOUNT & WITHDRAW ---
+        // --- STEP 3: SELECT AMOUNT & WITHDRAW ---
         bot.sendMessage(chatId, `[SYSTEM] Selecting amount: ${withdrawAmount}...`);
         
-        // We use a browser evaluation script. This strips away all hidden spaces,
-        // icons, and formatting, and clicks the element that visually says "12000".
         const buttonClicked = await page.evaluate((amount) => {
             const elements = Array.from(document.querySelectorAll('div, span, button, a'));
             for (let el of elements) {
-                // .innerText reads what is visually on screen, ignoring hidden code.
-                // .trim() removes any accidental spaces the developer left in.
                 if (el.innerText && el.innerText.trim() === amount) {
                     el.click();
                     return true;
@@ -257,15 +244,12 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
             return false;
         }, withdrawAmount);
 
-        if (!buttonClicked) {
-            throw new Error(`Could not find a button for the amount: ${withdrawAmount}`);
-        }
+        if (!buttonClicked) throw new Error(`Could not find a button for the amount: ${withdrawAmount}`);
         await new Promise(r => setTimeout(r, 1000));
 
         const withdrawNowBtn = await page.waitForSelector("xpath///*[contains(text(), 'Withdrawal Now')]", { timeout: 5000 }).catch(() => null);
         if (withdrawNowBtn) await withdrawNowBtn.click();
         await new Promise(r => setTimeout(r, 2000));
-
 
         // --- STEP 4: CONFIRMATION PAGE ---
         bot.sendMessage(chatId, '[SYSTEM] Processing confirmation screen...');
@@ -295,27 +279,23 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Withdrawal sequence completed.` });
 
     } catch (err) {
-        bot.sendMessage(chatId, `[ERROR] Sequence failed: ${err.message}\nTaking diagnostic screenshot...`);
+        bot.sendMessage(chatId, `[ERROR] Sequence failed: ${err.message}`);
         if (browser) {
             try {
                 const pages = await browser.pages();
                 if (pages.length > 0) {
                     const errBuffer = await pages[0].screenshot({ type: 'png' });
-                    await bot.sendPhoto(chatId, errBuffer, { caption: '[DIAGNOSTIC] This is what the bot was looking at when it crashed.' });
+                    await bot.sendPhoto(chatId, errBuffer, { caption: '[DIAGNOSTIC] Failed here.' });
                 }
-            } catch (snapErr) {
-                console.log('Could not take diagnostic screenshot.');
-            }
+            } catch (snapErr) {}
         }
     } finally {
-        // --- STEP 6: RESOURCE MANAGEMENT ---
         if (browser) {
             await browser.close();
-            console.log('[SYSTEM] Withdrawal sequence ended. Browser destroyed, RAM freed.');
+            console.log('[SYSTEM] Browser destroyed, RAM freed.');
         }
     }
 });
-
 
 
 bot.onText(/\/status/, (msg) => {
