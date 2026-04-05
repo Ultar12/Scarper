@@ -662,6 +662,7 @@ bot.onText(/\/pair\s+m4u/i, async (msg) => {
 
 
                 
+
 // --- UNIFIED MESSAGE LISTENER ---
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id.toString();
@@ -690,80 +691,94 @@ bot.on('message', async (msg) => {
             m4uSession.country = rawCountry;
             m4uSession.state = 'BOOTING_BROWSER';
             
-            let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Country code +${rawCountry} locked in. Booting M4U browser...`);
+            let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Country code +${rawCountry} locked in. Preparing M4U browser...`);
             
             try {
-                if (!m4uBrowser) {
+                // THE REUSE LOGIC: Only boot and login if the browser isn't already running
+                if (!m4uBrowser || !m4uPage) {
                     m4uBrowser = await puppeteer.launch({
                         headless: true,
                         executablePath: getChromePath(),
                         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
                     });
-                }
-                
-                const context = m4uBrowser.defaultBrowserContext();
-                await context.overridePermissions('https://taskm4u.com', ['clipboard-read', 'clipboard-write']);
+                    
+                    const context = m4uBrowser.defaultBrowserContext();
+                    await context.overridePermissions('https://taskm4u.com', ['clipboard-read', 'clipboard-write']);
 
-                m4uPage = await m4uBrowser.newPage();
-                await m4uPage.setViewport({ width: 412, height: 915 }); 
-                await m4uPage.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+                    m4uPage = await m4uBrowser.newPage();
+                    await m4uPage.setViewport({ width: 412, height: 915 }); 
+                    await m4uPage.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-                // Step 1: Login
-                await bot.editMessageText('[SYSTEM] Logging into TaskM4U...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
-                await m4uPage.goto('https://taskm4u.com/#/login', { waitUntil: 'networkidle2' });
-                
-                const inputs = await m4uPage.$$('input');
-                if (inputs.length >= 2) {
-                    await inputs[0].type('Staring', { delay: 50 });
-                    await inputs[1].type('Emmama', { delay: 50 });
-                    await new Promise(r => setTimeout(r, 1000));
+                    // Step 1: Login
+                    await bot.editMessageText('[SYSTEM] Cold Boot: Logging into TaskM4U...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                    await m4uPage.goto('https://taskm4u.com/#/login', { waitUntil: 'networkidle2' });
+                    
+                    const inputs = await m4uPage.$$('input');
+                    if (inputs.length >= 2) {
+                        await inputs[0].type('Staring', { delay: 50 });
+                        await inputs[1].type('Emmama', { delay: 50 });
+                        await new Promise(r => setTimeout(r, 1000));
+                        await m4uPage.evaluate(() => {
+                            Array.from(document.querySelectorAll('*')).forEach(el => {
+                                if (el.innerText && el.innerText.trim() === 'Login') el.click();
+                            });
+                        });
+                    }
+                    
+                    await m4uPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+                    await new Promise(r => setTimeout(r, 3000));
+
+                    // Step 2: Clear Homepage Popup and Click WhatsApp Start
+                    await bot.editMessageText('[SYSTEM] Clearing popups and locking onto WhatsApp Message Task...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                    
                     await m4uPage.evaluate(() => {
                         Array.from(document.querySelectorAll('*')).forEach(el => {
-                            if (el.innerText && el.innerText.trim() === 'Login') el.click();
+                            if (el.innerText && el.innerText.trim() === 'Close' && el.offsetParent !== null) el.click();
                         });
                     });
-                }
-                
-                await m4uPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-                await new Promise(r => setTimeout(r, 3000));
-
-                // Step 2: Clear Homepage Popup and Click specifically on WhatsApp Start
-                await bot.editMessageText('[SYSTEM] Clearing popups and locking onto WhatsApp Message Task...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
-                
-                await m4uPage.evaluate(() => {
-                    Array.from(document.querySelectorAll('*')).forEach(el => {
-                        if (el.innerText && el.innerText.trim() === 'Close' && el.offsetParent !== null) el.click();
+                    await new Promise(r => setTimeout(r, 1500));
+                    
+                    await m4uPage.evaluate(() => {
+                        const startButtons = Array.from(document.querySelectorAll('div, button, span, a')).filter(el => el.innerText && el.innerText.trim() === 'Start');
+                        for (let btn of startButtons) {
+                            let containerText = '';
+                            if (btn.parentElement && btn.parentElement.parentElement) {
+                                containerText = btn.parentElement.parentElement.innerText.toLowerCase();
+                            }
+                            if (containerText.includes('whatsapp') && btn.offsetParent !== null) {
+                                btn.click();
+                                return true;
+                            }
+                        }
                     });
-                });
-                await new Promise(r => setTimeout(r, 1500));
-                
-                // THE FIX: Scan the boxes to make sure it only clicks "Start" if the box says "WhatsApp"
-                await m4uPage.evaluate(() => {
-                    const startButtons = Array.from(document.querySelectorAll('div, button, span, a')).filter(el => el.innerText && el.innerText.trim() === 'Start');
-                    for (let btn of startButtons) {
-                        let containerText = '';
-                        if (btn.parentElement && btn.parentElement.parentElement) {
-                            containerText = btn.parentElement.parentElement.innerText.toLowerCase();
-                        }
-                        // Only click if it's the WhatsApp card!
-                        if (containerText.includes('whatsapp') && btn.offsetParent !== null) {
-                            btn.click();
-                            return true;
-                        }
+                    await new Promise(r => setTimeout(r, 4000));
+
+                } else {
+                    await bot.editMessageText('[SYSTEM] Warm Boot: Browser already active. Reusing existing session...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                    if (!m4uPage.url().includes('HangTask')) {
+                        await m4uPage.goto('https://taskm4u.com/#/HangTask', { waitUntil: 'networkidle2' });
+                        await new Promise(r => setTimeout(r, 3000));
                     }
-                });
-                await new Promise(r => setTimeout(r, 4000));
+                }
 
-                // Step 3: Click Add and Select Country
-                await bot.editMessageText(`[SYSTEM] Setting country code to +${rawCountry}...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                // Step 3: Open the Popup (If not already open)
+                await bot.editMessageText(`[SYSTEM] Accessing popup and setting country code to +${rawCountry}...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
                 
-                await m4uPage.evaluate(() => {
-                    Array.from(document.querySelectorAll('*')).forEach(el => {
-                        if (el.innerText && el.innerText.trim().toLowerCase() === 'add') el.click();
-                    });
+                const isPopupOpen = await m4uPage.evaluate(() => {
+                    const phoneInput = Array.from(document.querySelectorAll('input')).find(i => i.placeholder && i.placeholder.toLowerCase().includes('phone number'));
+                    return phoneInput && phoneInput.offsetParent !== null;
                 });
-                await new Promise(r => setTimeout(r, 2000));
 
+                if (!isPopupOpen) {
+                    await m4uPage.evaluate(() => {
+                        Array.from(document.querySelectorAll('*')).forEach(el => {
+                            if (el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null) el.click();
+                        });
+                    });
+                    await new Promise(r => setTimeout(r, 2000));
+                }
+
+                // Click the country code selector box
                 await m4uPage.evaluate(() => {
                     const inputs = Array.from(document.querySelectorAll('input'));
                     const phoneInput = inputs.find(i => i.placeholder && i.placeholder.toLowerCase().includes('phone number'));
@@ -773,6 +788,7 @@ bot.on('message', async (msg) => {
                 });
                 await new Promise(r => setTimeout(r, 2000));
 
+                // Input the raw country code into the search box
                 await m4uPage.evaluate((country) => {
                     const inputs = Array.from(document.querySelectorAll('input'));
                     const searchInput = inputs.find(i => i.placeholder && i.placeholder.toLowerCase().includes('country'));
@@ -783,21 +799,39 @@ bot.on('message', async (msg) => {
                 }, rawCountry);
                 await new Promise(r => setTimeout(r, 1500));
 
+                // EXACT MATCH SELECTION
                 await m4uPage.evaluate((country) => {
                     const elements = Array.from(document.querySelectorAll('div, span, li'));
-                    const row = elements.find(el => el.innerText && el.innerText.includes('+' + country) && el.childElementCount < 5);
+                    const targetCode = '+' + country;
+                    
+                    const row = elements.find(el => {
+                        if (!el.innerText || el.childElementCount > 5) return false;
+                        const textParts = el.innerText.trim().split(/[\s\n]+/); 
+                        const lastPart = textParts[textParts.length - 1]; 
+                        return lastPart === targetCode; 
+                    });
+                    
                     if (row) row.click();
                 }, rawCountry);
                 await new Promise(r => setTimeout(r, 2000));
 
+                // THE FIX: Click "Add" again to bring the popup back up after it closes!
+                await m4uPage.evaluate(() => {
+                    Array.from(document.querySelectorAll('*')).forEach(el => {
+                        if (el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null) el.click();
+                    });
+                });
+                await new Promise(r => setTimeout(r, 2000));
+
+                // Set state to ready
                 m4uSession.state = 'WAITING_NUMBER';
                 resetM4uTimer(chatId); 
                 
                 const snap = await m4uPage.screenshot({ type: 'png' });
-                await bot.sendPhoto(chatId, snap, { caption: `[SUCCESS] Browser is prepped and country code is set!\n\nJust reply with the phone number (e.g., 8012345678) to get the code.\n\nYou have 20 minutes.` });
+                await bot.sendPhoto(chatId, snap, { caption: `[SUCCESS] Browser is ready and exact country code (+${rawCountry}) is set!\n\nJust reply with the phone number to get the code.` });
 
             } catch (err) {
-                bot.sendMessage(chatId, `[ERROR] Failed to boot M4U setup: ${err.message}`);
+                bot.sendMessage(chatId, `[ERROR] Failed to set up M4U target: ${err.message}`);
                 m4uSession = null;
             }
             return;
@@ -835,7 +869,6 @@ bot.on('message', async (msg) => {
                 // --- SMART DETECTION LOOP (WAIT FOR LOADING TO FINISH) ---
                 let fetchResult = null;
                 
-                // Poll the page every 1 second for up to 15 seconds
                 for (let i = 0; i < 15; i++) {
                     await new Promise(r => setTimeout(r, 1000));
 
