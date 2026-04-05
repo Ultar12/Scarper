@@ -506,7 +506,8 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
 });
 
 
-// Usage: /task 127
+
+    // Usage: /task 127
 bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -521,7 +522,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     };
 
     let browser = null;
-    let pages = []; // Keep track of tabs so we can close them later
+    let pages = []; 
 
     try {
         // --- THE ENGINE WARM-UP (KEEPS BROWSER OPEN FOR NEXT TASK) ---
@@ -538,15 +539,13 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         }
         browser = globalTaskBrowser;
 
-        // --- HELPER: SMART TUTORIAL SWEEPER (FIXED FOR "DONE") ---
+        // --- HELPER: SMART TUTORIAL SWEEPER ---
         const sweepTutorial = async (targetPage) => {
-            for (let i = 0; i < 10; i++) { // Loop enough times to catch all 6 steps
+            for (let i = 0; i < 10; i++) { 
                 const clicked = await targetPage.evaluate(() => {
                     const elements = Array.from(document.querySelectorAll('button, span, div, a'));
                     for (let el of elements) {
                         const txt = (el.innerText || '').trim().toLowerCase();
-                        
-                        // Specifically target the arrow OR the word "done"
                         if ((txt === 'next →' || txt.includes('next →') || txt === 'done') && el.offsetParent !== null) {
                             el.click();
                             return true;
@@ -555,7 +554,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                     return false;
                 });
                 if (!clicked) break; 
-                await new Promise(r => setTimeout(r, 1000)); // Give the slide 1 second to transition
+                await new Promise(r => setTimeout(r, 1000)); 
             }
         };
 
@@ -567,12 +566,12 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
         await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 3000)); 
+        await new Promise(r => setTimeout(r, 4000)); 
 
         const requiresLogin = await page1.$('input[type="password"]') !== null;
 
         if (requiresLogin) {
-            await updateStatus('[SYSTEM] Session expired. Performing Login...');
+            await updateStatus('[SYSTEM] Session expired. Performing Physical Login...');
             const allInputs = await page1.$$('input');
             const visibleInputs = [];
             for (let input of allInputs) {
@@ -581,20 +580,33 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
 
             if (visibleInputs.length >= 2) {
+                // Clear any junk in the boxes just in case
+                await visibleInputs[0].evaluate(el => el.value = '');
                 await visibleInputs[0].click();
-                await visibleInputs[0].type('09163916311', { delay: 100 });
+                await visibleInputs[0].type('09163916311', { delay: 50 });
+                
+                await visibleInputs[1].evaluate(el => el.value = '');
                 await visibleInputs[1].click();
-                await visibleInputs[1].type('Emmamama', { delay: 100 });
+                await visibleInputs[1].type('Emmamama', { delay: 50 });
                 
                 await new Promise(r => setTimeout(r, 1000));
-                await page1.keyboard.press('Enter');
+                
+                // THE FIX: Physically tap the Login button instead of hitting Enter!
+                await page1.evaluate(() => {
+                    const elements = Array.from(document.querySelectorAll('*'));
+                    for (let el of elements) {
+                        if (el.innerText && el.innerText.trim() === 'Login' && el.offsetParent !== null) {
+                            el.click();
+                        }
+                    }
+                });
             }
             
             await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-            await new Promise(r => setTimeout(r, 3000)); 
+            await new Promise(r => setTimeout(r, 4000)); 
             
             await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
-            await new Promise(r => setTimeout(r, 3000));
+            await new Promise(r => setTimeout(r, 4000));
         }
 
         // --- STEP 2: SWEEP MASTER TAB ---
@@ -672,13 +684,11 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
         await updateStatus(`[SYSTEM] TIMEBOMB SET: Synchronizing Confirm clicks for exactly 3 SECONDS from now...`);
         
-        // Tell all browsers to click at EXACTLY 3.000 seconds from right now.
         const fireTime = Date.now() + 3000;
         
         await Promise.all(pages.map(async (p, idx) => {
             if (clickResults[idx]) {
                 await p.evaluate((triggerTime) => {
-                    // Calculate how many milliseconds are left until the exact fireTime
                     const delay = Math.max(0, triggerTime - Date.now());
                     
                     setTimeout(() => {
@@ -693,10 +703,8 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         }));
 
-        // We wait the 3 seconds for the timebomb, plus 4 seconds for the server to process it
         await new Promise(r => setTimeout(r, 7000)); 
 
-        // 📸 PROOF FROM TAB 1
         await updateStatus(`[SUCCESS] Strike executed simultaneously!`);
         const screenshotBuffer = await pages[0].screenshot({ type: 'png' });
         await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Snapshot from Master Tab after executing ${targetCount} synchronized clicks.` });
@@ -710,14 +718,11 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             } catch (snapErr) {}
         }
     } finally {
-        // WE DO NOT CLOSE THE BROWSER! We leave globalTaskBrowser open for the next run.
-        // But we DO close the individual tabs so the server doesn't run out of RAM!
         for (let p of pages) {
             await p.close().catch(() => {});
         }
     }
 });
-
 
 
 
