@@ -189,7 +189,6 @@ bot.onText(/\/checknum\s+(.+)/, async (msg, match) => {
     }
 });
 
-
 // Usage: /withdraw 20000
 bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
@@ -209,6 +208,7 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         browser = await puppeteer.launch({
             headless: true,
             executablePath: getChromePath(),
+            userDataDir: './wsjobs_auth_session', // THE MAGIC: This folder saves your cookies and tokens!
             args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
         });
 
@@ -216,70 +216,72 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         await page.setViewport({ width: 412, height: 915 }); 
         await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-        // --- STEP 1: DEEP LINK LOGIN ---
-        await updateStatus('[SYSTEM] Loading /user directly (forcing login redirect)...');
+        // --- STEP 1: CHECK SAVED SESSION ---
+        await updateStatus('[SYSTEM] Checking for saved session...');
         await page.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
+        
+        // Wait 4 seconds to see if the website redirects us to the login page or lets us stay
+        await new Promise(r => setTimeout(r, 4000)); 
 
-        // Wait for the login screen to render
-        await page.waitForSelector('input[type="password"]', { timeout: 10000 });
+        // Check if the password box is on the screen. If it is, our session expired.
+        const requiresLogin = await page.$('input[type="password"]') !== null;
 
-        const allInputs = await page.$$('input');
-        const visibleInputs = [];
+        if (requiresLogin) {
+            await updateStatus('[SYSTEM] Session expired or not found. Logging in...');
+            
+            const allInputs = await page.$$('input');
+            const visibleInputs = [];
 
-        for (let input of allInputs) {
-            const isVisible = await input.evaluate(el => el.offsetParent !== null && window.getComputedStyle(el).display !== 'none');
-            if (isVisible) {
-                visibleInputs.push(input);
+            for (let input of allInputs) {
+                const isVisible = await input.evaluate(el => el.offsetParent !== null && window.getComputedStyle(el).display !== 'none');
+                if (isVisible) visibleInputs.push(input);
             }
-        }
 
-        if (visibleInputs.length >= 2) {
-            await updateStatus('[SYSTEM] Typing credentials...');
-            await visibleInputs[0].click();
-            await visibleInputs[0].type('09163916311', { delay: 100 });
+            if (visibleInputs.length >= 2) {
+                await visibleInputs[0].click();
+                await visibleInputs[0].type('09163916311', { delay: 100 });
+                
+                await visibleInputs[1].click();
+                await visibleInputs[1].type('Emmamama', { delay: 100 });
+                
+                await new Promise(r => setTimeout(r, 1000));
+                await page.keyboard.press('Enter');
+                
+                try {
+                    await page.evaluate(() => {
+                        const elements = Array.from(document.querySelectorAll('*'));
+                        for (let el of elements) {
+                            if (el.innerText && el.innerText.trim() === 'Login') el.click();
+                        }
+                    });
+                } catch(e) {}
+            } else {
+                throw new Error("Could not find the physical input boxes on the screen.");
+            }
             
-            await visibleInputs[1].click();
-            await visibleInputs[1].type('Emmamama', { delay: 100 });
+            await updateStatus('[SYSTEM] Login submitted. Saving new session data...');
+            // Wait to be redirected back to the User dashboard
+            await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+            await new Promise(r => setTimeout(r, 4000)); 
             
-            await new Promise(r => setTimeout(r, 1000));
-            
-            await updateStatus('[SYSTEM] Submitting form (Pressing Enter)...');
-            await page.keyboard.press('Enter');
-            
-            // Backup Login click
-            try {
-                await page.evaluate(() => {
-                    const elements = Array.from(document.querySelectorAll('*'));
-                    for (let el of elements) {
-                        if (el.innerText && el.innerText.trim() === 'Login') el.click();
-                    }
-                });
-            } catch(e) {}
         } else {
-            throw new Error("Could not find the physical input boxes on the screen.");
+            // If the password box WASN'T there, the saved cookies worked!
+            await updateStatus('[SYSTEM] Active saved session loaded! Skipped login step.');
         }
-        
-        await updateStatus('[SYSTEM] Login submitted. Waiting to natively land on User Dashboard...');
-        
-        // Wait for the server to authenticate and automatically drop us back at /user
-        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-        await new Promise(r => setTimeout(r, 4000)); // Hard pause for the dashboard to render
 
         // 📸 PROOF 1: USER PAGE
         const userSnap = await page.screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, userSnap, { caption: '[TRACE 1] Login successful. Skipped Home Page. Landed natively on User Dashboard.' });
+        await bot.sendPhoto(chatId, userSnap, { caption: '[TRACE 1] Verified on User Dashboard.' });
 
         // --- STEP 2: CLICK ACCOUNT WITHDRAWAL ---
         await updateStatus('[SYSTEM] Clicking "Account Withdrawal"...');
         await page.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('*'));
             for (let el of elements) {
-                if (el.innerText && el.innerText.includes('Account Withdrawal')) {
-                    el.click();
-                }
+                if (el.innerText && el.innerText.includes('Account Withdrawal')) el.click();
             }
         });
-        await new Promise(r => setTimeout(r, 3000)); // Wait for Withdrawal Page to load
+        await new Promise(r => setTimeout(r, 3000)); 
 
         // --- STEP 3: THE GEOMETRIC SMART CLICKER ---
         await updateStatus(`[SYSTEM] Selecting amount: ${withdrawAmount}...`);
@@ -292,9 +294,7 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
             for (let el of allElements) {
                 const text = (el.innerText || el.textContent || '').trim();
                 if (text.includes(amount)) {
-                    if (text.includes('Withdrawable') || text.includes('Minimum') || text.includes('Maximum')) {
-                        continue;
-                    }
+                    if (text.includes('Withdrawable') || text.includes('Minimum') || text.includes('Maximum')) continue;
                     
                     const rect = el.getBoundingClientRect();
                     const area = rect.width * rect.height;
@@ -336,27 +336,24 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         });
         await new Promise(r => setTimeout(r, 2000));
 
-                // --- STEP 5: ENTER PIN & FINALIZE (FIXED FOR 6 BOXES) ---
+        // --- STEP 5: ENTER PIN & FINALIZE ---
         await updateStatus('[SYSTEM] Entering withdrawal password digit-by-digit...');
         const pinInputs = await page.$$('input[type="password"], input[type="number"], input[type="text"]');
         
         const visiblePinInputs = [];
         for (let input of pinInputs) {
             const isVis = await input.evaluate(el => el.offsetParent !== null && window.getComputedStyle(el).display !== 'none');
-            // Make sure we only grab inputs that don't have text already (ignoring hidden search bars, etc)
             if (isVis) visiblePinInputs.push(input);
         }
 
         const pin = '111111';
         
-        // THE FIX: If it finds exactly 6 boxes, loop through and put one digit in each box
         if (visiblePinInputs.length === 6 || visiblePinInputs.length > 1) {
             for (let i = 0; i < pin.length && i < visiblePinInputs.length; i++) {
                 await visiblePinInputs[i].click();
                 await visiblePinInputs[i].type(pin[i], { delay: 50 });
             }
         } else if (visiblePinInputs.length > 0) {
-            // Fallback just in case it's actually one hidden box
             await visiblePinInputs[0].click();
             await page.keyboard.type(pin, { delay: 100 });
         }
@@ -397,6 +394,7 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         }
     }
 });
+
 
 
 
