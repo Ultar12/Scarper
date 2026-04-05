@@ -408,7 +408,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
     try {
         let wBrowser = globalTaskBrowser;
         let shouldCloseW = false;
-        
+
         if (!wBrowser) {
             wBrowser = await puppeteer.launch({
                 headless: true,
@@ -418,31 +418,32 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             });
             shouldCloseW = true;
         }
-        
-        // Explicitly open a fresh, separate tab for Wsjobs
+
         const wPage = await wBrowser.newPage();
         await wPage.setViewport({ width: 412, height: 915 });
-        
+
         await wPage.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
 
         if (await wPage.$('input[type="password"]')) {
             const allInputs = await wPage.$$('input');
             const vis = [];
-            for(let i of allInputs) if(await i.evaluate(e=>e.offsetParent!==null)) vis.push(i);
-            if(vis.length>=2) {
+            for (let i of allInputs) {
+                if (await i.evaluate(e => e.offsetParent !== null)) vis.push(i);
+            }
+            if (vis.length >= 2) {
                 await vis[0].evaluate(el => el.value = '');
                 await vis[0].type('09163916311', { delay: 50 });
                 await vis[1].evaluate(el => el.value = '');
                 await vis[1].type('Emmamama', { delay: 50 });
                 await new Promise(r => setTimeout(r, 1000));
-                
+
                 await wPage.evaluate(() => {
                     Array.from(document.querySelectorAll('*')).forEach(el => {
                         if (el.innerText && el.innerText.trim() === 'Login' && el.offsetParent !== null) el.click();
                     });
                 });
-                
+
                 await wPage.waitForNavigation({waitUntil:'networkidle2', timeout: 15000}).catch(()=>{});
                 await wPage.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
                 await new Promise(r => setTimeout(r, 4000));
@@ -456,9 +457,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             return '0.00';
         });
 
-        // Explicitly close the Wsjobs tab immediately after scraping
         await wPage.close().catch(() => {});
-        
         if (shouldCloseW) await wBrowser.close();
     } catch(e) {
         wsjobsBal = 'Error';
@@ -468,7 +467,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
     try {
         let mBrowser = m4uBrowser;
         let shouldCloseM = false;
-        
+
         if (!mBrowser) {
             mBrowser = await puppeteer.launch({
                 headless: true,
@@ -477,10 +476,10 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             });
             shouldCloseM = true;
         }
-        
+
         const mPage = await mBrowser.newPage();
         await mPage.setViewport({ width: 412, height: 915 });
-        
+
         await mPage.goto('https://taskm4u.com/#/mine', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
 
@@ -490,20 +489,20 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
                 await inputs[0].type('Staring', { delay: 50 });
                 await inputs[1].type('Emmama', { delay: 50 });
                 await new Promise(r => setTimeout(r, 1000));
-                
+
                 await mPage.evaluate(() => {
                     Array.from(document.querySelectorAll('*')).forEach(el => {
                         if (el.innerText && el.innerText.trim() === 'Login') el.click();
                     });
                 });
-                
+
                 await mPage.waitForNavigation({waitUntil:'networkidle2', timeout:15000}).catch(()=>{});
                 await mPage.goto('https://taskm4u.com/#/mine', { waitUntil: 'networkidle2' });
                 await new Promise(r => setTimeout(r, 4000));
             }
         }
 
-        // --- ADDED SCREENSHOT STEP HERE ---
+        // --- DEBUG SCREENSHOT ---
         const debugSnap = await mPage.screenshot({ type: 'png' });
         await bot.sendPhoto(chatId, debugSnap, { caption: '[DEBUG] M4U Page Status before scraping' });
 
@@ -527,32 +526,11 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
         m4uBal = 'Error';
     }
 
-
-        // Exact scraper logic from the withdraw command
-       m4uBal = await mPage.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('*'));
-            for (let i = 0; i < elements.length; i++) {
-                const text = (elements[i].innerText || '').trim();
-                if (text === 'Account Balance') {
-                    const containerText = elements[i].parentElement.innerText || '';
-                    const match = containerText.match(/[\d,]+\.\d{2}/); 
-                    if (match) return match[0];
-                }
-            }
-            return '0.00';
-        });
-
-
-        await mPage.close().catch(() => {});
-        if (shouldCloseM) await mBrowser.close();
-    } catch(e) {
-        m4uBal = 'Error';
-    }
-
     // --- 3. FINAL CLEAN OUTPUT ---
-    bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{}); 
-    bot.sendMessage(chatId, `Wsjobs: ${wsjobsBal}\nM4U: ${m4uBal}`); 
+    bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+    bot.sendMessage(chatId, `Wsjobs: ${wsjobsBal}\nM4U: ${m4uBal}`);
 });
+
 
 
      
