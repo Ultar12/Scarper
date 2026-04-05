@@ -402,23 +402,30 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await new Promise(r => setTimeout(r, 4000));
 
         // --- NEW: SEND SCREENSHOT IF TIER IS ABOVE 12000 ---
-        if (targetAmount > 12000) {
-            const debugSnap = await page.screenshot({ type: 'png' });
-            await bot.sendPhoto(chatId, debugSnap, { caption: `[DEBUG] Attempting to find and click tier: ${targetAmount}` });
-        }
-
-        // If target is 12000, skip clicking since it is selected by default!
+                // If target is 12000, skip clicking since it is selected by default!
         if (targetAmount !== 12000) {
             await updateStatus(`[SYSTEM] Selecting tier: ${targetAmount}...`);
             const clickedTier = await page.evaluate((amt) => {
                 const target = amt.toString();
-                const elements = Array.from(document.querySelectorAll('div, span, button, a, li'));
+                const elements = Array.from(document.querySelectorAll('*'));
                 
                 for (let el of elements) {
-                    const txt = (el.innerText || '').trim();
-                    if (txt === target && el.offsetParent !== null) {
+                    // Grab all text inside the element
+                    const rawText = el.innerText || el.textContent || '';
+                    // Strip EVERYTHING except numbers. "20000 ✔" becomes "20000"
+                    const cleanText = rawText.replace(/[^0-9]/g, '');
+
+                    if (cleanText === target && el.offsetParent !== null) {
+                        el.scrollIntoView({ block: 'center' });
+                        
+                        // Fire synthetic MouseEvents to forcefully bypass Vue/React traps
+                        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
                         el.click();
-                        if (el.parentElement) el.parentElement.click();
+                        
+                        if (el.parentElement) {
+                            el.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                            el.parentElement.click();
+                        }
                         return true;
                     }
                 }
