@@ -394,12 +394,12 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 });
 
 
-   // --- CROSS-PLATFORM BALANCE CHECKER ---
+// --- CROSS-PLATFORM BALANCE CHECKER ---
 bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    let statusMsg = await bot.sendMessage(chatId, `Fetching balances...`);
+    let statusMsg = await bot.sendMessage(chatId, `⏳ Fetching balances...`);
 
     let wsjobsBal = '0.00';
     let m4uBal = '0.00';
@@ -424,8 +424,9 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             const vis = [];
             for(let i of allInputs) if(await i.evaluate(e=>e.offsetParent!==null)) vis.push(i);
             if(vis.length>=2) {
-                // Safe typing (No el.value = '' to prevent React/Vue state breaks)
+                await vis[0].evaluate(el => el.value = '');
                 await vis[0].type('09163916311', { delay: 50 });
+                await vis[1].evaluate(el => el.value = '');
                 await vis[1].type('Emmamama', { delay: 50 });
                 await new Promise(r => setTimeout(r, 1000));
                 
@@ -441,10 +442,9 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             }
         }
 
-        // EXACT LOGIC FROM YOUR WITHDRAW FUNCTION
         wsjobsBal = await wPage.evaluate(() => {
-            const text = document.body.innerText || '';
-            const match = text.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
+            const rawText = document.body.textContent || '';
+            const match = rawText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
             if (match) return match[1];
             return '0.00';
         });
@@ -475,8 +475,9 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
         if (mPage.url().includes('login')) {
             const inputs = await mPage.$$('input');
             if (inputs.length >= 2) {
-                // Safe typing for M4U
+                await inputs[0].evaluate(el => el.value = '');
                 await inputs[0].type('Staring', { delay: 50 });
+                await inputs[1].evaluate(el => el.value = '');
                 await inputs[1].type('Emmama', { delay: 50 });
                 await new Promise(r => setTimeout(r, 1000));
                 
@@ -492,11 +493,17 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             }
         }
 
-        // EXACT LOGIC APPLIED TO M4U NOW!
+        // EXACT LOGIC FROM YOUR WITHDRAWAL COMMAND
         m4uBal = await mPage.evaluate(() => {
-            const text = document.body.innerText || '';
-            const match = text.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
-            if (match) return match[1];
+            const elements = Array.from(document.querySelectorAll('*'));
+            for (let i = 0; i < elements.length; i++) {
+                const text = (elements[i].innerText || '').trim();
+                if (text === 'Account Balance') {
+                    const containerText = elements[i].parentElement.innerText || '';
+                    const match = containerText.match(/[\d,]+\.\d{2}/); 
+                    if (match) return match[0];
+                }
+            }
             return '0.00';
         });
 
@@ -510,6 +517,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
     bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{}); 
     bot.sendMessage(chatId, `Wsjobs: ${wsjobsBal}\nM4U: ${m4uBal}`); 
 });
+
      
 // Usage: /task 127
 bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
