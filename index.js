@@ -190,6 +190,7 @@ bot.onText(/\/checknum\s+(.+)/, async (msg, match) => {
 });
 
 // Usage: /withdraw 12000
+// Usage: /withdraw 12000
 bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -213,7 +214,6 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         bot.sendMessage(chatId, '[SYSTEM] Loading login page...');
         await page.goto('https://www.wsjobs-ng.com/login', { waitUntil: 'networkidle2' });
 
-        // Find the input boxes (assuming they are the first two inputs on the page)
         const inputs = await page.$$('input');
         if (inputs.length >= 2) {
             await inputs[0].type('09163916311', { delay: 50 });
@@ -222,30 +222,27 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
             throw new Error("Could not find the login input boxes.");
         }
 
-        // Click the Login button
-        const [loginBtn] = await page.$x("//*[contains(text(), 'Login')]");
+        // --- NEW PUPPETEER V22 XPATH SYNTAX ---
+        // We use waitForSelector with the "xpath/" prefix. It waits up to 5 seconds for the button.
+        const loginBtn = await page.waitForSelector("xpath///*[contains(text(), 'Login')]", { timeout: 5000 }).catch(() => null);
         if (loginBtn) await loginBtn.click();
         
-        // Wait for the home page to load
-        await page.waitForNavigation({ waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 4000)); // Hard pause to let the login process finish
         bot.sendMessage(chatId, '[SYSTEM] Login successful. Navigating to Account...');
 
         // --- STEP 2: NAVIGATE TO ACCOUNT ---
-        // Click the "Account" tab at the bottom
-        const [accountTab] = await page.$x("//*[contains(text(), 'Account')]");
+        const accountTab = await page.waitForSelector("xpath///*[contains(text(), 'Account')]", { timeout: 5000 }).catch(() => null);
         if (accountTab) await accountTab.click();
-        await new Promise(r => setTimeout(r, 2000)); // Wait for tab switch
+        await new Promise(r => setTimeout(r, 2000)); 
 
-        // Click "Account Withdrawal"
-        const [withdrawalLink] = await page.$x("//*[contains(text(), 'Account Withdrawal')]");
+        const withdrawalLink = await page.waitForSelector("xpath///*[contains(text(), 'Account Withdrawal')]", { timeout: 5000 }).catch(() => null);
         if (withdrawalLink) await withdrawalLink.click();
-        await new Promise(r => setTimeout(r, 3000)); // Wait for page load
+        await new Promise(r => setTimeout(r, 3000)); 
 
         // --- STEP 3: SELECT AMOUNT & WITHDRAW ---
         bot.sendMessage(chatId, `[SYSTEM] Selecting amount: ${withdrawAmount}...`);
         
-        // Click the specific amount box
-        const [amountBox] = await page.$x(`//*[text()='${withdrawAmount}']`);
+        const amountBox = await page.waitForSelector(`xpath///*[text()='${withdrawAmount}']`, { timeout: 5000 }).catch(() => null);
         if (amountBox) {
             await amountBox.click();
         } else {
@@ -253,46 +250,38 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         }
         await new Promise(r => setTimeout(r, 1000));
 
-        // Click "Withdrawal Now"
-        const [withdrawNowBtn] = await page.$x("//*[contains(text(), 'Withdrawal Now')]");
+        const withdrawNowBtn = await page.waitForSelector("xpath///*[contains(text(), 'Withdrawal Now')]", { timeout: 5000 }).catch(() => null);
         if (withdrawNowBtn) await withdrawNowBtn.click();
         await new Promise(r => setTimeout(r, 2000));
 
         // --- STEP 4: CONFIRMATION PAGE ---
         bot.sendMessage(chatId, '[SYSTEM] Processing confirmation screen...');
-        // We use exact match here so it doesn't accidentally click "Withdrawal Now" again
-        const [confirmWithdrawalBtn] = await page.$x("//*[text()='Withdrawal']");
+        const confirmWithdrawalBtn = await page.waitForSelector("xpath///*[text()='Withdrawal']", { timeout: 5000 }).catch(() => null);
         if (confirmWithdrawalBtn) await confirmWithdrawalBtn.click();
         await new Promise(r => setTimeout(r, 2000));
 
         // --- STEP 5: ENTER PIN & FINALIZE ---
         bot.sendMessage(chatId, '[SYSTEM] Entering withdrawal password...');
         
-        // Find the password inputs (the 6 boxes) and type the PIN
-        // We focus the first box and simulate keyboard typing, which usually auto-fills the rest
         const pinInputs = await page.$$('input[type="password"], input[type="number"], input[type="text"]');
         if (pinInputs.length > 0) {
             await pinInputs[0].click();
             await page.keyboard.type('111111', { delay: 100 });
         } else {
-            // Fallback: If inputs are hidden, just type on the active document
             await page.keyboard.type('111111', { delay: 100 });
         }
         await new Promise(r => setTimeout(r, 1000));
 
-        // Click the final Confirm button
-        const [finalConfirmBtn] = await page.$x("//*[text()='Confirm']");
+        const finalConfirmBtn = await page.waitForSelector("xpath///*[text()='Confirm']", { timeout: 5000 }).catch(() => null);
         if (finalConfirmBtn) await finalConfirmBtn.click();
         
         bot.sendMessage(chatId, '[SYSTEM] Final confirmation submitted. Waiting for server response...');
-        await new Promise(r => setTimeout(r, 5000)); // Wait for success message/redirect
+        await new Promise(r => setTimeout(r, 5000)); 
 
-        // Take a screenshot of the final success page
         const screenshotBuffer = await page.screenshot({ type: 'png' });
         await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Withdrawal sequence completed.` });
 
     } catch (err) {
-        // If anything fails, take a picture of the error so you can see what went wrong
         bot.sendMessage(chatId, `[ERROR] Sequence failed: ${err.message}\nTaking diagnostic screenshot...`);
         if (browser) {
             try {
@@ -307,13 +296,13 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         }
     } finally {
         // --- STEP 6: RESOURCE MANAGEMENT ---
-        // This absolutely guarantees the browser is destroyed and RAM is freed, even if it crashed.
         if (browser) {
             await browser.close();
             console.log('[SYSTEM] Withdrawal sequence ended. Browser destroyed, RAM freed.');
         }
     }
 });
+
 
 
 bot.onText(/\/status/, (msg) => {
