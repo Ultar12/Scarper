@@ -56,6 +56,7 @@ const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 const ADMIN_ID = process.env.ADMIN_ID || 'REPLACE_WITH_YOUR_ID'; 
 
 let waClient = null;
+let globalTaskBrowser = null;
 const userState = {};
 
 // --- 4. TELEGRAM COMMAND LISTENERS ---
