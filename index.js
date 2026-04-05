@@ -512,9 +512,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             }
         }
 
-        // --- DEBUG SCREENSHOT ---
-        const debugSnap = await mPage.screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, debugSnap, { caption: '[DEBUG] M4U Page Status before scraping' });
+        
 
         // Exact scraper logic from the withdraw command
         m4uBal = await mPage.evaluate(() => {
@@ -576,9 +574,8 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         }
         browser = globalTaskBrowser;
 
-        // --- THE GOLDEN FIX: DYNAMIC TUTORIAL TRACKER ---
+        // --- DYNAMIC TUTORIAL TRACKER ---
         const sweepTutorial = async (targetPage) => {
-            // Wait 2.5 seconds first to let the website drop the initial popup
             await new Promise(r => setTimeout(r, 2500)); 
             
             let maxAttempts = 20; 
@@ -587,15 +584,12 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             while (maxAttempts > 0 && emptyChecks < 3) {
                 maxAttempts--;
                 const clicked = await targetPage.evaluate(() => {
-                    // Grab all clickable elements on the screen
                     const elements = Array.from(document.querySelectorAll('button, div, span, a'));
                     for (let el of elements) {
-                        if (el.offsetParent === null) continue; // Skip hidden elements
+                        if (el.offsetParent === null) continue; 
                         const txt = (el.innerText || '').trim().toLowerCase();
                         
-                        // Dynamically hunt for the specific text
                         if (txt === 'next' || txt === 'next →' || txt === 'next ->' || txt.includes('next →') || txt === 'done') {
-                            // Center the new button location on the screen and click
                             el.scrollIntoView({ block: 'center' });
                             el.click();
                             return true;
@@ -606,7 +600,6 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
                 if (clicked) {
                     emptyChecks = 0; 
-                    // Crucial: Wait 1 full second for the box to finish moving to its new position!
                     await new Promise(r => setTimeout(r, 1000)); 
                 } else {
                     emptyChecks++; 
@@ -703,7 +696,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await Promise.all(pages.map(p => sweepTutorial(p)));
 
         // --- STEP 4: TARGET ACQUISITION ---
-        await updateStatus(`[SYSTEM] Tabs are 100% clear. Clicking "Send" on all targets...`);
+        await updateStatus(`[SYSTEM] Tabs are clear. Clicking "Send" on all targets...`);
         
         const clickResults = await Promise.all(pages.map((p, index) => {
             return p.evaluate((suffixStr, tabIndex) => {
@@ -729,7 +722,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
         await new Promise(r => setTimeout(r, 2000));
 
-        // --- STEP 5: THE SYNCHRONIZED TIMEBOMB (3 SECONDS) ---
+        // --- STEP 5: PRE-STRIKE SCREENSHOTS & TIMEBOMB ---
         await updateStatus(`[SYSTEM] Waiting for popups to render...`);
         
         await Promise.all(pages.map(async (p, idx) => {
@@ -739,6 +732,17 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                 }, { timeout: 5000 }).catch(() => null);
             }
         }));
+
+        // NEW: SEND SCREENSHOT OF EVERY TAB BEFORE CLICKING CONFIRM
+        await updateStatus(`[SYSTEM] Capturing pre-strike screenshots of all active tabs...`);
+        for (let idx = 0; idx < pages.length; idx++) {
+            if (clickResults[idx]) {
+                try {
+                    const preSnap = await pages[idx].screenshot({ type: 'png' });
+                    await bot.sendPhoto(chatId, preSnap, { caption: `[DIAGNOSTIC] Tab ${idx + 1} State right before Confirm.` });
+                } catch (e) {}
+            }
+        }
 
         await updateStatus(`[SYSTEM] TIMEBOMB SET: Synchronizing Confirm clicks for exactly 3 SECONDS from now...`);
         
@@ -782,6 +786,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     }
 });
 
+ 
 
 
 bot.onText(/\/status/, (msg) => {
