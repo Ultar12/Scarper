@@ -336,21 +336,29 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         });
         await new Promise(r => setTimeout(r, 2000));
 
-        // --- STEP 5: ENTER PIN & FINALIZE ---
-        await updateStatus('[SYSTEM] Entering withdrawal password (111111)...');
+                // --- STEP 5: ENTER PIN & FINALIZE (FIXED FOR 6 BOXES) ---
+        await updateStatus('[SYSTEM] Entering withdrawal password digit-by-digit...');
         const pinInputs = await page.$$('input[type="password"], input[type="number"], input[type="text"]');
         
         const visiblePinInputs = [];
         for (let input of pinInputs) {
             const isVis = await input.evaluate(el => el.offsetParent !== null && window.getComputedStyle(el).display !== 'none');
+            // Make sure we only grab inputs that don't have text already (ignoring hidden search bars, etc)
             if (isVis) visiblePinInputs.push(input);
         }
 
-        if (visiblePinInputs.length > 0) {
+        const pin = '111111';
+        
+        // THE FIX: If it finds exactly 6 boxes, loop through and put one digit in each box
+        if (visiblePinInputs.length === 6 || visiblePinInputs.length > 1) {
+            for (let i = 0; i < pin.length && i < visiblePinInputs.length; i++) {
+                await visiblePinInputs[i].click();
+                await visiblePinInputs[i].type(pin[i], { delay: 50 });
+            }
+        } else if (visiblePinInputs.length > 0) {
+            // Fallback just in case it's actually one hidden box
             await visiblePinInputs[0].click();
-            await page.keyboard.type('111111', { delay: 100 });
-        } else {
-            await page.keyboard.type('111111', { delay: 100 });
+            await page.keyboard.type(pin, { delay: 100 });
         }
         await new Promise(r => setTimeout(r, 1500));
 
