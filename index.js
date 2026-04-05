@@ -189,6 +189,17 @@ bot.onText(/\/checknum\s+(.+)/, async (msg, match) => {
     }
 });
 
+// Usage: /pair m4u
+bot.onText(/\/pair\s+m4u/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    // Reset any existing session and start fresh
+    m4uSession = { state: 'WAITING_COUNTRY', country: null };
+    bot.sendMessage(chatId, '[SYSTEM] M4U Pairing Protocol Initiated.\n\nPlease reply with the Country Code you want to use (e.g., +234 or 234):');
+});
+
+
 // Usage: /withdraw 20000
 bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
@@ -616,6 +627,266 @@ bot.onText(/\/status/, (msg) => {
     const status = (waClient && waClient.info) ? 'ONLINE' : 'OFFLINE / WAITING FOR LOGIN';
     bot.sendMessage(msg.chat.id, `[SYSTEM] Current Status: ${status}`);
 });
+
+
+// --- GLOBAL VARIABLES FOR M4U PAIRING ---
+let m4uSession = null;
+let m4uBrowser = null;
+let m4uPage = null;
+let m4uTimer = null;
+
+// The 20-Minute Killswitch
+const resetM4uTimer = (chatId) => {
+    if (m4uTimer) clearTimeout(m4uTimer);
+    m4uTimer = setTimeout(async () => {
+        bot.sendMessage(chatId, '[SYSTEM] 20 minutes of inactivity elapsed. Closing M4U pairing session to save RAM.');
+        m4uSession = null;
+        if (m4uBrowser) {
+            await m4uBrowser.close().catch(() => {});
+            m4uBrowser = null;
+            m4uPage = null;
+        }
+    }, 20 * 60 * 1000); // 20 minutes
+};
+
+// --- THE M4U START COMMAND ---
+// Usage: /pair m4u
+bot.onText(/\/pair\s+m4u/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    // Reset any existing session and start fresh
+    m4uSession = { state: 'WAITING_COUNTRY', country: null };
+    bot.sendMessage(chatId, '[SYSTEM] M4U Pairing Protocol Initiated.\n\nPlease reply with the Country Code you want to use (e.g., +234 or 234):');
+});
+
+// --- UNIFIED MESSAGE LISTENER ---
+bot.on('message', async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+    if (!msg.text || msg.text.startsWith('/')) return;
+
+    // 1. WhatsApp Connection Flow
+    if (userState[chatId] === 'WAITING_FOR_NUMBER') {
+        const phoneNumber = msg.text.replace(/[^0-9]/g, '');
+        if (phoneNumber.length < 7) {
+            bot.sendMessage(chatId, '[ERROR] Invalid phone number. Try again.');
+            return;
+        }
+        userState[chatId] = null; 
+        bot.sendMessage(chatId, `[SYSTEM] Initializing Pairing Code protocol for +${phoneNumber}...`);
+        initializeWhatsApp(chatId, phoneNumber);
+        return;
+    }
+
+    // 2. M4U Pairing Continuous Loop
+    if (m4uSession) {
+        
+        // --- PHASE A: SETTING THE COUNTRY CODE ---
+        if (m4uSession.state === 'WAITING_COUNTRY') {
+            const rawCountry = msg.text.trim().replace('+', ''); 
+            m4uSession.country = rawCountry;
+            m4uSession.state = 'BOOTING_BROWSER';
+            
+            let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Country code +${rawCountry} locked in. Booting M4U browser...`);
+            
+            try {
+                if (!m4uBrowser) {
+                    m4uBrowser = await puppeteer.launch({
+                        headless: true,
+                        executablePath: getChromePath(),
+                        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+                    });
+                }
+                
+                // Grant clipboard permissions just in case the website needs it to function properly
+                const context = m4uBrowser.defaultBrowserContext();
+                await context.overridePermissions('https://taskm4u.com', ['clipboard-read', 'clipboard-write']);
+
+                m4uPage = await m4uBrowser.newPage();
+                await m4uPage.setViewport({ width: 412, height: 915 }); 
+                await m4uPage.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+
+                // Step 1: Login
+                await bot.editMessageText('[SYSTEM] Logging into TaskM4U...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                await m4uPage.goto('https://taskm4u.com/#/login', { waitUntil: 'networkidle2' });
+                
+                const inputs = await m4uPage.$$('input');
+                if (inputs.length >= 2) {
+                    await inputs[0].type('Staring', { delay: 50 });
+                    await inputs[1].type('Emmama', { delay: 50 });
+                    await new Promise(r => setTimeout(r, 1000));
+                    await m4uPage.evaluate(() => {
+                        Array.from(document.querySelectorAll('*')).forEach(el => {
+                            if (el.innerText && el.innerText.trim() === 'Login') el.click();
+                        });
+                    });
+                }
+                
+                await m4uPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+                await new Promise(r => setTimeout(r, 3000));
+
+                // Step 2: Clear Homepage Popup and Click Start
+                await bot.editMessageText('[SYSTEM] Clearing popups and navigating to HangTask...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                await m4uPage.evaluate(() => {
+                    Array.from(document.querySelectorAll('*')).forEach(el => {
+                        if (el.innerText && el.innerText.trim() === 'Close') el.click();
+                    });
+                });
+                await new Promise(r => setTimeout(r, 1500));
+                
+                await m4uPage.evaluate(() => {
+                    Array.from(document.querySelectorAll('*')).forEach(el => {
+                        if (el.innerText && el.innerText.trim() === 'Start') el.click();
+                    });
+                });
+                await new Promise(r => setTimeout(r, 4000));
+
+                // Step 3: Click Add and Select Country
+                await bot.editMessageText(`[SYSTEM] Setting country code to +${rawCountry}...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                
+                await m4uPage.evaluate(() => {
+                    Array.from(document.querySelectorAll('*')).forEach(el => {
+                        if (el.innerText && el.innerText.trim().toLowerCase() === 'add') el.click();
+                    });
+                });
+                await new Promise(r => setTimeout(r, 2000));
+
+                await m4uPage.evaluate(() => {
+                    const inputs = Array.from(document.querySelectorAll('input'));
+                    const phoneInput = inputs.find(i => i.placeholder && i.placeholder.toLowerCase().includes('phone number'));
+                    if (phoneInput && phoneInput.previousElementSibling) {
+                        phoneInput.previousElementSibling.click();
+                    }
+                });
+                await new Promise(r => setTimeout(r, 2000));
+
+                await m4uPage.evaluate((country) => {
+                    const inputs = Array.from(document.querySelectorAll('input'));
+                    const searchInput = inputs.find(i => i.placeholder && i.placeholder.toLowerCase().includes('country'));
+                    if (searchInput) {
+                        searchInput.value = country;
+                        searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
+                }, rawCountry);
+                await new Promise(r => setTimeout(r, 1500));
+
+                await m4uPage.evaluate((country) => {
+                    const elements = Array.from(document.querySelectorAll('div, span, li'));
+                    const row = elements.find(el => el.innerText && el.innerText.includes('+' + country) && el.childElementCount < 5);
+                    if (row) row.click();
+                }, rawCountry);
+                await new Promise(r => setTimeout(r, 2000));
+
+                m4uSession.state = 'WAITING_NUMBER';
+                resetM4uTimer(chatId); 
+                
+                const snap = await m4uPage.screenshot({ type: 'png' });
+                await bot.sendPhoto(chatId, snap, { caption: `[SUCCESS] Browser is prepped and country code is set!\n\nJust reply with the phone number (e.g., 8012345678) to get the code.\n\nYou have 20 minutes.` });
+
+            } catch (err) {
+                bot.sendMessage(chatId, `[ERROR] Failed to boot M4U setup: ${err.message}`);
+                m4uSession = null;
+            }
+            return;
+        }
+
+        // --- PHASE B: THE CONTINUOUS NUMBER LOOP WITH SMART EXTRACTION ---
+        if (m4uSession.state === 'WAITING_NUMBER') {
+            const targetNumber = msg.text.trim().replace(/[^0-9]/g, '');
+            bot.sendMessage(chatId, `[SYSTEM] Fetching code for ${targetNumber}...`);
+            resetM4uTimer(chatId); 
+
+            try {
+                // Clear the input perfectly
+                await m4uPage.evaluate(() => {
+                    const inputs = Array.from(document.querySelectorAll('input'));
+                    const phoneInput = inputs.find(i => i.placeholder && i.placeholder.toLowerCase().includes('phone number'));
+                    if (phoneInput) phoneInput.value = '';
+                });
+                
+                const inputHandles = await m4uPage.$$('input');
+                for (let handle of inputHandles) {
+                    const isPhone = await m4uPage.evaluate(el => el.placeholder && el.placeholder.toLowerCase().includes('phone number'), handle);
+                    if (isPhone) {
+                        await handle.type(targetNumber, { delay: 50 });
+                    }
+                }
+                
+                // Click 'get code'
+                await m4uPage.evaluate(() => {
+                    Array.from(document.querySelectorAll('*')).forEach(el => {
+                        if (el.innerText && el.innerText.trim().toLowerCase() === 'get code' && el.offsetParent !== null) el.click();
+                    });
+                });
+
+                // --- SMART DETECTION LOOP (WAIT FOR LOADING TO FINISH) ---
+                let fetchResult = null;
+                
+                // Poll the page every 1 second for up to 15 seconds
+                for (let i = 0; i < 15; i++) {
+                    await new Promise(r => setTimeout(r, 1000));
+
+                    fetchResult = await m4uPage.evaluate(() => {
+                        const bodyText = document.body.innerText.toLowerCase();
+                        
+                        // 1. Check for failure messages
+                        if (bodyText.includes('failed to obtain') || bodyText.includes('network error') || bodyText.includes('frequently')) {
+                            return { status: 'error', message: 'Failed to obtain code from the server.' };
+                        }
+
+                        // 2. Check if the 8 code boxes have successfully filled up
+                        const possibleContainers = Array.from(document.querySelectorAll('div, section'));
+                        for (let c of possibleContainers) {
+                            // The container holds 8 boxes + the dash + the copy icon
+                            if (c.children.length >= 8 && c.children.length <= 15) {
+                                // Extract the text from the single-character boxes
+                                const chars = Array.from(c.children)
+                                    .map(child => (child.innerText || '').trim())
+                                    .filter(txt => txt.length === 1 && /[A-Z0-9]/i.test(txt));
+
+                                if (chars.length === 8) {
+                                    const codeString = chars.join('');
+                                    
+                                    // Found it! Now physically click the Copy Icon (usually the last child element)
+                                    const copyBtn = c.children[c.children.length - 1];
+                                    if (copyBtn) copyBtn.click();
+
+                                    return { status: 'success', code: codeString };
+                                }
+                            }
+                        }
+                        return { status: 'pending' };
+                    });
+
+                    // If it found a success or error state, break the waiting loop immediately
+                    if (fetchResult && fetchResult.status !== 'pending') {
+                        break;
+                    }
+                }
+
+                // --- PROCESS THE RESULT ---
+                if (!fetchResult || fetchResult.status === 'pending') {
+                    // Time out! Just take a picture so the user can see what got stuck.
+                    const errSnap = await m4uPage.screenshot({ type: 'png' });
+                    await bot.sendPhoto(chatId, errSnap, { caption: `[TIMEOUT] Could not detect code or failure message after 15 seconds. Here is the screen state:` });
+                } 
+                else if (fetchResult.status === 'error') {
+                    bot.sendMessage(chatId, `[ERROR] For number ${targetNumber}:\n${fetchResult.message}`);
+                } 
+                else if (fetchResult.status === 'success') {
+                    // Format the code nicely
+                    bot.sendMessage(chatId, `[SUCCESS] Code obtained for ${targetNumber}!\n\nExtracted Code: \`${fetchResult.code}\`\n\nSend the next number to continue.`, { parse_mode: 'Markdown' });
+                }
+
+            } catch (err) {
+                bot.sendMessage(chatId, `[ERROR] Sequence crashed: ${err.message}`);
+            }
+            return;
+        }
+    }
+});
+
 
 // --- 5. WHATSAPP CLIENT INITIALIZATION ---
 
