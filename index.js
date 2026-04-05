@@ -456,7 +456,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         });
         await new Promise(r => setTimeout(r, 3000));
 
-      await updateStatus('[SYSTEM] Entering withdrawal PIN...');
+              await updateStatus('[SYSTEM] Entering withdrawal PIN...');
         const pinInputs = await page.$$('input');
         const visiblePinInputs = [];
         for (let input of pinInputs) {
@@ -466,6 +466,11 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         }
 
         const pin = '111111'; // Ensure this matches your actual withdrawal password
+
+        // --- NEW: SCREENSHOT BEFORE TYPING PIN ---
+        const prePinSnap = await page.screenshot({ type: 'png' });
+        await bot.sendPhoto(chatId, prePinSnap, { caption: '[DEBUG] State BEFORE typing PIN' });
+        // -----------------------------------------
         
         if (visiblePinInputs.length > 0) {
             // Click the very first box to lock cursor focus
@@ -480,9 +485,13 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         }
         await new Promise(r => setTimeout(r, 1500));
 
-
+        // --- NEW: SCREENSHOT AFTER TYPING THE PIN ---
+        const postPinSnap = await page.screenshot({ type: 'png' });
+        await bot.sendPhoto(chatId, postPinSnap, { caption: '[DEBUG] State AFTER typing PIN, right before Confirm' });
+        // --------------------------------------------------
 
         await updateStatus('[SYSTEM] Submitting final confirmation...');
+
         await page.evaluate(() => {
             Array.from(document.querySelectorAll('*')).forEach(el => {
                 if (el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null) el.click();
@@ -503,6 +512,66 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
     }
 });
 
+// --- CONTINUOUS TASK MODE ---
+let taskModeActive = false;
+let taskModeTimer = null;
+
+// Command to START Task Mode
+bot.onText(/^(?:Task|task)$/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+    
+    taskModeActive = true;
+    
+    // Set the 30-minute idle timebomb
+    if (taskModeTimer) clearTimeout(taskModeTimer);
+    taskModeTimer = setTimeout(() => {
+        taskModeActive = false;
+        bot.sendMessage(chatId, '[SYSTEM] Task Mode automatically ended after 30 minutes of inactivity.');
+    }, 30 * 60 * 1000);
+    
+    await bot.sendMessage(chatId, '[ACTIVE] Continuous Task Mode Activated!\n\nJust send me the raw target numbers (e.g., 657). I will automatically close old tabs, open fresh ones, and execute the strike.\n\nType Stop to end this mode.', { parse_mode: 'Markdown' });
+});
+
+// Command to STOP Task Mode
+bot.onText(/^(?:Stop|stop)$/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+    
+    if (taskModeActive) {
+        taskModeActive = false;
+        if (taskModeTimer) clearTimeout(taskModeTimer);
+        await bot.sendMessage(chatId, '[INACTIVE] Task Mode Deactivated.', { parse_mode: 'Markdown' });
+    }
+});
+
+// The smart listener that catches your numbers
+bot.on('message', (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID || !taskModeActive) return;
+    if (!msg.text) return;
+    
+    // Check if the message is JUST a number
+    if (/^\d+$/.test(msg.text.trim())) {
+        
+        // Reset the 30-minute timebomb since you just sent a number
+        if (taskModeTimer) clearTimeout(taskModeTimer);
+        taskModeTimer = setTimeout(() => {
+            taskModeActive = false;
+            bot.sendMessage(chatId, '[SYSTEM] Task Mode automatically ended after 30 minutes of inactivity.');
+        }, 30 * 60 * 1000);
+
+        // Secretly convert "657" into "/task 657" and push it directly into the bot's processor
+        const fakeMessage = { ...msg };
+        fakeMessage.text = `/task ${msg.text.trim()}`;
+        
+        // Feed it back to the bot to execute your original /task command
+        bot.processUpdate({
+            update_id: Math.floor(Math.random() * 1000000),
+            message: fakeMessage
+        });
+    }
+});
 
 
 // --- CROSS-PLATFORM BALANCE CHECKER ---
