@@ -1,9 +1,38 @@
+const fs = require('fs');
+const { execSync } = require('child_process');
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
 const { Client, RemoteAuth } = require('whatsapp-web.js');
 const { PostgresStore } = require('wwebjs-postgres');
 const { Pool } = require('pg');
 const QRCode = require('qrcode');
+
+// --- BULLETPROOF CHROME LOCATOR ---
+function getChromePath() {
+    const possiblePaths = [
+        process.env.GOOGLE_CHROME_BIN,
+        process.env.CHROME_BIN,
+        process.env.GOOGLE_CHROME_SHIM,
+        '/app/.chrome-for-testing/chrome-linux64/chrome', // The exact path from your Heroku build log
+        '/usr/bin/google-chrome'
+    ];
+    
+    for (const path of possiblePaths) {
+        if (path && fs.existsSync(path)) {
+            console.log(`[SYSTEM] Found Chrome at: ${path}`);
+            return path;
+        }
+    }
+    
+    try {
+        const osPath = execSync('which chrome').toString().trim();
+        console.log(`[SYSTEM] OS located Chrome at: ${osPath}`);
+        return osPath;
+    } catch (e) {
+        console.log('[ERROR] Could not locate Chrome path automatically.');
+        return null;
+    }
+}
 
 // --- 1. HEROKU POSTGRESQL SETUP ---
 // Heroku requires SSL to be enabled but rejectUnauthorized set to false
@@ -98,7 +127,7 @@ async function initializeWhatsApp(chatId, targetPhoneNumber) {
 
     let pairingCodeRequested = false;
 
-        waClient = new Client({
+    waClient = new Client({
         authStrategy: new RemoteAuth({
             clientId: 'ultar_bot_session',
             store: store,
@@ -106,8 +135,8 @@ async function initializeWhatsApp(chatId, targetPhoneNumber) {
         }),
         puppeteer: {
             headless: true,
-            // UPDATE THIS LINE TO CATCH THE NEW BUILDPACK
-            executablePath: process.env.CHROME_BIN || process.env.GOOGLE_CHROME_BIN || 'chrome',
+            // Uses the locator function to strictly identify the Chrome binary path
+            executablePath: getChromePath(),
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -119,7 +148,6 @@ async function initializeWhatsApp(chatId, targetPhoneNumber) {
             ]
         }
     });
-
 
     // The 'qr' event fires when the browser has successfully loaded the WhatsApp Web DOM.
     // This is the absolute safest time to inject the Pairing Code request.
@@ -172,4 +200,3 @@ async function initializeWhatsApp(chatId, targetPhoneNumber) {
 }
 
 console.log('System booting. Waiting for Telegram commands...');
-
