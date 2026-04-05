@@ -629,24 +629,25 @@ bot.onText(/\/status/, (msg) => {
 });
 
 
+
 // --- GLOBAL VARIABLES FOR M4U PAIRING ---
 let m4uSession = null;
 let m4uBrowser = null;
 let m4uPage = null;
 let m4uTimer = null;
 
-// The 20-Minute Killswitch
+// The 30-Minute Killswitch
 const resetM4uTimer = (chatId) => {
     if (m4uTimer) clearTimeout(m4uTimer);
     m4uTimer = setTimeout(async () => {
-        bot.sendMessage(chatId, '[SYSTEM] 20 minutes of inactivity elapsed. Closing M4U pairing session to save RAM.');
+        bot.sendMessage(chatId, '[SYSTEM] 30 minutes of inactivity elapsed. Closing M4U pairing session to save RAM.');
         m4uSession = null;
         if (m4uBrowser) {
             await m4uBrowser.close().catch(() => {});
             m4uBrowser = null;
             m4uPage = null;
         }
-    }, 20 * 60 * 1000); // 20 minutes
+    }, 30 * 60 * 1000); // 30 minutes
 };
 
 // --- THE M4U START COMMAND ---
@@ -655,12 +656,11 @@ bot.onText(/\/pair\s+m4u/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    // Reset any existing session and start fresh
-    m4uSession = { state: 'WAITING_COUNTRY', country: null };
-    bot.sendMessage(chatId, '[SYSTEM] M4U Pairing Protocol Initiated.\n\nPlease reply with the Country Code you want to use (e.g., +234 or 234):');
+    // Reset any existing session and start fresh (Added linkedCount counter!)
+    m4uSession = { state: 'WAITING_COUNTRY', country: null, linkedCount: 0 };
+    bot.sendMessage(chatId, '[SYSTEM] M4U Pairing Protocol Initiated.\n\nPlease reply with the Country Code you want to use (e.g., +234 or 234):\n\n(Idle timeout set to 30 minutes)');
 });
 
-                
 // --- UNIFIED MESSAGE LISTENER ---
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id.toString();
@@ -692,7 +692,6 @@ bot.on('message', async (msg) => {
             let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Country code +${rawCountry} locked in. Preparing M4U browser...`);
             
             try {
-                // THE REUSE LOGIC: Boot and login if not running
                 if (!m4uBrowser || !m4uPage) {
                     m4uBrowser = await puppeteer.launch({
                         headless: true,
@@ -781,7 +780,6 @@ bot.on('message', async (msg) => {
                     const elements = Array.from(document.querySelectorAll('*'));
                     for (let el of elements) {
                         const txt = (el.innerText || '').trim();
-                        // Matches exact country code formats (like +234)
                         if (txt.match(/^\+\d{1,4}$/) && el.offsetParent !== null && el.children.length === 0) {
                             el.click();
                             return true;
@@ -807,16 +805,14 @@ bot.on('message', async (msg) => {
                     const targetCode = '+' + country;
                     const allElements = Array.from(document.querySelectorAll('*'));
                     
-                    // Strategy 1: Find the exact span/div containing ONLY the country code (the red text)
                     for (let el of allElements) {
                         if (el.children.length === 0 && (el.innerText || '').trim() === targetCode && el.offsetParent !== null) {
-                            el.click(); // Click the text span
-                            if (el.parentElement) el.parentElement.click(); // Click the parent row box
+                            el.click(); 
+                            if (el.parentElement) el.parentElement.click(); 
                             return;
                         }
                     }
 
-                    // Strategy 2: Fallback to finding the row where the LAST word is the target code
                     for (let el of allElements) {
                         const txt = (el.innerText || '').trim();
                         if (txt && txt.length < 50 && el.offsetParent !== null) {
@@ -830,7 +826,7 @@ bot.on('message', async (msg) => {
                 }, rawCountry);
                 await new Promise(r => setTimeout(r, 3000));
 
-                // Re-open the popup by clicking Add again!
+                // Re-open the popup by clicking Add again
                 await m4uPage.evaluate(() => {
                     Array.from(document.querySelectorAll('*')).forEach(el => {
                         if (el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null) el.click();
@@ -838,7 +834,6 @@ bot.on('message', async (msg) => {
                 });
                 await new Promise(r => setTimeout(r, 2000));
 
-                // Set state to ready
                 m4uSession.state = 'WAITING_NUMBER';
                 resetM4uTimer(chatId); 
                 
@@ -855,10 +850,28 @@ bot.on('message', async (msg) => {
         // --- PHASE B: THE CONTINUOUS NUMBER LOOP WITH SMART EXTRACTION ---
         if (m4uSession.state === 'WAITING_NUMBER') {
             const targetNumber = msg.text.trim().replace(/[^0-9]/g, '');
-            bot.sendMessage(chatId, `[SYSTEM] Fetching code for ${targetNumber}...`);
+            let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Processing number ${targetNumber}...`);
             resetM4uTimer(chatId); 
 
             try {
+                // THE FIX: Check if the popup closed from a previous successful link. If so, reopen it!
+                const isPopupOpen = await m4uPage.evaluate(() => {
+                    const phoneInput = Array.from(document.querySelectorAll('input')).find(i => i.placeholder && i.placeholder.toLowerCase().includes('phone number'));
+                    return phoneInput && phoneInput.offsetParent !== null;
+                });
+
+                if (!isPopupOpen) {
+                    await bot.editMessageText(`[SYSTEM] Popup was closed. Re-opening for ${targetNumber}...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                    await m4uPage.evaluate(() => {
+                        Array.from(document.querySelectorAll('*')).forEach(el => {
+                            if (el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null) el.click();
+                        });
+                    });
+                    await new Promise(r => setTimeout(r, 2000));
+                }
+
+                await bot.editMessageText(`[SYSTEM] Requesting code for ${targetNumber}...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+
                 // Clear the input perfectly
                 await m4uPage.evaluate(() => {
                     const inputs = Array.from(document.querySelectorAll('input'));
@@ -925,7 +938,11 @@ bot.on('message', async (msg) => {
                     bot.sendMessage(chatId, `[ERROR] For number ${targetNumber}:\n${fetchResult.message}`);
                 } 
                 else if (fetchResult.status === 'success') {
-                    bot.sendMessage(chatId, `[SUCCESS] Code obtained for ${targetNumber}!\n\nExtracted Code: \`${fetchResult.code}\`\n\nSend the next number to continue.`, { parse_mode: 'Markdown' });
+                    m4uSession.linkedCount++; // Increment the counter!
+                    
+                    const successMsg = `[SUCCESS] Code obtained for ${targetNumber}!\n\nTap code below to copy:\n\`${fetchResult.code}\`\n\nTotal numbers processed: ${m4uSession.linkedCount}\nSend the next number to continue.`;
+                    
+                    bot.sendMessage(chatId, successMsg, { parse_mode: 'Markdown' });
                 }
 
             } catch (err) {
@@ -935,6 +952,7 @@ bot.on('message', async (msg) => {
         }
     }
 });
+
 
 
 
