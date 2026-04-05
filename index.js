@@ -301,45 +301,76 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
     };
 
     let browser = null;
+    let page = null;
+    
     try {
-        browser = await puppeteer.launch({
-            headless: true,
-            executablePath: getChromePath(),
-            userDataDir: './wsjobs_auth_session',
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-        });
+        // Use the global browser engine to save RAM, just like /task
+        if (typeof globalTaskBrowser === 'undefined' || !globalTaskBrowser) {
+            await updateStatus('[SYSTEM] Cold Boot: Launching background Chrome engine...');
+            globalTaskBrowser = await puppeteer.launch({
+                headless: true,
+                executablePath: getChromePath(),
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+            });
+        }
+        browser = globalTaskBrowser;
 
-        const page = await browser.newPage();
+        page = await browser.newPage();
         await page.setViewport({ width: 412, height: 915 });
         await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-        // Step 1: Check Session on User Dashboard
+        // Step 1: Inject DB Session (Shares exact memory with /task)
+        await updateStatus('[SYSTEM] Loading permanent session from Database...');
+        await page.goto('https://www.wsjobs-ng.com', { waitUntil: 'networkidle2' }); 
+        await loadSessionFromDB('wsjobs_task', page);
+
+        // Step 2: Teleport to User Dashboard
         await updateStatus('[SYSTEM] Checking Wsjobs session...');
         await page.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
 
+        // Safe Login check
         if (await page.$('input[type="password"]')) {
-            await updateStatus('[SYSTEM] Session expired. Logging in...');
+            await updateStatus('[SYSTEM] Session expired. Performing Physical Login...');
             const allInputs = await page.$$('input');
             const vis = [];
             for (let input of allInputs) {
                 if (await input.evaluate(el => el.offsetParent !== null)) vis.push(input);
             }
             if (vis.length >= 2) {
-                await vis[0].type('09163916311', { delay: 100 });
-                await vis[1].type('Emmamama', { delay: 100 });
-                await page.keyboard.press('Enter');
+                // Safe input clearing that doesn't break modern websites
+                await vis[0].click({ clickCount: 3 });
+                await page.keyboard.press('Backspace');
+                await vis[0].type('09163916311', { delay: 50 });
+                
+                await vis[1].click({ clickCount: 3 });
+                await page.keyboard.press('Backspace');
+                await vis[1].type('Emmamama', { delay: 50 });
+                
+                await new Promise(r => setTimeout(r, 1000));
+                
+                await page.evaluate(() => {
+                    Array.from(document.querySelectorAll('*')).forEach(el => {
+                        if (el.innerText && el.innerText.trim() === 'Login' && el.offsetParent !== null) el.click();
+                    });
+                });
+                
                 await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
                 await new Promise(r => setTimeout(r, 4000));
+                
+                await page.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
+                await new Promise(r => setTimeout(r, 4000));
+                
+                // SAVE TO DB: Update the permanent session memory
+                await saveSessionToDB('wsjobs_task', page);
             }
         }
 
-        // Step 2: Scan Balance directly from User Page
+        // Step 3: Scan Balance with Bulletproof Regex
         await updateStatus('[SYSTEM] Scanning Account Balance...');
         const balanceData = await page.evaluate(() => {
-            const text = document.body.innerText || '';
-            // Ultra-resilient scanner: Handles hidden line breaks, spaces, and colons perfectly
-            const match = text.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
+            const rawText = document.body.textContent || '';
+            const match = rawText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
             if (match) return match[1];
             return null;
         });
@@ -349,6 +380,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         const rawBalance = parseFloat(balanceData.replace(/,/g, ''));
         if (rawBalance < 12000) {
             await updateStatus(`[FAILED] Balance is ${balanceData}. Minimum requirement is 12000.`);
+            await page.close().catch(() => {});
             return;
         }
 
@@ -364,7 +396,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
         await updateStatus(`[SYSTEM] Balance is ${balanceData}. Automatically selecting tier: ${targetAmount}`);
 
-        // Step 3: Teleport to Withdrawal Page
+        // Step 4: Teleport to Withdrawal Page
         await updateStatus('[SYSTEM] Jumping to withdrawal page to execute...');
         await page.goto('https://www.wsjobs-ng.com/withdrawal', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
@@ -384,7 +416,6 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         if (!clickedTier) throw new Error(`Could not locate the physical button for tier: ${targetAmount}`);
         await new Promise(r => setTimeout(r, 1500));
 
-        // Click Withdrawal Now
         await updateStatus(`[SYSTEM] Clicking "Withdrawal Now"...`);
         await page.evaluate(() => {
             Array.from(document.querySelectorAll('*')).forEach(el => {
@@ -393,7 +424,6 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         });
         await new Promise(r => setTimeout(r, 3000));
 
-        // Confirmation Page
         await updateStatus('[SYSTEM] Processing confirmation screen...');
         await page.evaluate(() => {
             Array.from(document.querySelectorAll('*')).forEach(el => {
@@ -402,7 +432,6 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         });
         await new Promise(r => setTimeout(r, 3000));
 
-        // PIN Code
         await updateStatus('[SYSTEM] Entering withdrawal PIN...');
         const pinInputs = await page.$$('input[type="password"], input[type="number"], input[type="text"]');
         const visiblePinInputs = [];
@@ -422,7 +451,6 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         }
         await new Promise(r => setTimeout(r, 1500));
 
-        // Final Confirm
         await updateStatus('[SYSTEM] Submitting final confirmation...');
         await page.evaluate(() => {
             Array.from(document.querySelectorAll('*')).forEach(el => {
@@ -440,9 +468,10 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
     } catch (err) {
         await updateStatus(`[ERROR] Sequence failed: ${err.message}`);
     } finally {
-        if (browser) await browser.close();
+        if (page) await page.close().catch(() => {});
     }
 });
+
 
 
 // --- CROSS-PLATFORM BALANCE CHECKER ---
