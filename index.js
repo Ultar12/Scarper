@@ -191,7 +191,7 @@ bot.onText(/\/checknum\s+(.+)/, async (msg, match) => {
 
 
 
-// Usage: /withdraw 12000
+// Usage: /withdraw 20000
 bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -217,23 +217,6 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         await page.setViewport({ width: 412, height: 915 }); 
         await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-        // --- HELPER: CLICK BY TEXT ---
-        const clickByText = async (textToFind, exactMatch = false) => {
-            return await page.evaluate((text, exact) => {
-                const elements = Array.from(document.querySelectorAll('div, span, a, button, p, li'));
-                for (let el of elements) {
-                    if (!el.innerText) continue;
-                    const inner = el.innerText.trim();
-                    if (exact && inner === text) {
-                        el.click(); return true;
-                    } else if (!exact && inner.includes(text)) {
-                        el.click(); return true;
-                    }
-                }
-                return false;
-            }, textToFind, exactMatch);
-        };
-
         // --- STEP 1: LOGIN ---
         await updateStatus('[SYSTEM] Loading login page...');
         await page.goto('https://www.wsjobs-ng.com/login', { waitUntil: 'networkidle2' });
@@ -244,25 +227,35 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
             await inputs[1].type('Emmamama', { delay: 50 });
         }
         
-        await clickByText('Login', true);
+        // Using the new Locator API from your documentation!
+        await page.locator('::-p-text(Login)').click();
         
-        // Wait 3 seconds to let the website confirm the password and drop the login cookie
         await updateStatus('[SYSTEM] Login submitted. Securing authentication token...');
-        await new Promise(r => setTimeout(r, 3000)); 
+        await new Promise(r => setTimeout(r, 4000)); 
 
-        // --- STEP 2: TELEPORT TO USER DASHBOARD ---
+        // 📸 REQUESTED SCREENSHOT: HOME PAGE
+        const homeSnap = await page.screenshot({ type: 'png' });
+        await bot.sendPhoto(chatId, homeSnap, { caption: '[TRACE 1] Logged in successfully. (Home Page)' });
+
+        // --- STEP 2: THE SHORTCUT (TELEPORT TO USER) ---
         await updateStatus('[SYSTEM] Bypassing popups: Teleporting directly to User Dashboard...');
         await page.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 3000)); // Let the user page fully load
+        await new Promise(r => setTimeout(r, 3000)); // Let the User page load
 
-        // Click the Account Withdrawal menu item
+        // 📸 REQUESTED SCREENSHOT: USER PAGE
+        const userSnap = await page.screenshot({ type: 'png' });
+        await bot.sendPhoto(chatId, userSnap, { caption: '[TRACE 2] Teleported successfully. (User Page)' });
+
+        // Using the Locator API
         await updateStatus('[SYSTEM] Clicking "Account Withdrawal"...');
-        const withdrawalClicked = await clickByText('Account Withdrawal', false);
-        if (!withdrawalClicked) throw new Error("Could not find 'Account Withdrawal' link.");
-        await new Promise(r => setTimeout(r, 3000)); 
+        await page.locator('::-p-text(Account Withdrawal)').click();
+        await new Promise(r => setTimeout(r, 3000)); // Wait for Withdrawal Page to load
 
         // --- STEP 3: THE GEOMETRIC SMART CLICKER ---
         await updateStatus(`[SYSTEM] Selecting amount: ${withdrawAmount}...`);
+        
+        // While Locators are amazing, we keep the Geometric Snipe specifically for the amount box
+        // to guarantee it ignores the "Minimum withdrawal amount..." instruction text at the bottom.
         const amountClicked = await page.evaluate((amount) => {
             const allElements = Array.from(document.querySelectorAll('*'));
             let targetNode = null;
@@ -271,7 +264,6 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
             for (let el of allElements) {
                 const text = (el.innerText || el.textContent || '').trim();
                 if (text.includes(amount)) {
-                    // Ignore the big header and footer boxes
                     if (text.includes('Withdrawable') || text.includes('Minimum') || text.includes('Maximum')) {
                         continue;
                     }
@@ -279,8 +271,8 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
                     const rect = el.getBoundingClientRect();
                     const area = rect.width * rect.height;
                     
-                    // Drill down to the smallest physical button
-                    if (area > 0 && area < smallestArea) {
+                    // el.offsetParent !== null ensures we only click a visible button
+                    if (area > 0 && area < smallestArea && el.offsetParent !== null) {
                         smallestArea = area;
                         targetNode = el;
                     }
@@ -296,15 +288,16 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         }, withdrawAmount);
 
         if (!amountClicked) throw new Error(`Could not locate the physical button for: ${withdrawAmount}`);
-        await new Promise(r => setTimeout(r, 1000));
+        await new Promise(r => setTimeout(r, 1500));
 
+        // Using the Locator API
         await updateStatus(`[SYSTEM] Clicking "Withdrawal Now"...`);
-        await clickByText('Withdrawal Now', false);
+        await page.locator('::-p-text(Withdrawal Now)').click();
         await new Promise(r => setTimeout(r, 2000));
 
         // --- STEP 4: CONFIRMATION PAGE ---
         await updateStatus('[SYSTEM] Processing confirmation screen...');
-        await clickByText('Withdrawal', true);
+        await page.locator('::-p-text(Withdrawal)').click();
         await new Promise(r => setTimeout(r, 2000));
 
         // --- STEP 5: ENTER PIN & FINALIZE ---
@@ -316,16 +309,18 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         } else {
             await page.keyboard.type('111111', { delay: 100 });
         }
-        await new Promise(r => setTimeout(r, 1000));
+        await new Promise(r => setTimeout(r, 1500));
 
+        // Using the Locator API
         await updateStatus('[SYSTEM] Clicking final Confirm button...');
-        await clickByText('Confirm', true);
+        await page.locator('::-p-text(Confirm)').click();
         
         await updateStatus('[SYSTEM] Final confirmation submitted. Waiting for server response...');
         await new Promise(r => setTimeout(r, 5000)); 
 
         await updateStatus(`[SUCCESS] Withdrawal of ${withdrawAmount} sequence completed.`);
         
+        // 📸 FINAL SCREENSHOT
         const screenshotBuffer = await page.screenshot({ type: 'png' });
         await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Transaction Final State` });
 
@@ -333,10 +328,12 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         await updateStatus(`[ERROR] Sequence failed: ${err.message}`);
         if (browser) {
             try {
+                // Hard pause to give the browser time to render whatever error crashed it before snapping the pic
+                await new Promise(r => setTimeout(r, 2000));
                 const pages = await browser.pages();
                 if (pages.length > 0) {
                     const errBuffer = await pages[0].screenshot({ type: 'png' });
-                    await bot.sendPhoto(chatId, errBuffer, { caption: '[DIAGNOSTIC] The bot crashed while looking at this screen.' });
+                    await bot.sendPhoto(chatId, errBuffer, { caption: '[DIAGNOSTIC] The screen at the exact moment of failure.' });
                 }
             } catch (snapErr) {}
         }
