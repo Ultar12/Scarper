@@ -463,7 +463,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
         wsjobsBal = 'Error';
     }
 
-    // --- 2. M4U Balance Fetch ---
+        // --- 2. M4U Balance Fetch ---
     try {
         let mBrowser = m4uBrowser;
         let shouldCloseM = false;
@@ -472,13 +472,23 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             mBrowser = await puppeteer.launch({
                 headless: true,
                 executablePath: getChromePath(),
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+                args: [
+                    '--no-sandbox', 
+                    '--disable-setuid-sandbox', 
+                    '--disable-dev-shm-usage', 
+                    '--disable-gpu',
+                    '--disable-blink-features=AutomationControlled' // THE CLOUDFLARE BYPASS
+                ],
+                ignoreDefaultArgs: ['--enable-automation'] // Hides the "Chrome is being controlled" flag
             });
             shouldCloseM = true;
         }
 
         const mPage = await mBrowser.newPage();
         await mPage.setViewport({ width: 412, height: 915 });
+        
+        // SPOOF A REAL MOBILE DEVICE TO BYPASS CLOUDFLARE
+        await mPage.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
         await mPage.goto('https://taskm4u.com/#/mine', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
