@@ -810,28 +810,24 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         }
 
-        await updateStatus(`[SYSTEM] TIMEBOMB SET: Synchronizing Confirm clicks for exactly 3 SECONDS from now...`);
-        
-        const fireTime = Date.now() + 3000;
+                await updateStatus(`[SYSTEM] Executing INSTANT synchronized Confirm clicks on all tabs...`);
         
         await Promise.all(pages.map(async (p, idx) => {
             if (clickResults[idx]) {
-                await p.evaluate((triggerTime) => {
-                    const delay = Math.max(0, triggerTime - Date.now());
-                    
-                    setTimeout(() => {
-                        const elements = Array.from(document.querySelectorAll('*'));
-                        for (let el of elements) {
-                            if (el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null) {
-                                el.click();
-                            }
+                await p.evaluate(() => {
+                    const elements = Array.from(document.querySelectorAll('*'));
+                    for (let el of elements) {
+                        if (el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null) {
+                            el.click();
                         }
-                    }, delay);
-                }, fireTime);
+                    }
+                });
             }
         }));
 
-        await new Promise(r => setTimeout(r, 7000)); 
+        // Wait 4 seconds for the website to process the instant clicks before taking the final screenshot
+        await new Promise(r => setTimeout(r, 4000));
+
 
         await updateStatus(`[SUCCESS] Strike executed simultaneously!`);
         const screenshotBuffer = await pages[0].screenshot({ type: 'png' });
