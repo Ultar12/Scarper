@@ -440,49 +440,37 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
 
 
-        await updateStatus(`[SYSTEM] Clicking "Withdrawal Now"...`);
-        await page.evaluate(() => {
-            Array.from(document.querySelectorAll('*')).forEach(el => {
-                if (el.innerText && el.innerText.trim() === 'Withdrawal Now') el.click();
-            });
-        });
-        await new Promise(r => setTimeout(r, 3000));
-
-        await updateStatus('[SYSTEM] Processing confirmation screen...');
-        await page.evaluate(() => {
-            Array.from(document.querySelectorAll('*')).forEach(el => {
-                if (el.innerText && el.innerText.trim() === 'Withdrawal' && el.offsetParent !== null) el.click();
-            });
-        });
-        await new Promise(r => setTimeout(r, 3000));
-
-              await updateStatus('[SYSTEM] Entering withdrawal PIN...');
-        const pinInputs = await page.$$('input');
-        const visiblePinInputs = [];
-        for (let input of pinInputs) {
-            if (await input.evaluate(el => el.offsetParent !== null && window.getComputedStyle(el).opacity !== '0')) {
-                visiblePinInputs.push(input);
-            }
-        }
-
-        const pin = '111111'; // Ensure this matches your actual withdrawal password
+       await updateStatus('[SYSTEM] Entering withdrawal PIN...');
+        const pin = '111111'; // Ensure this matches your actual PIN
 
         // --- NEW: SCREENSHOT BEFORE TYPING PIN ---
         const prePinSnap = await page.screenshot({ type: 'png' });
         await bot.sendPhoto(chatId, prePinSnap, { caption: '[DEBUG] State BEFORE typing PIN' });
         // -----------------------------------------
+
+        const pinInputs = await page.$$('input');
+        const activePinInputs = [];
         
-        if (visiblePinInputs.length > 0) {
-            // Click the very first box to lock cursor focus
-            await visiblePinInputs[0].click();
-            await new Promise(r => setTimeout(r, 500));
-            
-            // Human-mimic typing: Press key -> Wait for website to move cursor -> Press next key
-            for (let i = 0; i < pin.length; i++) {
-                await page.keyboard.press(pin[i]);
-                await new Promise(r => setTimeout(r, 400)); // 400ms gives the website's JS time to jump boxes
+        for (let input of pinInputs) {
+            // REMOVED the opacity check. Many sites use an invisible input overlay to capture PINs!
+            if (await input.evaluate(el => window.getComputedStyle(el).display !== 'none' && el.type !== 'hidden')) {
+                activePinInputs.push(input);
             }
         }
+
+        if (activePinInputs.length >= 6) {
+            // SCENARIO A: The site uses 6 distinct physical input boxes
+            for (let i = 0; i < 6; i++) {
+                // Force raw browser focus to bypass transparent layers
+                await activePinInputs[i].evaluate(el => el.focus()); 
+                await activePinInputs[i].type(pin[i], { delay: 150 });
+            }
+        } else if (activePinInputs.length > 0) {
+            // SCENARIO B: The site uses 1 transparent master input that controls the 6 UI boxes
+            await activePinInputs[0].evaluate(el => el.focus());
+            await activePinInputs[0].type(pin, { delay: 150 });
+        }
+
         await new Promise(r => setTimeout(r, 1500));
 
         // --- NEW: SCREENSHOT AFTER TYPING THE PIN ---
@@ -491,6 +479,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         // --------------------------------------------------
 
         await updateStatus('[SYSTEM] Submitting final confirmation...');
+
 
         await page.evaluate(() => {
             Array.from(document.querySelectorAll('*')).forEach(el => {
