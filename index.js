@@ -61,31 +61,41 @@ const userState = {};
 // --- 4. TELEGRAM COMMAND LISTENERS ---
 
 // --- INTERACTIVE CONTROL PANEL ---
+bot// --- INTERACTIVE CONTROL PANEL (REPLACES BOTTOM KEYBOARD) ---
 bot.onText(/\/start/i, (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
     
-    bot.sendMessage(chatId, '*Master Control Panel*\n\nSelect an operation below:', {
+    bot.sendMessage(chatId, '*Master Control Panel*\n\nSelect an operation from your menu below:', {
         parse_mode: 'Markdown',
         reply_markup: {
-            inline_keyboard: [
-                // First Row: Two buttons side-by-side
-                [
-                    { text: 'Pair M4U', callback_data: 'cmd_pair' },
-                    { text: 'Withdraw', callback_data: 'cmd_withdraw' }
-                ],
-                // Second Row: One button spanning the row
-                [
-                    { text: 'Balance', callback_data: 'cmd_balance' }
-                ]
-            ]
+            keyboard: [
+                [{ text: 'Pair M4U' }, { text: 'Withdraw' }],
+                [{ text: 'Balance' }]
+            ],
+            resize_keyboard: true,
+            is_persistent: true
         }
     });
 });
 
 
+// --- HANDLE "WITHDRAW" BUTTON TAP ---
+bot.onText(/^(?:\/withdraw|Withdraw)$/i, (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
 
-// --- CALLBACK ROUTER (HANDLES ALL BUTTON CLICKS) ---
+    bot.sendMessage(chatId, 'Select Platform to Withdraw From:', {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: 'M4U', callback_data: 'cmd_withdraw_m4u' }, { text: 'Wsjob', callback_data: 'cmd_withdraw_wsjob' }],
+                [{ text: 'Cancel', callback_data: 'cmd_cancel' }]
+            ]
+        }
+    });
+});
+
+// --- CALLBACK ROUTER (HANDLES SUB-MENU BUTTONS) ---
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -93,41 +103,27 @@ bot.on('callback_query', async (query) => {
     const data = query.data;
     bot.answerCallbackQuery(query.id).catch(()=>{});
 
-    // Handle old WhatsApp login buttons
-    if (data === 'login_qr') {
-        bot.sendMessage(chatId, '[SYSTEM] Initializing QR Code generation. Please wait...');
-        initializeWhatsApp(chatId, null);
-    } 
-    else if (data === 'login_phone') {
-        userState[chatId] = 'WAITING_FOR_NUMBER';
-        bot.sendMessage(chatId, '[SYSTEM] Reply to this message with your WhatsApp phone number:');
-    }
-    // Handle New Menu Buttons (Silently triggers your text commands!)
-    else if (data === 'cmd_pair') {
-        bot.emit('message', { chat: { id: chatId }, text: '/pair m4u' });
-    }
-    else if (data === 'cmd_withdraw') {
-        bot.editMessageText('Select Platform to Withdraw From:', {
-            chat_id: chatId,
-            message_id: query.message.message_id,
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: 'M4U', callback_data: 'cmd_withdraw_m4u' }, { text: 'Wsjob', callback_data: 'cmd_withdraw_wsjob' }],
-                    [{ text: '« Cancel', callback_data: 'cmd_cancel' }]
-                ]
+    // This perfectly forces Telegram to execute your text commands invisibly!
+    const simulateCommand = (cmdText) => {
+        bot.processUpdate({
+            update_id: Date.now(),
+            message: {
+                message_id: Date.now(),
+                from: { id: parseInt(chatId) },
+                chat: { id: parseInt(chatId), type: 'private' },
+                date: Math.floor(Date.now() / 1000),
+                text: cmdText
             }
         });
-    }
-    else if (data === 'cmd_withdraw_m4u') {
+    };
+
+    if (data === 'cmd_withdraw_m4u') {
         bot.deleteMessage(chatId, query.message.message_id).catch(()=>{});
-        bot.emit('message', { chat: { id: chatId }, text: '/withdraw m4u' });
+        simulateCommand('/withdraw m4u');
     }
     else if (data === 'cmd_withdraw_wsjob') {
         bot.deleteMessage(chatId, query.message.message_id).catch(()=>{});
-        bot.emit('message', { chat: { id: chatId }, text: '/withdraw task' });
-    }
-    else if (data === 'cmd_balance') {
-        bot.emit('message', { chat: { id: chatId }, text: '/balance' });
+        simulateCommand('/withdraw task');
     }
     else if (data === 'cmd_cancel') {
         bot.deleteMessage(chatId, query.message.message_id).catch(()=>{});
@@ -238,6 +234,8 @@ bot.onText(/\/pair\s+m4u/i, async (msg) => {
     m4uSession = { state: 'WAITING_COUNTRY', country: null };
     bot.sendMessage(chatId, '[SYSTEM] M4U Pairing Protocol Initiated.\n\nPlease reply with the Country Code you want to use (e.g., +234 or 234):');
 });
+
+
 
 
 
@@ -403,12 +401,12 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
 
 // --- CROSS-PLATFORM BALANCE CHECKER ---
-bot.onText(/\/balance/i, async (msg) => {
+bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
     // This temporary message gets deleted right before sending the clean result
-    let statusMsg = await bot.sendMessage(chatId, `⏳ Fetching balances...`);
+    let statusMsg = await bot.sendMessage(chatId, `Fetching balances...`);
 
     let wsjobsBal = '0.00';
     let m4uBal = '0.00';
@@ -425,7 +423,7 @@ bot.onText(/\/balance/i, async (msg) => {
         const wPage = await wBrowser.newPage();
         await wPage.setViewport({ width: 412, height: 915 });
         await wPage.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 3000));
+        await new Promise(r => setTimeout(r, 4000));
 
         if (await wPage.$('input[type="password"]')) {
             const allInputs = await wPage.$$('input');
@@ -437,19 +435,15 @@ bot.onText(/\/balance/i, async (msg) => {
                 await wPage.keyboard.press('Enter');
                 await wPage.waitForNavigation({waitUntil:'networkidle2', timeout: 10000}).catch(()=>{});
                 await wPage.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
-                await new Promise(r => setTimeout(r, 3000));
+                await new Promise(r => setTimeout(r, 4000));
             }
         }
 
+        // THE FIX: Smart Regex that grabs the number even if there are no decimals!
         wsjobsBal = await wPage.evaluate(() => {
-            const els = Array.from(document.querySelectorAll('*'));
-            for (let el of els) {
-                const txt = (el.innerText || '').trim();
-                if (txt === 'Withdrawable' || txt === 'Balance') {
-                    const match = (el.parentElement.innerText || '').match(/[\d,]+\.\d{2}/);
-                    if (match) return match[0];
-                }
-            }
+            const text = document.body.innerText || '';
+            const match = text.match(/Account Balance:\s*([\d,]+(?:\.\d+)?)/i);
+            if (match) return match[1];
             return '0.00';
         });
     } catch(e) {
@@ -473,7 +467,7 @@ bot.onText(/\/balance/i, async (msg) => {
         const mPage = await mBrowser.newPage();
         await mPage.setViewport({ width: 412, height: 915 });
         await mPage.goto('https://taskm4u.com/#/mine', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 3000));
+        await new Promise(r => setTimeout(r, 4000));
 
         if (mPage.url().includes('login')) {
             const inputs = await mPage.$$('input');
@@ -487,19 +481,15 @@ bot.onText(/\/balance/i, async (msg) => {
                 });
                 await mPage.waitForNavigation({waitUntil:'networkidle2', timeout:10000}).catch(()=>{});
                 await mPage.goto('https://taskm4u.com/#/mine', { waitUntil: 'networkidle2' });
-                await new Promise(r => setTimeout(r, 3000));
+                await new Promise(r => setTimeout(r, 4000));
             }
         }
 
+        // THE FIX: Smart Regex for M4U's line-break formatting
         m4uBal = await mPage.evaluate(() => {
-            const els = Array.from(document.querySelectorAll('*'));
-            for (let el of els) {
-                const txt = (el.innerText || '').trim();
-                if (txt === 'Account Balance') {
-                    const match = (el.parentElement.innerText || '').match(/[\d,]+\.\d{2}/);
-                    if (match) return match[0];
-                }
-            }
+            const text = document.body.innerText || '';
+            const match = text.match(/Account Balance[\s\r\n]+([\d,]+(?:\.\d+)?)/i);
+            if (match) return match[1];
             return '0.00';
         });
 
@@ -510,8 +500,8 @@ bot.onText(/\/balance/i, async (msg) => {
     }
 
     // --- 3. FINAL CLEAN OUTPUT ---
-    bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{}); // Delete the "Fetching" message
-    bot.sendMessage(chatId, `Wsjobs: ${wsjobsBal}\nM4U: ${m4uBal}`); // Send pure text output
+    bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{}); 
+    bot.sendMessage(chatId, `Wsjobs: ${wsjobsBal}\nM4U: ${m4uBal}`); 
 });
 
 
@@ -920,7 +910,7 @@ const resetM4uTimer = (chatId) => {
 
 // --- THE M4U START COMMAND ---
 // Usage: /pair m4u
-bot.onText(/\/pair\s+m4u/i, async (msg) => {
+bot.onText(/^(?:\/pair\s+m4u|Pair M4U)$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
