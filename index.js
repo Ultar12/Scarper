@@ -402,19 +402,30 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await new Promise(r => setTimeout(r, 4000));
 
         // Click the target tier block
-        const clickedTier = await page.evaluate((amt) => {
-            const elements = Array.from(document.querySelectorAll('div, span, button'));
-            for (let el of elements) {
-                if ((el.innerText || '').trim() === amt.toString() && el.offsetParent !== null) {
-                    el.click();
-                    return true;
+                // If target is 12000, skip clicking since it is selected by default!
+        if (targetAmount !== 12000) {
+            await updateStatus(`[SYSTEM] Selecting tier: ${targetAmount}...`);
+            const clickedTier = await page.evaluate((amt) => {
+                const target = amt.toString();
+                const elements = Array.from(document.querySelectorAll('div, span, button, a, li'));
+                
+                for (let el of elements) {
+                    const txt = (el.innerText || '').trim();
+                    if (txt === target && el.offsetParent !== null) {
+                        el.click();
+                        if (el.parentElement) el.parentElement.click();
+                        return true;
+                    }
                 }
-            }
-            return false;
-        }, targetAmount);
+                return false;
+            }, targetAmount);
 
-        if (!clickedTier) throw new Error(`Could not locate the physical button for tier: ${targetAmount}`);
-        await new Promise(r => setTimeout(r, 1500));
+            if (!clickedTier) throw new Error(`Could not locate the physical button for tier: ${targetAmount}`);
+            await new Promise(r => setTimeout(r, 1500));
+        } else {
+            await updateStatus(`[SYSTEM] Target is 12000 (Default). Skipping tier selection...`);
+        }
+
 
         await updateStatus(`[SYSTEM] Clicking "Withdrawal Now"...`);
         await page.evaluate(() => {
