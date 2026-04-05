@@ -443,24 +443,25 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         });
         await new Promise(r => setTimeout(r, 3000));
 
-        await updateStatus('[SYSTEM] Entering withdrawal PIN...');
-        const pinInputs = await page.$$('input[type="password"], input[type="number"], input[type="text"]');
+                await updateStatus('[SYSTEM] Entering withdrawal PIN...');
+        const pinInputs = await page.$$('input');
         const visiblePinInputs = [];
         for (let input of pinInputs) {
-            if (await input.evaluate(el => el.offsetParent !== null)) visiblePinInputs.push(input);
+            if (await input.evaluate(el => el.offsetParent !== null && window.getComputedStyle(el).opacity !== '0')) {
+                visiblePinInputs.push(input);
+            }
         }
 
-        const pin = '111111';
-        if (visiblePinInputs.length === 6 || visiblePinInputs.length > 1) {
-            for (let i = 0; i < pin.length && i < visiblePinInputs.length; i++) {
-                await visiblePinInputs[i].click();
-                await visiblePinInputs[i].type(pin[i], { delay: 50 });
-            }
-        } else if (visiblePinInputs.length > 0) {
+        if (visiblePinInputs.length > 0) {
+            // Click only the very first box to lock cursor focus
             await visiblePinInputs[0].click();
-            await page.keyboard.type(pin, { delay: 100 });
+            await new Promise(r => setTimeout(r, 500));
+            
+            // Type the entire PIN slowly. The website will automatically jump the cursor to the next boxes.
+            await page.keyboard.type('111111', { delay: 200 });
         }
         await new Promise(r => setTimeout(r, 1500));
+
 
         await updateStatus('[SYSTEM] Submitting final confirmation...');
         await page.evaluate(() => {
