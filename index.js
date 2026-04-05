@@ -189,13 +189,23 @@ bot.onText(/\/checknum\s+(.+)/, async (msg, match) => {
     }
 });
 
-// Usage: /withdraw 12000
+
+
+        // Usage: /withdraw 12000
 bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
     const withdrawAmount = match[1];
-    bot.sendMessage(chatId, `[SYSTEM] Booting secure browser to withdraw ${withdrawAmount}...`);
+
+    // Send the INITIAL message and save its ID so we can edit it later
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting secure browser to withdraw ${withdrawAmount}...`);
+    const msgId = statusMsg.message_id;
+
+    // Helper function to edit the message instantly
+    const updateStatus = async (text) => {
+        await bot.editMessageText(text, { chat_id: chatId, message_id: msgId }).catch(() => {});
+    };
 
     let browser = null;
     try {
@@ -210,7 +220,7 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
         // --- STEP 1: LOGIN ---
-        bot.sendMessage(chatId, '[SYSTEM] Loading login page...');
+        await updateStatus('[SYSTEM] Loading login page...');
         await page.goto('https://www.wsjobs-ng.com/login', { waitUntil: 'networkidle2' });
 
         const inputs = await page.$$('input');
@@ -222,16 +232,27 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         const loginBtn = await page.waitForSelector("xpath///*[contains(text(), 'Login')]", { timeout: 5000 }).catch(() => null);
         if (loginBtn) await loginBtn.click();
         
-        await new Promise(r => setTimeout(r, 4000)); // Wait for login to process
+        await new Promise(r => setTimeout(r, 4000)); 
 
-        // --- THE MASTER SHORTCUT: DIRECT URL NAVIGATION ---
-        // Instead of clicking tabs and fighting popups, we teleport straight to the target!
-        bot.sendMessage(chatId, '[SYSTEM] Login successful. Teleporting directly to Withdrawal page...');
-        await page.goto('https://www.wsjobs-ng.com/withdrawal', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 2000)); // Let the page render
+        // --- STEP 2: USER DASHBOARD ---
+        await updateStatus('[SYSTEM] Login successful. Navigating to User Dashboard...');
+        // Teleport to the User page where the Account Withdrawal button lives
+        await page.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 2000)); 
+
+        await updateStatus('[SYSTEM] Clicking "Account Withdrawal" menu...');
+        const withdrawalLink = await page.waitForSelector("xpath///*[contains(text(), 'Account Withdrawal')]", { timeout: 5000 }).catch(() => null);
+        if (withdrawalLink) {
+            await withdrawalLink.click();
+        } else {
+            throw new Error("Could not find the 'Account Withdrawal' link on the User page.");
+        }
+        
+        // Wait for the actual withdrawal page (with the amount buttons) to load
+        await new Promise(r => setTimeout(r, 3000)); 
 
         // --- STEP 3: SELECT AMOUNT & WITHDRAW ---
-        bot.sendMessage(chatId, `[SYSTEM] Selecting amount: ${withdrawAmount}...`);
+        await updateStatus(`[SYSTEM] Selecting amount: ${withdrawAmount}...`);
         
         const buttonClicked = await page.evaluate((amount) => {
             const elements = Array.from(document.querySelectorAll('div, span, button, a'));
@@ -247,18 +268,19 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         if (!buttonClicked) throw new Error(`Could not find a button for the amount: ${withdrawAmount}`);
         await new Promise(r => setTimeout(r, 1000));
 
+        await updateStatus(`[SYSTEM] Clicking "Withdrawal Now"...`);
         const withdrawNowBtn = await page.waitForSelector("xpath///*[contains(text(), 'Withdrawal Now')]", { timeout: 5000 }).catch(() => null);
         if (withdrawNowBtn) await withdrawNowBtn.click();
         await new Promise(r => setTimeout(r, 2000));
 
         // --- STEP 4: CONFIRMATION PAGE ---
-        bot.sendMessage(chatId, '[SYSTEM] Processing confirmation screen...');
+        await updateStatus('[SYSTEM] Processing confirmation screen...');
         const confirmWithdrawalBtn = await page.waitForSelector("xpath///*[text()='Withdrawal']", { timeout: 5000 }).catch(() => null);
         if (confirmWithdrawalBtn) await confirmWithdrawalBtn.click();
         await new Promise(r => setTimeout(r, 2000));
 
         // --- STEP 5: ENTER PIN & FINALIZE ---
-        bot.sendMessage(chatId, '[SYSTEM] Entering withdrawal password...');
+        await updateStatus('[SYSTEM] Entering withdrawal password (111111)...');
         
         const pinInputs = await page.$$('input[type="password"], input[type="number"], input[type="text"]');
         if (pinInputs.length > 0) {
@@ -269,30 +291,33 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         }
         await new Promise(r => setTimeout(r, 1000));
 
+        await updateStatus('[SYSTEM] Clicking final Confirm button...');
         const finalConfirmBtn = await page.waitForSelector("xpath///*[text()='Confirm']", { timeout: 5000 }).catch(() => null);
         if (finalConfirmBtn) await finalConfirmBtn.click();
         
-        bot.sendMessage(chatId, '[SYSTEM] Final confirmation submitted. Waiting for server response...');
+        await updateStatus('[SYSTEM] Final confirmation submitted. Waiting for server response...');
         await new Promise(r => setTimeout(r, 5000)); 
 
+        await updateStatus(`[SUCCESS] Withdrawal of ${withdrawAmount} sequence completed.`);
+        
+        // Take the final proof picture and send it as a new message
         const screenshotBuffer = await page.screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Withdrawal sequence completed.` });
+        await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Transaction Final State` });
 
     } catch (err) {
-        bot.sendMessage(chatId, `[ERROR] Sequence failed: ${err.message}`);
+        await updateStatus(`[ERROR] Sequence failed: ${err.message}`);
         if (browser) {
             try {
                 const pages = await browser.pages();
                 if (pages.length > 0) {
                     const errBuffer = await pages[0].screenshot({ type: 'png' });
-                    await bot.sendPhoto(chatId, errBuffer, { caption: '[DIAGNOSTIC] Failed here.' });
+                    await bot.sendPhoto(chatId, errBuffer, { caption: '[DIAGNOSTIC] The bot crashed while looking at this screen.' });
                 }
             } catch (snapErr) {}
         }
     } finally {
         if (browser) {
             await browser.close();
-            console.log('[SYSTEM] Browser destroyed, RAM freed.');
         }
     }
 });
