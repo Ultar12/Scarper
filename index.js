@@ -660,11 +660,7 @@ bot.onText(/\/pair\s+m4u/i, async (msg) => {
     bot.sendMessage(chatId, '[SYSTEM] M4U Pairing Protocol Initiated.\n\nPlease reply with the Country Code you want to use (e.g., +234 or 234):');
 });
 
-
                 
-
-
-
 // --- UNIFIED MESSAGE LISTENER ---
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id.toString();
@@ -696,7 +692,7 @@ bot.on('message', async (msg) => {
             let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Country code +${rawCountry} locked in. Preparing M4U browser...`);
             
             try {
-                // THE REUSE LOGIC: Only boot and login if the browser isn't already running
+                // THE REUSE LOGIC: Boot and login if not running
                 if (!m4uBrowser || !m4uPage) {
                     m4uBrowser = await puppeteer.launch({
                         headless: true,
@@ -711,7 +707,7 @@ bot.on('message', async (msg) => {
                     await m4uPage.setViewport({ width: 412, height: 915 }); 
                     await m4uPage.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-                    // Step 1: Login
+                    // Login
                     await bot.editMessageText('[SYSTEM] Cold Boot: Logging into TaskM4U...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
                     await m4uPage.goto('https://taskm4u.com/#/login', { waitUntil: 'networkidle2' });
                     
@@ -730,7 +726,7 @@ bot.on('message', async (msg) => {
                     await m4uPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
                     await new Promise(r => setTimeout(r, 3000));
 
-                    // Step 2: Clear Homepage Popup and Click WhatsApp Start
+                    // Clear Homepage Popup and Click WhatsApp Start
                     await bot.editMessageText('[SYSTEM] Clearing popups and locking onto WhatsApp Message Task...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
                     
                     await m4uPage.evaluate(() => {
@@ -764,7 +760,7 @@ bot.on('message', async (msg) => {
                 }
 
                 // Step 3: Open the Popup (If not already open)
-                await bot.editMessageText(`[SYSTEM] Accessing popup and setting country code to +${rawCountry}...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                await bot.editMessageText(`[SYSTEM] Accessing country selector...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
                 
                 const isPopupOpen = await m4uPage.evaluate(() => {
                     const phoneInput = Array.from(document.querySelectorAll('input')).find(i => i.placeholder && i.placeholder.toLowerCase().includes('phone number'));
@@ -780,12 +776,12 @@ bot.on('message', async (msg) => {
                     await new Promise(r => setTimeout(r, 2000));
                 }
 
-                // THE FIX: Directly locate and click the +234 (or current country code) button
+                // Directly click the current country code button (e.g., +234) to open the list
                 await m4uPage.evaluate(() => {
                     const elements = Array.from(document.querySelectorAll('*'));
                     for (let el of elements) {
                         const txt = (el.innerText || '').trim();
-                        // If it matches exactly + followed by numbers (like +234)
+                        // Matches exact country code formats (like +234)
                         if (txt.match(/^\+\d{1,4}$/) && el.offsetParent !== null && el.children.length === 0) {
                             el.click();
                             return true;
@@ -794,7 +790,7 @@ bot.on('message', async (msg) => {
                 });
                 await new Promise(r => setTimeout(r, 2000));
 
-                // THE FIX: Use Puppeteer's native keyboard to type in the search box
+                // Type in the search box
                 const allInputs = await m4uPage.$$('input');
                 for (let input of allInputs) {
                     const ph = await m4uPage.evaluate(el => el.placeholder || '', input);
@@ -806,28 +802,35 @@ bot.on('message', async (msg) => {
                 }
                 await new Promise(r => setTimeout(r, 2000));
 
-                // EXACT MATCH SELECTION
+                // EXACT MATCH AGGRESSIVE CLICKER
                 await m4uPage.evaluate((country) => {
-                    const elements = Array.from(document.querySelectorAll('*'));
                     const targetCode = '+' + country;
+                    const allElements = Array.from(document.querySelectorAll('*'));
                     
-                    for (let el of elements) {
+                    // Strategy 1: Find the exact span/div containing ONLY the country code (the red text)
+                    for (let el of allElements) {
+                        if (el.children.length === 0 && (el.innerText || '').trim() === targetCode && el.offsetParent !== null) {
+                            el.click(); // Click the text span
+                            if (el.parentElement) el.parentElement.click(); // Click the parent row box
+                            return;
+                        }
+                    }
+
+                    // Strategy 2: Fallback to finding the row where the LAST word is the target code
+                    for (let el of allElements) {
                         const txt = (el.innerText || '').trim();
-                        if (!txt || el.childElementCount > 3) continue;
-                        
-                        const textParts = txt.split(/[\s\n]+/); 
-                        const lastPart = textParts[textParts.length - 1]; 
-                        
-                        // Exact match for the country code (e.g. +58)
-                        if (lastPart === targetCode && el.offsetParent !== null) {
-                            el.click();
-                            return true;
+                        if (txt && txt.length < 50 && el.offsetParent !== null) {
+                            const parts = txt.split(/[\s\n]+/);
+                            if (parts[parts.length - 1] === targetCode) {
+                                el.click();
+                                return;
+                            }
                         }
                     }
                 }, rawCountry);
-                await new Promise(r => setTimeout(r, 2000));
+                await new Promise(r => setTimeout(r, 3000));
 
-                // Re-open the popup by clicking Add again
+                // Re-open the popup by clicking Add again!
                 await m4uPage.evaluate(() => {
                     Array.from(document.querySelectorAll('*')).forEach(el => {
                         if (el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null) el.click();
@@ -932,7 +935,6 @@ bot.on('message', async (msg) => {
         }
     }
 });
-                
 
 
 
