@@ -189,6 +189,131 @@ bot.onText(/\/checknum\s+(.+)/, async (msg, match) => {
     }
 });
 
+// Usage: /withdraw 12000
+bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    const withdrawAmount = match[1];
+    bot.sendMessage(chatId, `[SYSTEM] Booting secure browser to withdraw ${withdrawAmount}...`);
+
+    let browser = null;
+    try {
+        browser = await puppeteer.launch({
+            headless: true,
+            executablePath: getChromePath(),
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        });
+
+        const page = await browser.newPage();
+        await page.setViewport({ width: 412, height: 915 }); // Mobile viewport
+        await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+
+        // --- STEP 1: LOGIN ---
+        bot.sendMessage(chatId, '[SYSTEM] Loading login page...');
+        await page.goto('https://www.wsjobs-ng.com/login', { waitUntil: 'networkidle2' });
+
+        // Find the input boxes (assuming they are the first two inputs on the page)
+        const inputs = await page.$$('input');
+        if (inputs.length >= 2) {
+            await inputs[0].type('09163916311', { delay: 50 });
+            await inputs[1].type('Emmamama', { delay: 50 });
+        } else {
+            throw new Error("Could not find the login input boxes.");
+        }
+
+        // Click the Login button
+        const [loginBtn] = await page.$x("//*[contains(text(), 'Login')]");
+        if (loginBtn) await loginBtn.click();
+        
+        // Wait for the home page to load
+        await page.waitForNavigation({ waitUntil: 'networkidle2' });
+        bot.sendMessage(chatId, '[SYSTEM] Login successful. Navigating to Account...');
+
+        // --- STEP 2: NAVIGATE TO ACCOUNT ---
+        // Click the "Account" tab at the bottom
+        const [accountTab] = await page.$x("//*[contains(text(), 'Account')]");
+        if (accountTab) await accountTab.click();
+        await new Promise(r => setTimeout(r, 2000)); // Wait for tab switch
+
+        // Click "Account Withdrawal"
+        const [withdrawalLink] = await page.$x("//*[contains(text(), 'Account Withdrawal')]");
+        if (withdrawalLink) await withdrawalLink.click();
+        await new Promise(r => setTimeout(r, 3000)); // Wait for page load
+
+        // --- STEP 3: SELECT AMOUNT & WITHDRAW ---
+        bot.sendMessage(chatId, `[SYSTEM] Selecting amount: ${withdrawAmount}...`);
+        
+        // Click the specific amount box
+        const [amountBox] = await page.$x(`//*[text()='${withdrawAmount}']`);
+        if (amountBox) {
+            await amountBox.click();
+        } else {
+            throw new Error(`Could not find a button for the amount: ${withdrawAmount}`);
+        }
+        await new Promise(r => setTimeout(r, 1000));
+
+        // Click "Withdrawal Now"
+        const [withdrawNowBtn] = await page.$x("//*[contains(text(), 'Withdrawal Now')]");
+        if (withdrawNowBtn) await withdrawNowBtn.click();
+        await new Promise(r => setTimeout(r, 2000));
+
+        // --- STEP 4: CONFIRMATION PAGE ---
+        bot.sendMessage(chatId, '[SYSTEM] Processing confirmation screen...');
+        // We use exact match here so it doesn't accidentally click "Withdrawal Now" again
+        const [confirmWithdrawalBtn] = await page.$x("//*[text()='Withdrawal']");
+        if (confirmWithdrawalBtn) await confirmWithdrawalBtn.click();
+        await new Promise(r => setTimeout(r, 2000));
+
+        // --- STEP 5: ENTER PIN & FINALIZE ---
+        bot.sendMessage(chatId, '[SYSTEM] Entering withdrawal password...');
+        
+        // Find the password inputs (the 6 boxes) and type the PIN
+        // We focus the first box and simulate keyboard typing, which usually auto-fills the rest
+        const pinInputs = await page.$$('input[type="password"], input[type="number"], input[type="text"]');
+        if (pinInputs.length > 0) {
+            await pinInputs[0].click();
+            await page.keyboard.type('111111', { delay: 100 });
+        } else {
+            // Fallback: If inputs are hidden, just type on the active document
+            await page.keyboard.type('111111', { delay: 100 });
+        }
+        await new Promise(r => setTimeout(r, 1000));
+
+        // Click the final Confirm button
+        const [finalConfirmBtn] = await page.$x("//*[text()='Confirm']");
+        if (finalConfirmBtn) await finalConfirmBtn.click();
+        
+        bot.sendMessage(chatId, '[SYSTEM] Final confirmation submitted. Waiting for server response...');
+        await new Promise(r => setTimeout(r, 5000)); // Wait for success message/redirect
+
+        // Take a screenshot of the final success page
+        const screenshotBuffer = await page.screenshot({ type: 'png' });
+        await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Withdrawal sequence completed.` });
+
+    } catch (err) {
+        // If anything fails, take a picture of the error so you can see what went wrong
+        bot.sendMessage(chatId, `[ERROR] Sequence failed: ${err.message}\nTaking diagnostic screenshot...`);
+        if (browser) {
+            try {
+                const pages = await browser.pages();
+                if (pages.length > 0) {
+                    const errBuffer = await pages[0].screenshot({ type: 'png' });
+                    await bot.sendPhoto(chatId, errBuffer, { caption: '[DIAGNOSTIC] This is what the bot was looking at when it crashed.' });
+                }
+            } catch (snapErr) {
+                console.log('Could not take diagnostic screenshot.');
+            }
+        }
+    } finally {
+        // --- STEP 6: RESOURCE MANAGEMENT ---
+        // This absolutely guarantees the browser is destroyed and RAM is freed, even if it crashed.
+        if (browser) {
+            await browser.close();
+            console.log('[SYSTEM] Withdrawal sequence ended. Browser destroyed, RAM freed.');
+        }
+    }
+});
 
 
 bot.onText(/\/status/, (msg) => {
