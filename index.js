@@ -663,6 +663,8 @@ bot.onText(/\/pair\s+m4u/i, async (msg) => {
 
                 
 
+
+
 // --- UNIFIED MESSAGE LISTENER ---
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id.toString();
@@ -778,44 +780,54 @@ bot.on('message', async (msg) => {
                     await new Promise(r => setTimeout(r, 2000));
                 }
 
-                // Click the country code selector box
+                // THE FIX: Directly locate and click the +234 (or current country code) button
                 await m4uPage.evaluate(() => {
-                    const inputs = Array.from(document.querySelectorAll('input'));
-                    const phoneInput = inputs.find(i => i.placeholder && i.placeholder.toLowerCase().includes('phone number'));
-                    if (phoneInput && phoneInput.previousElementSibling) {
-                        phoneInput.previousElementSibling.click();
+                    const elements = Array.from(document.querySelectorAll('*'));
+                    for (let el of elements) {
+                        const txt = (el.innerText || '').trim();
+                        // If it matches exactly + followed by numbers (like +234)
+                        if (txt.match(/^\+\d{1,4}$/) && el.offsetParent !== null && el.children.length === 0) {
+                            el.click();
+                            return true;
+                        }
                     }
                 });
                 await new Promise(r => setTimeout(r, 2000));
 
-                // Input the raw country code into the search box
-                await m4uPage.evaluate((country) => {
-                    const inputs = Array.from(document.querySelectorAll('input'));
-                    const searchInput = inputs.find(i => i.placeholder && i.placeholder.toLowerCase().includes('country'));
-                    if (searchInput) {
-                        searchInput.value = country;
-                        searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+                // THE FIX: Use Puppeteer's native keyboard to type in the search box
+                const allInputs = await m4uPage.$$('input');
+                for (let input of allInputs) {
+                    const ph = await m4uPage.evaluate(el => el.placeholder || '', input);
+                    if (ph.toLowerCase().includes('country')) {
+                        await input.click();
+                        await input.type(rawCountry, { delay: 100 });
+                        break;
                     }
-                }, rawCountry);
-                await new Promise(r => setTimeout(r, 1500));
+                }
+                await new Promise(r => setTimeout(r, 2000));
 
                 // EXACT MATCH SELECTION
                 await m4uPage.evaluate((country) => {
-                    const elements = Array.from(document.querySelectorAll('div, span, li'));
+                    const elements = Array.from(document.querySelectorAll('*'));
                     const targetCode = '+' + country;
                     
-                    const row = elements.find(el => {
-                        if (!el.innerText || el.childElementCount > 5) return false;
-                        const textParts = el.innerText.trim().split(/[\s\n]+/); 
+                    for (let el of elements) {
+                        const txt = (el.innerText || '').trim();
+                        if (!txt || el.childElementCount > 3) continue;
+                        
+                        const textParts = txt.split(/[\s\n]+/); 
                         const lastPart = textParts[textParts.length - 1]; 
-                        return lastPart === targetCode; 
-                    });
-                    
-                    if (row) row.click();
+                        
+                        // Exact match for the country code (e.g. +58)
+                        if (lastPart === targetCode && el.offsetParent !== null) {
+                            el.click();
+                            return true;
+                        }
+                    }
                 }, rawCountry);
                 await new Promise(r => setTimeout(r, 2000));
 
-                // THE FIX: Click "Add" again to bring the popup back up after it closes!
+                // Re-open the popup by clicking Add again
                 await m4uPage.evaluate(() => {
                     Array.from(document.querySelectorAll('*')).forEach(el => {
                         if (el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null) el.click();
@@ -920,6 +932,8 @@ bot.on('message', async (msg) => {
         }
     }
 });
+                
+
 
 
 // --- 5. WHATSAPP CLIENT INITIALIZATION ---
