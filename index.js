@@ -505,18 +505,19 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
         }
 
         // Exact scraper logic from the withdraw command
-        m4uBal = await mPage.evaluate(() => {
+       m4uBal = await mPage.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('*'));
             for (let i = 0; i < elements.length; i++) {
                 const text = (elements[i].innerText || '').trim();
                 if (text === 'Account Balance') {
                     const containerText = elements[i].parentElement.innerText || '';
-                    const match = containerText.match(/[\d,]+\.\d{2}/);
+                    const match = containerText.match(/[\d,]+\.\d{2}/); 
                     if (match) return match[0];
                 }
             }
             return '0.00';
         });
+
 
         await mPage.close().catch(() => {});
         if (shouldCloseM) await mBrowser.close();
