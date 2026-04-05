@@ -396,15 +396,14 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
 });
 
 
-
-                // Usage: /task 127
+// Usage: /task 127
 bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
     const targetSuffix = match[1];
 
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting Multi-Thread Protocol for tasks ending in: ${targetSuffix}...`);
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting Dynamic Multi-Thread Protocol for suffix: ${targetSuffix}...`);
     const msgId = statusMsg.message_id;
 
     const updateStatus = async (text) => {
@@ -420,7 +419,27 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
         });
 
-        // --- STEP 1: INITIALIZE MASTER TAB & AUTHENTICATE ---
+        // --- HELPER: SMART TUTORIAL SWEEPER ---
+        const sweepTutorial = async (targetPage) => {
+            for (let i = 0; i < 8; i++) { // Max 8 clicks to prevent infinite loops
+                const clicked = await targetPage.evaluate(() => {
+                    const elements = Array.from(document.querySelectorAll('button, span, div, a'));
+                    for (let el of elements) {
+                        const txt = (el.innerText || '').trim();
+                        // Specifically look for the arrow "→" or "Done" to avoid the bottom pagination button
+                        if (((txt.includes('Next') && txt.includes('→')) || txt.toLowerCase() === 'done') && el.offsetParent !== null) {
+                            el.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                });
+                if (!clicked) break; // If no tutorial buttons found, it's clear!
+                await new Promise(r => setTimeout(r, 800)); // Wait for slide animation
+            }
+        };
+
+        // --- STEP 1: INITIALIZE MASTER TAB ---
         await updateStatus('[SYSTEM] Initializing Master Tab and checking local session...');
         const page1 = await browser.newPage();
         await page1.setViewport({ width: 412, height: 915 }); 
@@ -456,8 +475,6 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                         });
                     });
                 } catch(e) {}
-            } else {
-                throw new Error("Could not find the physical input boxes on the screen.");
             }
             
             await updateStatus('[SYSTEM] Login submitted. Waiting to natively land on Task Dashboard...');
@@ -466,69 +483,53 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             
             await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
             await new Promise(r => setTimeout(r, 3000));
-        } else {
-            await updateStatus('[SYSTEM] Active local session loaded! Skipped login step.');
         }
 
-        // --- STEP 2: SPAWN THE CLONE TABS ---
-        await updateStatus(`[SYSTEM] Master Tab authenticated. Spawning 3 clone tabs...`);
+        // --- STEP 2: SWEEP MASTER TAB & COUNT TARGETS ---
+        await updateStatus('[SYSTEM] Clearing tutorials on Master Tab...');
+        await sweepTutorial(page1);
+
+        await updateStatus(`[SYSTEM] Scanning page for numbers ending in ${targetSuffix}...`);
+        const targetCount = await page1.evaluate((suffixStr) => {
+            const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
+            let count = 0;
+            for (let btn of sendBtns) {
+                let containerText = '';
+                if (btn.parentElement && btn.parentElement.parentElement) {
+                    containerText = btn.parentElement.parentElement.innerText || '';
+                }
+                if (containerText.includes(suffixStr)) count++;
+            }
+            return count > 4 ? 4 : count; // Cap it at a maximum of 4 tabs
+        }, targetSuffix);
+
+        if (targetCount === 0) {
+            throw new Error(`Found exactly 0 numbers ending with ${targetSuffix} on the page.`);
+        }
+
+        // --- STEP 3: DYNAMICALLY SPAWN EXACT NUMBER OF CLONES ---
+        await updateStatus(`[SYSTEM] Found ${targetCount} matching numbers. Spawning exact required tabs...`);
         const pages = [page1]; 
 
-        for (let i = 1; i < 4; i++) {
+        // If targetCount is 3, it only loops twice to create Tab 2 and Tab 3.
+        for (let i = 1; i < targetCount; i++) {
             const newPage = await browser.newPage();
             await newPage.setViewport({ width: 412, height: 915 }); 
             await newPage.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
             pages.push(newPage);
         }
 
-        await Promise.all(pages.slice(1).map(p => p.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' })));
-        await new Promise(r => setTimeout(r, 4000)); 
+        if (pages.length > 1) {
+            // Navigate the new clones to the task page
+            await Promise.all(pages.slice(1).map(p => p.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' })));
+            await new Promise(r => setTimeout(r, 4000)); 
+            
+            // Sweep tutorials on the clones just in case they popped up again
+            await Promise.all(pages.slice(1).map(p => sweepTutorial(p)));
+        }
 
-        // --- STEP 3: THE SMART TUTORIAL SWEEPER ---
-        await updateStatus('[SYSTEM] Sweeping for "Let\'s continue" tutorials across all tabs...');
-        
-        // This runs a rapid loop on all 4 tabs simultaneously to click Next -> Done
-        await Promise.all(pages.map(async (p) => {
-            for (let i = 0; i < 8; i++) { // Max 8 clicks to prevent infinite loops
-                const clicked = await p.evaluate(() => {
-                    const elements = Array.from(document.querySelectorAll('button, span, div, a'));
-                    for (let el of elements) {
-                        const txt = (el.innerText || '').trim().toLowerCase();
-                        
-                        // Look for the Next or Done button
-                        if ((txt.includes('next') || txt.includes('done')) && el.offsetParent !== null) {
-                            
-                            // TRAP CHECK: Ensure this button is actually inside the tutorial modal
-                            let parent = el.parentElement;
-                            let isTutorial = false;
-                            while(parent) {
-                                const pTxt = (parent.innerText || '').toLowerCase();
-                                if (pTxt.includes("let's continue") || pTxt.includes("steps") || pTxt.includes("of 6")) {
-                                    isTutorial = true;
-                                    break;
-                                }
-                                parent = parent.parentElement;
-                            }
-                            
-                            // If it's the real tutorial button, click it!
-                            if (isTutorial) {
-                                el.click();
-                                return true;
-                            }
-                        }
-                    }
-                    return false;
-                });
-                
-                // If it didn't find a button, the tutorial is gone. Break the loop early!
-                if (!clicked) break; 
-                await new Promise(r => setTimeout(r, 800)); // Wait for the next slide to animate in
-            }
-        }));
-
-
-        // --- STEP 4: TARGET ACQUISITION (ASSIGNING ROWS) ---
-        await updateStatus(`[SYSTEM] Synchronizing target: ${targetSuffix}. Clicking Send on respective rows...`);
+        // --- STEP 4: TARGET ACQUISITION ---
+        await updateStatus(`[SYSTEM] Tabs synchronized. Clicking "Send" on respective rows...`);
         
         const clickResults = await Promise.all(pages.map((p, index) => {
             return p.evaluate((suffixStr, tabIndex) => {
@@ -558,7 +559,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await new Promise(r => setTimeout(r, 2000));
 
         // --- STEP 5: THE SYNCHRONIZED STRIKE ---
-        await updateStatus(`[SYSTEM] Waiting for popups to render across all tabs...`);
+        await updateStatus(`[SYSTEM] Waiting for popups to render across all active tabs...`);
         
         await Promise.all(pages.map(async (p, idx) => {
             if (clickResults[idx]) {
@@ -587,9 +588,9 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await new Promise(r => setTimeout(r, 4000)); 
 
         // 📸 PROOF FROM TAB 1
-        await updateStatus(`[SUCCESS] Multi-Thread Task execution finished for ${targetSuffix}.`);
+        await updateStatus(`[SUCCESS] Multi-Thread Task executed perfectly on ${targetCount} numbers!`);
         const screenshotBuffer = await pages[0].screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Snapshot from Master Tab after synchronized strike.` });
+        await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Snapshot from Master Tab after executing ${targetCount} synchronized clicks.` });
 
     } catch (err) {
         await updateStatus(`[ERROR] Sequence failed: ${err.message}`);
