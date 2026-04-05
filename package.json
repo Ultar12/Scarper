@@ -10,6 +10,7 @@
     "express": "^4.18.2",
     "node-telegram-bot-api": "^0.64.0",
     "pg": "^8.11.3",
+    "puppeteer": "^22.0.0", 
     "qrcode": "^1.5.3",
     "whatsapp-web.js": "^1.23.0",
     "wwebjs-postgres": "^1.0.0"
