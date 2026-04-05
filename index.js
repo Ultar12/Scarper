@@ -395,7 +395,9 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
     }
 });
 
-// Usage: /task 127
+
+
+                // Usage: /task 127
 bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -414,7 +416,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         browser = await puppeteer.launch({
             headless: true,
             executablePath: getChromePath(),
-            userDataDir: './wsjobs_auth_session', // THE MAGIC: Using local Heroku drive session!
+            userDataDir: './wsjobs_auth_session', 
             args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
         });
 
@@ -462,7 +464,6 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
             await new Promise(r => setTimeout(r, 4000)); 
             
-            // It might have redirected to /home or /user, so force it back to /task just to be safe
             await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
             await new Promise(r => setTimeout(r, 3000));
         } else {
@@ -471,40 +472,77 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
         // --- STEP 2: SPAWN THE CLONE TABS ---
         await updateStatus(`[SYSTEM] Master Tab authenticated. Spawning 3 clone tabs...`);
-        const pages = [page1]; // Array to hold all 4 tabs
+        const pages = [page1]; 
 
         for (let i = 1; i < 4; i++) {
             const newPage = await browser.newPage();
             await newPage.setViewport({ width: 412, height: 915 }); 
             await newPage.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
-            // Because of userDataDir, these new tabs are automatically logged in!
             pages.push(newPage);
         }
 
-        // Navigate Tabs 2, 3, and 4 to the task page simultaneously
         await Promise.all(pages.slice(1).map(p => p.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' })));
         await new Promise(r => setTimeout(r, 4000)); 
 
-        // --- STEP 3: TARGET ACQUISITION (ASSIGNING ROWS) ---
+        // --- STEP 3: THE SMART TUTORIAL SWEEPER ---
+        await updateStatus('[SYSTEM] Sweeping for "Let\'s continue" tutorials across all tabs...');
+        
+        // This runs a rapid loop on all 4 tabs simultaneously to click Next -> Done
+        await Promise.all(pages.map(async (p) => {
+            for (let i = 0; i < 8; i++) { // Max 8 clicks to prevent infinite loops
+                const clicked = await p.evaluate(() => {
+                    const elements = Array.from(document.querySelectorAll('button, span, div, a'));
+                    for (let el of elements) {
+                        const txt = (el.innerText || '').trim().toLowerCase();
+                        
+                        // Look for the Next or Done button
+                        if ((txt.includes('next') || txt.includes('done')) && el.offsetParent !== null) {
+                            
+                            // TRAP CHECK: Ensure this button is actually inside the tutorial modal
+                            let parent = el.parentElement;
+                            let isTutorial = false;
+                            while(parent) {
+                                const pTxt = (parent.innerText || '').toLowerCase();
+                                if (pTxt.includes("let's continue") || pTxt.includes("steps") || pTxt.includes("of 6")) {
+                                    isTutorial = true;
+                                    break;
+                                }
+                                parent = parent.parentElement;
+                            }
+                            
+                            // If it's the real tutorial button, click it!
+                            if (isTutorial) {
+                                el.click();
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                });
+                
+                // If it didn't find a button, the tutorial is gone. Break the loop early!
+                if (!clicked) break; 
+                await new Promise(r => setTimeout(r, 800)); // Wait for the next slide to animate in
+            }
+        }));
+
+
+        // --- STEP 4: TARGET ACQUISITION (ASSIGNING ROWS) ---
         await updateStatus(`[SYSTEM] Synchronizing target: ${targetSuffix}. Clicking Send on respective rows...`);
         
-        // We use Promise.all to make all 4 tabs search and click their designated row at the exact same time
         const clickResults = await Promise.all(pages.map((p, index) => {
             return p.evaluate((suffixStr, tabIndex) => {
                 const allElements = Array.from(document.querySelectorAll('*'));
-                // Find all active Send buttons
                 const sendBtns = allElements.filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
                 
                 let matchCount = 0;
                 for (let btn of sendBtns) {
-                    // Check the text of the container holding this button to see if the number matches
                     let containerText = '';
                     if (btn.parentElement && btn.parentElement.parentElement) {
                         containerText = btn.parentElement.parentElement.innerText || '';
                     }
                     
                     if (containerText.includes(suffixStr)) {
-                        // Tab 1 (index 0) clicks 1st match. Tab 2 (index 1) clicks 2nd match, etc.
                         if (matchCount === tabIndex) {
                             btn.scrollIntoView({ block: 'center' });
                             btn.click();
@@ -517,13 +555,11 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }, targetSuffix, index);
         }));
 
-        // Quick pause to let the "Are you sure you want to send?" popup render
         await new Promise(r => setTimeout(r, 2000));
 
-        // --- STEP 4: THE SYNCHRONIZED STRIKE ---
+        // --- STEP 5: THE SYNCHRONIZED STRIKE ---
         await updateStatus(`[SYSTEM] Waiting for popups to render across all tabs...`);
         
-        // Verify the popup actually appeared on the tabs that clicked "Send"
         await Promise.all(pages.map(async (p, idx) => {
             if (clickResults[idx]) {
                 await p.waitForFunction(() => {
@@ -533,7 +569,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         }));
 
         await updateStatus(`[SYSTEM] FIRE: Executing simultaneous Confirm clicks!`);
-        // Click Confirm on all 4 tabs at the exact same millisecond
+        
         await Promise.all(pages.map(async (p, idx) => {
             if (clickResults[idx]) {
                 await p.evaluate(() => {
@@ -572,6 +608,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         }
     }
 });
+
 
 
 
