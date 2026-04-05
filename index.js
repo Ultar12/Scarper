@@ -5,6 +5,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const { Client, RemoteAuth } = require('whatsapp-web.js');
 const { PostgresStore } = require('wwebjs-postgres');
 const { Pool } = require('pg');
+let globalTaskBrowser = null;
 const puppeteer = require('puppeteer'); 
 const QRCode = require('qrcode');
 
@@ -396,14 +397,17 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
 });
 
 
-// Usage: /task 127
-bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
+
+                
+// Usage: /task OR /task 127
+bot.onText(/\/task(?:\s+(\d+))?/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    const targetSuffix = match[1];
+    let targetSuffix = match[1]; 
+    const isAutoDetect = !targetSuffix;
 
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting Dynamic Multi-Thread Protocol for suffix: ${targetSuffix}...`);
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting Multi-Thread Protocol...`);
     const msgId = statusMsg.message_id;
 
     const updateStatus = async (text) => {
@@ -411,47 +415,58 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     };
 
     let browser = null;
+    let pages = []; // Keep track of tabs so we can close them later
+
     try {
-        browser = await puppeteer.launch({
-            headless: true,
-            executablePath: getChromePath(),
-            userDataDir: './wsjobs_auth_session', 
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-        });
+        // --- THE ENGINE WARM-UP ---
+        if (!globalTaskBrowser) {
+            await updateStatus('[SYSTEM] Cold Boot: Launching background Chrome engine...');
+            globalTaskBrowser = await puppeteer.launch({
+                headless: true,
+                executablePath: getChromePath(),
+                userDataDir: './wsjobs_auth_session', 
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+            });
+        } else {
+            await updateStatus('[SYSTEM] Warm Boot: Engine already running. Lightning fast start!');
+        }
+        browser = globalTaskBrowser;
 
         // --- HELPER: SMART TUTORIAL SWEEPER ---
         const sweepTutorial = async (targetPage) => {
-            for (let i = 0; i < 8; i++) { // Max 8 clicks to prevent infinite loops
+            for (let i = 0; i < 10; i++) { // Loop enough times to catch all 6 steps
                 const clicked = await targetPage.evaluate(() => {
                     const elements = Array.from(document.querySelectorAll('button, span, div, a'));
                     for (let el of elements) {
-                        const txt = (el.innerText || '').trim();
-                        // Specifically look for the arrow "→" or "Done" to avoid the bottom pagination button
-                        if (((txt.includes('Next') && txt.includes('→')) || txt.toLowerCase() === 'done') && el.offsetParent !== null) {
+                        const txt = (el.innerText || '').trim().toLowerCase();
+                        
+                        // We specifically target the arrow OR the word "done"
+                        if ((txt === 'next →' || txt.includes('next →') || txt === 'done') && el.offsetParent !== null) {
                             el.click();
                             return true;
                         }
                     }
                     return false;
                 });
-                if (!clicked) break; // If no tutorial buttons found, it's clear!
-                await new Promise(r => setTimeout(r, 800)); // Wait for slide animation
+                if (!clicked) break; 
+                await new Promise(r => setTimeout(r, 1000)); // Give the slide 1 second to transition
             }
         };
 
         // --- STEP 1: INITIALIZE MASTER TAB ---
-        await updateStatus('[SYSTEM] Initializing Master Tab and checking local session...');
+        await updateStatus('[SYSTEM] Opening Master Tab...');
         const page1 = await browser.newPage();
+        pages.push(page1);
         await page1.setViewport({ width: 412, height: 915 }); 
         await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
         await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 4000)); 
+        await new Promise(r => setTimeout(r, 3000)); 
 
         const requiresLogin = await page1.$('input[type="password"]') !== null;
 
         if (requiresLogin) {
-            await updateStatus('[SYSTEM] Session expired. Performing Login on Master Tab...');
+            await updateStatus('[SYSTEM] Session expired. Performing Login...');
             const allInputs = await page1.$$('input');
             const visibleInputs = [];
             for (let input of allInputs) {
@@ -467,29 +482,42 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                 
                 await new Promise(r => setTimeout(r, 1000));
                 await page1.keyboard.press('Enter');
-                
-                try {
-                    await page1.evaluate(() => {
-                        Array.from(document.querySelectorAll('*')).forEach(el => {
-                            if (el.innerText && el.innerText.trim() === 'Login') el.click();
-                        });
-                    });
-                } catch(e) {}
             }
             
-            await updateStatus('[SYSTEM] Login submitted. Waiting to natively land on Task Dashboard...');
             await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-            await new Promise(r => setTimeout(r, 4000)); 
+            await new Promise(r => setTimeout(r, 3000)); 
             
             await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
             await new Promise(r => setTimeout(r, 3000));
         }
 
-        // --- STEP 2: SWEEP MASTER TAB & COUNT TARGETS ---
+        // --- STEP 2: SWEEP MASTER TAB & AUTO-DETECT ---
         await updateStatus('[SYSTEM] Clearing tutorials on Master Tab...');
         await sweepTutorial(page1);
 
-        await updateStatus(`[SYSTEM] Scanning page for numbers ending in ${targetSuffix}...`);
+        if (isAutoDetect) {
+            await updateStatus('[SYSTEM] Auto-detecting available tasks...');
+            targetSuffix = await page1.evaluate(() => {
+                const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
+                if (sendBtns.length === 0) return null;
+
+                let containerText = '';
+                if (sendBtns[0].parentElement && sendBtns[0].parentElement.parentElement) {
+                    containerText = sendBtns[0].parentElement.parentElement.innerText || '';
+                }
+
+                const match = containerText.match(/\d{10,}/);
+                if (match) return match[0].slice(-3); // Extract last 3 digits
+                return null;
+            });
+
+            if (!targetSuffix) throw new Error("Could not auto-detect any valid task numbers.");
+            await updateStatus(`[SYSTEM] Auto-detected group! Target: ${targetSuffix}`);
+        } else {
+            await updateStatus(`[SYSTEM] Manual target locked: ${targetSuffix}`);
+        }
+
+        // --- STEP 3: COUNT TARGETS & SPAWN CLONES ---
         const targetCount = await page1.evaluate((suffixStr) => {
             const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
             let count = 0;
@@ -500,49 +528,38 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                 }
                 if (containerText.includes(suffixStr)) count++;
             }
-            return count > 4 ? 4 : count; // Cap it at a maximum of 4 tabs
+            return count > 4 ? 4 : count; 
         }, targetSuffix);
 
-        if (targetCount === 0) {
-            throw new Error(`Found exactly 0 numbers ending with ${targetSuffix} on the page.`);
-        }
+        if (targetCount === 0) throw new Error(`Found 0 numbers ending with ${targetSuffix}.`);
 
-        // --- STEP 3: DYNAMICALLY SPAWN EXACT NUMBER OF CLONES ---
-        await updateStatus(`[SYSTEM] Found ${targetCount} matching numbers. Spawning exact required tabs...`);
-        const pages = [page1]; 
+        await updateStatus(`[SYSTEM] Spawning ${targetCount - 1} clone tabs...`);
 
-        // If targetCount is 3, it only loops twice to create Tab 2 and Tab 3.
         for (let i = 1; i < targetCount; i++) {
             const newPage = await browser.newPage();
+            pages.push(newPage);
             await newPage.setViewport({ width: 412, height: 915 }); 
             await newPage.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
-            pages.push(newPage);
         }
 
         if (pages.length > 1) {
-            // Navigate the new clones to the task page
             await Promise.all(pages.slice(1).map(p => p.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' })));
             await new Promise(r => setTimeout(r, 4000)); 
-            
-            // Sweep tutorials on the clones just in case they popped up again
             await Promise.all(pages.slice(1).map(p => sweepTutorial(p)));
         }
 
         // --- STEP 4: TARGET ACQUISITION ---
-        await updateStatus(`[SYSTEM] Tabs synchronized. Clicking "Send" on respective rows...`);
+        await updateStatus(`[SYSTEM] Clicking "Send" on all tabs...`);
         
         const clickResults = await Promise.all(pages.map((p, index) => {
             return p.evaluate((suffixStr, tabIndex) => {
-                const allElements = Array.from(document.querySelectorAll('*'));
-                const sendBtns = allElements.filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
-                
+                const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
                 let matchCount = 0;
                 for (let btn of sendBtns) {
                     let containerText = '';
                     if (btn.parentElement && btn.parentElement.parentElement) {
                         containerText = btn.parentElement.parentElement.innerText || '';
                     }
-                    
                     if (containerText.includes(suffixStr)) {
                         if (matchCount === tabIndex) {
                             btn.scrollIntoView({ block: 'center' });
@@ -558,8 +575,8 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
         await new Promise(r => setTimeout(r, 2000));
 
-        // --- STEP 5: THE SYNCHRONIZED STRIKE ---
-        await updateStatus(`[SYSTEM] Waiting for popups to render across all active tabs...`);
+        // --- STEP 5: THE SYNCHRONIZED TIMEBOMB (ABSOLUTE PRECISION) ---
+        await updateStatus(`[SYSTEM] Waiting for popups to render...`);
         
         await Promise.all(pages.map(async (p, idx) => {
             if (clickResults[idx]) {
@@ -569,43 +586,50 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         }));
 
-        await updateStatus(`[SYSTEM] FIRE: Executing simultaneous Confirm clicks!`);
+        await updateStatus(`[SYSTEM] TIMEBOMB SET: Synchronizing Confirm clicks...`);
+        
+        // Tell all browsers to click at EXACTLY 2.000 seconds from right now.
+        const fireTime = Date.now() + 2000;
         
         await Promise.all(pages.map(async (p, idx) => {
             if (clickResults[idx]) {
-                await p.evaluate(() => {
-                    const elements = Array.from(document.querySelectorAll('*'));
-                    for (let el of elements) {
-                        if (el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null) {
-                            el.click();
+                await p.evaluate((triggerTime) => {
+                    // Calculate how many milliseconds are left until the exact fireTime
+                    const delay = Math.max(0, triggerTime - Date.now());
+                    
+                    setTimeout(() => {
+                        const elements = Array.from(document.querySelectorAll('*'));
+                        for (let el of elements) {
+                            if (el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null) {
+                                el.click();
+                            }
                         }
-                    }
-                });
+                    }, delay);
+                }, fireTime);
             }
         }));
 
-        await updateStatus('[SYSTEM] Strike complete. Waiting for server response...');
-        await new Promise(r => setTimeout(r, 4000)); 
+        // We wait the 2 seconds for the timebomb, plus 4 seconds for the server to process it
+        await new Promise(r => setTimeout(r, 6000)); 
 
         // 📸 PROOF FROM TAB 1
-        await updateStatus(`[SUCCESS] Multi-Thread Task executed perfectly on ${targetCount} numbers!`);
+        await updateStatus(`[SUCCESS] Strike executed simultaneously!`);
         const screenshotBuffer = await pages[0].screenshot({ type: 'png' });
         await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Snapshot from Master Tab after executing ${targetCount} synchronized clicks.` });
 
     } catch (err) {
         await updateStatus(`[ERROR] Sequence failed: ${err.message}`);
-        if (browser) {
+        if (pages.length > 0) {
             try {
-                const activePages = await browser.pages();
-                if (activePages.length > 0) {
-                    const errBuffer = await activePages[0].screenshot({ type: 'png' });
-                    await bot.sendPhoto(chatId, errBuffer, { caption: '[DIAGNOSTIC] State of Master Tab at crash.' });
-                }
+                const errBuffer = await pages[0].screenshot({ type: 'png' });
+                await bot.sendPhoto(chatId, errBuffer, { caption: '[DIAGNOSTIC] State of Master Tab at crash.' });
             } catch (snapErr) {}
         }
     } finally {
-        if (browser) {
-            await browser.close();
+        // WE DO NOT CLOSE THE BROWSER! We leave globalTaskBrowser open for the next run.
+        // But we DO close the individual tabs so the server doesn't run out of RAM!
+        for (let p of pages) {
+            await p.close().catch(() => {});
         }
     }
 });
