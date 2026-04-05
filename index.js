@@ -111,6 +111,85 @@ bot.on('message', async (msg) => {
     }
 });
 
+// Usage: /screenshot https://google.com
+bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    let targetUrl = match[1].trim();
+    if (!targetUrl.startsWith('http')) {
+        targetUrl = 'https://' + targetUrl; // Auto-fix URLs missing the https prefix
+    }
+
+    bot.sendMessage(chatId, `[SYSTEM] Booting camera for: ${targetUrl}`);
+
+    let tempBrowser = null;
+    try {
+        tempBrowser = await puppeteer.launch({
+            headless: true,
+            executablePath: getChromePath(),
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        });
+
+        const page = await tempBrowser.newPage();
+        
+        // Set the screen size for a clear desktop screenshot
+        await page.setViewport({ width: 1280, height: 800 });
+        
+        bot.sendMessage(chatId, '[SYSTEM] Rendering webpage...');
+        await page.goto(targetUrl, { waitUntil: 'networkidle2' });
+        
+        // Capture the raw image buffer
+        const screenshotBuffer = await page.screenshot({ type: 'png' });
+        
+        await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Captured: ${targetUrl}` });
+
+    } catch (err) {
+        bot.sendMessage(chatId, `[ERROR] Screenshot failed: ${err.message}`);
+    } finally {
+        // ALWAYS destroy the temp browser to prevent Heroku from crashing
+        if (tempBrowser) await tempBrowser.close();
+    }
+});
+
+
+// Usage: /checknum 2348000000000
+bot.onText(/\/checknum\s+(.+)/, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    if (!waClient || !waClient.info) {
+        return bot.sendMessage(chatId, '[ERROR] WhatsApp client is not connected. Please /login first.');
+    }
+
+    const targetNumber = match[1].replace(/[^0-9]/g, '');
+
+    if (targetNumber.length < 7) {
+        return bot.sendMessage(chatId, '[ERROR] Invalid phone number format.');
+    }
+
+    bot.sendMessage(chatId, `[SYSTEM] Querying Meta servers for raw data on: +${targetNumber}...`);
+
+    try {
+        const result = await waClient.getNumberId(targetNumber);
+
+        if (result) {
+            // Convert the raw JSON object into a formatted, readable string
+            const rawData = JSON.stringify(result, null, 2);
+            
+            // Send it back wrapped in a Markdown code block
+            bot.sendMessage(chatId, `[SUCCESS] Registered on WhatsApp.\n\nRaw Protocol Data:\n\`\`\`json\n${rawData}\n\`\`\``, { parse_mode: 'Markdown' });
+        } else {
+            bot.sendMessage(chatId, `[RESULT] The number +${targetNumber} is NOT registered on WhatsApp.\n\nRaw Result: \`null\``, { parse_mode: 'Markdown' });
+        }
+
+    } catch (err) {
+        bot.sendMessage(chatId, `[ERROR] Failed to query Meta database: ${err.message}`);
+    }
+});
+
+
+
 bot.onText(/\/status/, (msg) => {
     if (msg.chat.id.toString() !== ADMIN_ID) return;
     const status = (waClient && waClient.info) ? 'ONLINE' : 'OFFLINE / WAITING FOR LOGIN';
