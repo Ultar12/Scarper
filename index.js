@@ -249,6 +249,11 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         await updateStatus('[SYSTEM] Login submitted. Waiting for native home page load...');
         await new Promise(r => setTimeout(r, 6000)); 
 
+                // Add this right after the 6000ms timeout in Step 1
+        const homeSnap = await page.screenshot({ type: 'png' });
+        await bot.sendPhoto(chatId, homeSnap, { caption: '[TRACE] Successfully reached Home Page' });
+
+
         // --- STEP 2: NATIVE NAVIGATION ---
         // Try to click the "Confirm" button to close the welcome popup if it exists
         await updateStatus('[SYSTEM] Clearing popups...');
