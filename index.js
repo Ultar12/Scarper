@@ -441,7 +441,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             }
         }
 
-        // Bulletproof Scanner
+        // Bulletproof Scanner for Wsjobs
         wsjobsBal = await wPage.evaluate(() => {
             const rawText = document.body.textContent || '';
             const match = rawText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
@@ -493,19 +493,27 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             }
         }
 
-        // M4U Smart Scanner
+        // THE FIX: M4U Smart Line-by-Line Scanner
         m4uBal = await mPage.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('div, span, p'));
-            for (let el of elements) {
-                if ((el.innerText || '').trim() === 'Account Balance') {
-                    const parentText = el.parentElement.innerText || '';
-                    const match = parentText.match(/[\d,]+\.\d{2}/);
-                    if (match) return match[0];
+            const allText = document.body.innerText || '';
+            // Split the entire page text line by line visually
+            const lines = allText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+            
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i] === 'Account Balance' || lines[i].includes('Account Balance')) {
+                    // Grab the next line right under it!
+                    if (i + 1 < lines.length) {
+                        const nextLine = lines[i + 1];
+                        const match = nextLine.match(/^([\d,]+(?:\.\d+)?)/);
+                        if (match) return match[1];
+                    }
                 }
             }
+
+            // Fallback just in case
             const rawText = document.body.textContent || '';
-            const match = rawText.match(/Account\s*Balance[\s\r\n]*([\d,]+(?:\.\d+)?)/i);
-            if (match) return match[1];
+            const match2 = rawText.match(/Account\s*Balance[\s\r\n]*([\d,]+(?:\.\d+)?)/i);
+            if (match2) return match2[1];
             return '0.00';
         });
 
@@ -519,8 +527,6 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
     bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{}); 
     bot.sendMessage(chatId, `Wsjobs: ${wsjobsBal}\nM4U: ${m4uBal}`); 
 });
-
-
 
 // Usage: /task 127
 bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
@@ -540,8 +546,8 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     let pages = []; 
 
     try {
-        // --- THE ENGINE WARM-UP (KEEPS BROWSER OPEN FOR NEXT TASK) ---
-        if (!globalTaskBrowser) {
+        // --- THE ENGINE WARM-UP ---
+        if (typeof globalTaskBrowser === 'undefined' || !globalTaskBrowser) {
             await updateStatus('[SYSTEM] Cold Boot: Launching background Chrome engine...');
             globalTaskBrowser = await puppeteer.launch({
                 headless: true,
@@ -554,35 +560,41 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         }
         browser = globalTaskBrowser;
 
-        // --- THE GOLDEN FIX: SMART TUTORIAL POLLER ---
+        // --- THE GOLDEN FIX: DYNAMIC TUTORIAL TRACKER ---
         const sweepTutorial = async (targetPage) => {
+            // Wait 2.5 seconds first to let the website drop the initial popup
+            await new Promise(r => setTimeout(r, 2500)); 
+            
+            let maxAttempts = 20; 
             let emptyChecks = 0;
-            // It will loop up to 20 times, clicking through all slides and waiting
-            for (let i = 0; i < 20; i++) { 
+            
+            while (maxAttempts > 0 && emptyChecks < 3) {
+                maxAttempts--;
                 const clicked = await targetPage.evaluate(() => {
-                    const elements = Array.from(document.querySelectorAll('*'));
+                    // Grab all clickable elements on the screen
+                    const elements = Array.from(document.querySelectorAll('button, div, span, a'));
                     for (let el of elements) {
+                        if (el.offsetParent === null) continue; // Skip hidden elements
                         const txt = (el.innerText || '').trim().toLowerCase();
                         
-                        // We strictly look for "next" accompanied by an arrow, OR the word "done"
-                        if ((txt.includes('next') && (txt.includes('→') || txt.includes('->') || txt.includes('>'))) || txt === 'done') {
-                            if (el.offsetParent !== null) {
-                                el.click();
-                                return true;
-                            }
+                        // Dynamically hunt for the specific text
+                        if (txt === 'next' || txt === 'next →' || txt === 'next ->' || txt.includes('next →') || txt === 'done') {
+                            // Center the new button location on the screen and click
+                            el.scrollIntoView({ block: 'center' });
+                            el.click();
+                            return true;
                         }
                     }
                     return false;
                 });
 
                 if (clicked) {
-                    emptyChecks = 0; // We found one! Reset the empty check counter.
-                    await new Promise(r => setTimeout(r, 1000)); // Wait 1 second for the slide animation
+                    emptyChecks = 0; 
+                    // Crucial: Wait 1 full second for the box to finish moving to its new position!
+                    await new Promise(r => setTimeout(r, 1000)); 
                 } else {
-                    emptyChecks++;
-                    // If we check 4 times (4 seconds) and see nothing, it's truly clear!
-                    if (emptyChecks >= 4) break; 
-                    await new Promise(r => setTimeout(r, 1000));
+                    emptyChecks++; 
+                    await new Promise(r => setTimeout(r, 1000)); 
                 }
             }
         };
@@ -637,7 +649,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         }
 
         // --- STEP 2: SWEEP MASTER TAB ---
-        await updateStatus('[SYSTEM] Scanning for delayed tutorials on Master Tab...');
+        await updateStatus('[SYSTEM] Scanning for tutorials on Master Tab...');
         await sweepTutorial(page1);
 
         // --- STEP 3: COUNT TARGETS & SPAWN CLONES ---
@@ -668,12 +680,14 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
         if (pages.length > 1) {
             await Promise.all(pages.slice(1).map(p => p.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' })));
-            await new Promise(r => setTimeout(r, 4000)); 
-            await Promise.all(pages.slice(1).map(p => sweepTutorial(p)));
         }
 
+        // --- STEP 3.5: FINAL SWEEP ON ALL TABS ---
+        await updateStatus(`[SYSTEM] Performing Aggressive Pre-Strike Sweep on all tabs...`);
+        await Promise.all(pages.map(p => sweepTutorial(p)));
+
         // --- STEP 4: TARGET ACQUISITION ---
-        await updateStatus(`[SYSTEM] Tabs clear. Clicking "Send" on all targets...`);
+        await updateStatus(`[SYSTEM] Tabs are 100% clear. Clicking "Send" on all targets...`);
         
         const clickResults = await Promise.all(pages.map((p, index) => {
             return p.evaluate((suffixStr, tabIndex) => {
