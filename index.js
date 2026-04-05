@@ -660,6 +660,8 @@ bot.onText(/\/pair\s+m4u/i, async (msg) => {
     bot.sendMessage(chatId, '[SYSTEM] M4U Pairing Protocol Initiated.\n\nPlease reply with the Country Code you want to use (e.g., +234 or 234):');
 });
 
+
+                
 // --- UNIFIED MESSAGE LISTENER ---
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id.toString();
@@ -699,7 +701,6 @@ bot.on('message', async (msg) => {
                     });
                 }
                 
-                // Grant clipboard permissions just in case the website needs it to function properly
                 const context = m4uBrowser.defaultBrowserContext();
                 await context.overridePermissions('https://taskm4u.com', ['clipboard-read', 'clipboard-write']);
 
@@ -726,19 +727,30 @@ bot.on('message', async (msg) => {
                 await m4uPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
                 await new Promise(r => setTimeout(r, 3000));
 
-                // Step 2: Clear Homepage Popup and Click Start
-                await bot.editMessageText('[SYSTEM] Clearing popups and navigating to HangTask...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                // Step 2: Clear Homepage Popup and Click specifically on WhatsApp Start
+                await bot.editMessageText('[SYSTEM] Clearing popups and locking onto WhatsApp Message Task...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                
                 await m4uPage.evaluate(() => {
                     Array.from(document.querySelectorAll('*')).forEach(el => {
-                        if (el.innerText && el.innerText.trim() === 'Close') el.click();
+                        if (el.innerText && el.innerText.trim() === 'Close' && el.offsetParent !== null) el.click();
                     });
                 });
                 await new Promise(r => setTimeout(r, 1500));
                 
+                // THE FIX: Scan the boxes to make sure it only clicks "Start" if the box says "WhatsApp"
                 await m4uPage.evaluate(() => {
-                    Array.from(document.querySelectorAll('*')).forEach(el => {
-                        if (el.innerText && el.innerText.trim() === 'Start') el.click();
-                    });
+                    const startButtons = Array.from(document.querySelectorAll('div, button, span, a')).filter(el => el.innerText && el.innerText.trim() === 'Start');
+                    for (let btn of startButtons) {
+                        let containerText = '';
+                        if (btn.parentElement && btn.parentElement.parentElement) {
+                            containerText = btn.parentElement.parentElement.innerText.toLowerCase();
+                        }
+                        // Only click if it's the WhatsApp card!
+                        if (containerText.includes('whatsapp') && btn.offsetParent !== null) {
+                            btn.click();
+                            return true;
+                        }
+                    }
                 });
                 await new Promise(r => setTimeout(r, 4000));
 
@@ -830,25 +842,19 @@ bot.on('message', async (msg) => {
                     fetchResult = await m4uPage.evaluate(() => {
                         const bodyText = document.body.innerText.toLowerCase();
                         
-                        // 1. Check for failure messages
                         if (bodyText.includes('failed to obtain') || bodyText.includes('network error') || bodyText.includes('frequently')) {
                             return { status: 'error', message: 'Failed to obtain code from the server.' };
                         }
 
-                        // 2. Check if the 8 code boxes have successfully filled up
                         const possibleContainers = Array.from(document.querySelectorAll('div, section'));
                         for (let c of possibleContainers) {
-                            // The container holds 8 boxes + the dash + the copy icon
                             if (c.children.length >= 8 && c.children.length <= 15) {
-                                // Extract the text from the single-character boxes
                                 const chars = Array.from(c.children)
                                     .map(child => (child.innerText || '').trim())
                                     .filter(txt => txt.length === 1 && /[A-Z0-9]/i.test(txt));
 
                                 if (chars.length === 8) {
                                     const codeString = chars.join('');
-                                    
-                                    // Found it! Now physically click the Copy Icon (usually the last child element)
                                     const copyBtn = c.children[c.children.length - 1];
                                     if (copyBtn) copyBtn.click();
 
@@ -859,15 +865,11 @@ bot.on('message', async (msg) => {
                         return { status: 'pending' };
                     });
 
-                    // If it found a success or error state, break the waiting loop immediately
-                    if (fetchResult && fetchResult.status !== 'pending') {
-                        break;
-                    }
+                    if (fetchResult && fetchResult.status !== 'pending') break;
                 }
 
                 // --- PROCESS THE RESULT ---
                 if (!fetchResult || fetchResult.status === 'pending') {
-                    // Time out! Just take a picture so the user can see what got stuck.
                     const errSnap = await m4uPage.screenshot({ type: 'png' });
                     await bot.sendPhoto(chatId, errSnap, { caption: `[TIMEOUT] Could not detect code or failure message after 15 seconds. Here is the screen state:` });
                 } 
@@ -875,7 +877,6 @@ bot.on('message', async (msg) => {
                     bot.sendMessage(chatId, `[ERROR] For number ${targetNumber}:\n${fetchResult.message}`);
                 } 
                 else if (fetchResult.status === 'success') {
-                    // Format the code nicely
                     bot.sendMessage(chatId, `[SUCCESS] Code obtained for ${targetNumber}!\n\nExtracted Code: \`${fetchResult.code}\`\n\nSend the next number to continue.`, { parse_mode: 'Markdown' });
                 }
 
