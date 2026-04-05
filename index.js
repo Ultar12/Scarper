@@ -439,6 +439,39 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         }
 
 
+                await updateStatus('[SYSTEM] Clicking "Withdrawal Now"...');
+        await page.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('*'));
+            for (let el of elements) {
+                const txt = (el.innerText || el.textContent || '').trim();
+                if (txt === 'Withdrawal Now' && el.offsetParent !== null) {
+                    el.scrollIntoView({ block: 'center' });
+                    // Force synthetic mouse click to bypass UI traps
+                    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    el.click();
+                    if (el.parentElement) el.parentElement.click();
+                    return; // Stop searching once we click it
+                }
+            }
+        });
+        await new Promise(r => setTimeout(r, 3000));
+
+        await updateStatus('[SYSTEM] Processing confirmation screen...');
+        await page.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('*'));
+            for (let el of elements) {
+                const txt = (el.innerText || el.textContent || '').trim();
+                // Check for either 'Withdrawal' or 'Confirm' on the popup
+                if ((txt === 'Withdrawal' || txt === 'Confirm') && el.offsetParent !== null) {
+                    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    el.click();
+                    if (el.parentElement) el.parentElement.click();
+                    return; 
+                }
+            }
+        });
+        await new Promise(r => setTimeout(r, 3000));
+
 
        await updateStatus('[SYSTEM] Entering withdrawal PIN...');
         const pin = '111111'; // Ensure this matches your actual PIN
