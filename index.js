@@ -5,7 +5,6 @@ const TelegramBot = require('node-telegram-bot-api');
 const { Client, RemoteAuth } = require('whatsapp-web.js');
 const { PostgresStore } = require('wwebjs-postgres');
 const { Pool } = require('pg');
-let globalTaskBrowser = null;
 const puppeteer = require('puppeteer'); 
 const QRCode = require('qrcode');
 
@@ -397,17 +396,14 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
 });
 
 
-
-                
-// Usage: /task OR /task 127
-bot.onText(/\/task(?:\s+(\d+))?/, async (msg, match) => {
+// Usage: /task 127
+bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    let targetSuffix = match[1]; 
-    const isAutoDetect = !targetSuffix;
+    const targetSuffix = match[1]; 
 
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting Multi-Thread Protocol...`);
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting Multi-Thread Protocol for suffix: ${targetSuffix}...`);
     const msgId = statusMsg.message_id;
 
     const updateStatus = async (text) => {
@@ -418,7 +414,7 @@ bot.onText(/\/task(?:\s+(\d+))?/, async (msg, match) => {
     let pages = []; // Keep track of tabs so we can close them later
 
     try {
-        // --- THE ENGINE WARM-UP ---
+        // --- THE ENGINE WARM-UP (KEEPS BROWSER OPEN FOR NEXT TASK) ---
         if (!globalTaskBrowser) {
             await updateStatus('[SYSTEM] Cold Boot: Launching background Chrome engine...');
             globalTaskBrowser = await puppeteer.launch({
@@ -432,7 +428,7 @@ bot.onText(/\/task(?:\s+(\d+))?/, async (msg, match) => {
         }
         browser = globalTaskBrowser;
 
-        // --- HELPER: SMART TUTORIAL SWEEPER ---
+        // --- HELPER: SMART TUTORIAL SWEEPER (FIXED FOR "DONE") ---
         const sweepTutorial = async (targetPage) => {
             for (let i = 0; i < 10; i++) { // Loop enough times to catch all 6 steps
                 const clicked = await targetPage.evaluate(() => {
@@ -440,7 +436,7 @@ bot.onText(/\/task(?:\s+(\d+))?/, async (msg, match) => {
                     for (let el of elements) {
                         const txt = (el.innerText || '').trim().toLowerCase();
                         
-                        // We specifically target the arrow OR the word "done"
+                        // Specifically target the arrow OR the word "done"
                         if ((txt === 'next →' || txt.includes('next →') || txt === 'done') && el.offsetParent !== null) {
                             el.click();
                             return true;
@@ -491,31 +487,9 @@ bot.onText(/\/task(?:\s+(\d+))?/, async (msg, match) => {
             await new Promise(r => setTimeout(r, 3000));
         }
 
-        // --- STEP 2: SWEEP MASTER TAB & AUTO-DETECT ---
+        // --- STEP 2: SWEEP MASTER TAB ---
         await updateStatus('[SYSTEM] Clearing tutorials on Master Tab...');
         await sweepTutorial(page1);
-
-        if (isAutoDetect) {
-            await updateStatus('[SYSTEM] Auto-detecting available tasks...');
-            targetSuffix = await page1.evaluate(() => {
-                const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
-                if (sendBtns.length === 0) return null;
-
-                let containerText = '';
-                if (sendBtns[0].parentElement && sendBtns[0].parentElement.parentElement) {
-                    containerText = sendBtns[0].parentElement.parentElement.innerText || '';
-                }
-
-                const match = containerText.match(/\d{10,}/);
-                if (match) return match[0].slice(-3); // Extract last 3 digits
-                return null;
-            });
-
-            if (!targetSuffix) throw new Error("Could not auto-detect any valid task numbers.");
-            await updateStatus(`[SYSTEM] Auto-detected group! Target: ${targetSuffix}`);
-        } else {
-            await updateStatus(`[SYSTEM] Manual target locked: ${targetSuffix}`);
-        }
 
         // --- STEP 3: COUNT TARGETS & SPAWN CLONES ---
         const targetCount = await page1.evaluate((suffixStr) => {
@@ -533,7 +507,7 @@ bot.onText(/\/task(?:\s+(\d+))?/, async (msg, match) => {
 
         if (targetCount === 0) throw new Error(`Found 0 numbers ending with ${targetSuffix}.`);
 
-        await updateStatus(`[SYSTEM] Spawning ${targetCount - 1} clone tabs...`);
+        await updateStatus(`[SYSTEM] Found ${targetCount} matching numbers. Spawning ${targetCount - 1} clone tabs...`);
 
         for (let i = 1; i < targetCount; i++) {
             const newPage = await browser.newPage();
@@ -575,7 +549,7 @@ bot.onText(/\/task(?:\s+(\d+))?/, async (msg, match) => {
 
         await new Promise(r => setTimeout(r, 2000));
 
-        // --- STEP 5: THE SYNCHRONIZED TIMEBOMB (ABSOLUTE PRECISION) ---
+        // --- STEP 5: THE SYNCHRONIZED TIMEBOMB (3 SECONDS) ---
         await updateStatus(`[SYSTEM] Waiting for popups to render...`);
         
         await Promise.all(pages.map(async (p, idx) => {
@@ -586,10 +560,10 @@ bot.onText(/\/task(?:\s+(\d+))?/, async (msg, match) => {
             }
         }));
 
-        await updateStatus(`[SYSTEM] TIMEBOMB SET: Synchronizing Confirm clicks...`);
+        await updateStatus(`[SYSTEM] TIMEBOMB SET: Synchronizing Confirm clicks for exactly 3 SECONDS from now...`);
         
-        // Tell all browsers to click at EXACTLY 2.000 seconds from right now.
-        const fireTime = Date.now() + 2000;
+        // Tell all browsers to click at EXACTLY 3.000 seconds from right now.
+        const fireTime = Date.now() + 3000;
         
         await Promise.all(pages.map(async (p, idx) => {
             if (clickResults[idx]) {
@@ -609,8 +583,8 @@ bot.onText(/\/task(?:\s+(\d+))?/, async (msg, match) => {
             }
         }));
 
-        // We wait the 2 seconds for the timebomb, plus 4 seconds for the server to process it
-        await new Promise(r => setTimeout(r, 6000)); 
+        // We wait the 3 seconds for the timebomb, plus 4 seconds for the server to process it
+        await new Promise(r => setTimeout(r, 7000)); 
 
         // 📸 PROOF FROM TAB 1
         await updateStatus(`[SUCCESS] Strike executed simultaneously!`);
