@@ -60,40 +60,80 @@ const userState = {};
 
 // --- 4. TELEGRAM COMMAND LISTENERS ---
 
-bot.onText(/\/start/, (msg) => {
-    if (msg.chat.id.toString() !== ADMIN_ID) return;
-    bot.sendMessage(msg.chat.id, 'Bot Controller Online.\n\nCommands:\n/login - Connect your WhatsApp\n/status - Check connection state');
-});
-
-bot.onText(/\/login/, (msg) => {
-    if (msg.chat.id.toString() !== ADMIN_ID) return;
+// --- INTERACTIVE CONTROL PANEL ---
+bot.onText(/\/start/i, (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
     
-    bot.sendMessage(msg.chat.id, '[SYSTEM] How do you want to connect your WhatsApp?', {
+    bot.sendMessage(chatId, '*Master Control Panel*\n\nSelect an operation below:', {
+        parse_mode: 'Markdown',
         reply_markup: {
             inline_keyboard: [
-                [{ text: 'Scan QR Code', callback_data: 'login_qr' }],
-                [{ text: 'Use Phone Number', callback_data: 'login_phone' }]
+                // First Row: Two buttons side-by-side
+                [
+                    { text: 'Pair M4U', callback_data: 'cmd_pair' },
+                    { text: 'Withdraw', callback_data: 'cmd_withdraw' }
+                ],
+                // Second Row: One button spanning the row
+                [
+                    { text: 'Balance', callback_data: 'cmd_balance' }
+                ]
             ]
         }
     });
 });
 
-bot.on('callback_query', async (query) => {
-    const chatId = query.message.chat.id;
-    if (chatId.toString() !== ADMIN_ID) return;
 
-    if (query.data === 'login_qr') {
-        bot.answerCallbackQuery(query.id);
+
+// --- CALLBACK ROUTER (HANDLES ALL BUTTON CLICKS) ---
+bot.on('callback_query', async (query) => {
+    const chatId = query.message.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    const data = query.data;
+    bot.answerCallbackQuery(query.id).catch(()=>{});
+
+    // Handle old WhatsApp login buttons
+    if (data === 'login_qr') {
         bot.sendMessage(chatId, '[SYSTEM] Initializing QR Code generation. Please wait...');
         initializeWhatsApp(chatId, null);
-    }
-
-    if (query.data === 'login_phone') {
-        bot.answerCallbackQuery(query.id);
+    } 
+    else if (data === 'login_phone') {
         userState[chatId] = 'WAITING_FOR_NUMBER';
-        bot.sendMessage(chatId, '[SYSTEM] Reply to this message with your WhatsApp phone number (include country code, e.g., 2348000000000):');
+        bot.sendMessage(chatId, '[SYSTEM] Reply to this message with your WhatsApp phone number:');
+    }
+    // Handle New Menu Buttons (Silently triggers your text commands!)
+    else if (data === 'cmd_pair') {
+        bot.emit('message', { chat: { id: chatId }, text: '/pair m4u' });
+    }
+    else if (data === 'cmd_withdraw') {
+        bot.editMessageText('Select Platform to Withdraw From:', {
+            chat_id: chatId,
+            message_id: query.message.message_id,
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: 'M4U', callback_data: 'cmd_withdraw_m4u' }, { text: 'Wsjob', callback_data: 'cmd_withdraw_wsjob' }],
+                    [{ text: '« Cancel', callback_data: 'cmd_cancel' }]
+                ]
+            }
+        });
+    }
+    else if (data === 'cmd_withdraw_m4u') {
+        bot.deleteMessage(chatId, query.message.message_id).catch(()=>{});
+        bot.emit('message', { chat: { id: chatId }, text: '/withdraw m4u' });
+    }
+    else if (data === 'cmd_withdraw_wsjob') {
+        bot.deleteMessage(chatId, query.message.message_id).catch(()=>{});
+        bot.emit('message', { chat: { id: chatId }, text: '/withdraw task' });
+    }
+    else if (data === 'cmd_balance') {
+        bot.emit('message', { chat: { id: chatId }, text: '/balance' });
+    }
+    else if (data === 'cmd_cancel') {
+        bot.deleteMessage(chatId, query.message.message_id).catch(()=>{});
     }
 });
+
 
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id.toString();
@@ -200,18 +240,17 @@ bot.onText(/\/pair\s+m4u/i, async (msg) => {
 });
 
 
-// Usage: /withdraw 20000
-bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
+
+
+ // --- WSJOBS SMART WITHDRAWAL ---
+// Usage: /withdraw task
+bot.onText(/\/withdraw\s+task/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    const withdrawAmount = match[1];
-
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting secure browser to withdraw ${withdrawAmount}...`);
-    const msgId = statusMsg.message_id;
-
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting secure browser for Wsjobs Auto-Withdraw...`);
     const updateStatus = async (text) => {
-        await bot.editMessageText(text, { chat_id: chatId, message_id: msgId }).catch(() => {});
+        await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
     };
 
     let browser = null;
@@ -219,146 +258,116 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         browser = await puppeteer.launch({
             headless: true,
             executablePath: getChromePath(),
-            userDataDir: './wsjobs_auth_session', // THE MAGIC: This folder saves your cookies and tokens!
+            userDataDir: './wsjobs_auth_session',
             args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
         });
 
         const page = await browser.newPage();
-        await page.setViewport({ width: 412, height: 915 }); 
+        await page.setViewport({ width: 412, height: 915 });
         await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-        // --- STEP 1: CHECK SAVED SESSION ---
-        await updateStatus('[SYSTEM] Checking for saved session...');
+        // Step 1: Check Session
+        await updateStatus('[SYSTEM] Checking Wsjobs session...');
         await page.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
-        
-        // Wait 4 seconds to see if the website redirects us to the login page or lets us stay
-        await new Promise(r => setTimeout(r, 4000)); 
+        await new Promise(r => setTimeout(r, 4000));
 
-        // Check if the password box is on the screen. If it is, our session expired.
-        const requiresLogin = await page.$('input[type="password"]') !== null;
-
-        if (requiresLogin) {
-            await updateStatus('[SYSTEM] Session expired or not found. Logging in...');
-            
+        if (await page.$('input[type="password"]')) {
+            await updateStatus('[SYSTEM] Session expired. Logging in...');
             const allInputs = await page.$$('input');
-            const visibleInputs = [];
-
+            const vis = [];
             for (let input of allInputs) {
-                const isVisible = await input.evaluate(el => el.offsetParent !== null && window.getComputedStyle(el).display !== 'none');
-                if (isVisible) visibleInputs.push(input);
+                if (await input.evaluate(el => el.offsetParent !== null)) vis.push(input);
             }
-
-            if (visibleInputs.length >= 2) {
-                await visibleInputs[0].click();
-                await visibleInputs[0].type('09163916311', { delay: 100 });
-                
-                await visibleInputs[1].click();
-                await visibleInputs[1].type('Emmamama', { delay: 100 });
-                
-                await new Promise(r => setTimeout(r, 1000));
+            if (vis.length >= 2) {
+                await vis[0].type('09163916311', { delay: 100 });
+                await vis[1].type('Emmamama', { delay: 100 });
                 await page.keyboard.press('Enter');
-                
-                try {
-                    await page.evaluate(() => {
-                        const elements = Array.from(document.querySelectorAll('*'));
-                        for (let el of elements) {
-                            if (el.innerText && el.innerText.trim() === 'Login') el.click();
-                        }
-                    });
-                } catch(e) {}
-            } else {
-                throw new Error("Could not find the physical input boxes on the screen.");
+                await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+                await new Promise(r => setTimeout(r, 4000));
             }
-            
-            await updateStatus('[SYSTEM] Login submitted. Saving new session data...');
-            // Wait to be redirected back to the User dashboard
-            await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-            await new Promise(r => setTimeout(r, 4000)); 
-            
-        } else {
-            // If the password box WASN'T there, the saved cookies worked!
-            await updateStatus('[SYSTEM] Active saved session loaded! Skipped login step.');
         }
 
-        // 📸 PROOF 1: USER PAGE
-        const userSnap = await page.screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, userSnap, { caption: '[TRACE 1] Verified on User Dashboard.' });
+        // Step 2: Teleport to Withdrawal Page
+        await updateStatus('[SYSTEM] Going to withdrawal page to scan clean balance...');
+        await page.goto('https://www.wsjobs-ng.com/withdrawal', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 4000));
 
-        // --- STEP 2: CLICK ACCOUNT WITHDRAWAL ---
-        await updateStatus('[SYSTEM] Clicking "Account Withdrawal"...');
-        await page.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('*'));
-            for (let el of elements) {
-                if (el.innerText && el.innerText.includes('Account Withdrawal')) el.click();
-            }
-        });
-        await new Promise(r => setTimeout(r, 3000)); 
-
-        // --- STEP 3: THE GEOMETRIC SMART CLICKER ---
-        await updateStatus(`[SYSTEM] Selecting amount: ${withdrawAmount}...`);
-        
-        const amountClicked = await page.evaluate((amount) => {
-            const allElements = Array.from(document.querySelectorAll('*'));
-            let targetNode = null;
-            let smallestArea = Infinity;
-
-            for (let el of allElements) {
-                const text = (el.innerText || el.textContent || '').trim();
-                if (text.includes(amount)) {
-                    if (text.includes('Withdrawable') || text.includes('Minimum') || text.includes('Maximum')) continue;
-                    
-                    const rect = el.getBoundingClientRect();
-                    const area = rect.width * rect.height;
-                    
-                    if (area > 0 && area < smallestArea && el.offsetParent !== null) {
-                        smallestArea = area;
-                        targetNode = el;
-                    }
+        // Step 3: Scan Balance & Determine Tier
+        await updateStatus('[SYSTEM] Scanning Withdrawable Amount...');
+        const balanceData = await page.evaluate(() => {
+            const els = Array.from(document.querySelectorAll('*'));
+            for (let el of els) {
+                const text = (el.innerText || '').trim();
+                if (text.includes('Withdrawable Amount')) {
+                    const match = text.match(/[\d,]+\.\d{2}/);
+                    if (match) return match[0];
                 }
             }
+            return null;
+        });
 
-            if (targetNode) {
-                targetNode.scrollIntoView({ block: 'center' });
-                targetNode.click();
-                return true;
+        if (!balanceData) throw new Error("Could not detect Withdrawable Amount.");
+
+        const rawBalance = parseFloat(balanceData.replace(/,/g, ''));
+        if (rawBalance < 12000) {
+            await updateStatus(`[FAILED] Balance is ${balanceData}. Minimum requirement is 12000.`);
+            return;
+        }
+
+        // Calculate highest affordable tier
+        const tiers = [50000, 26000, 23000, 20000, 18000, 15000, 12000];
+        let targetAmount = 12000;
+        for (let t of tiers) {
+            if (rawBalance >= t) {
+                targetAmount = t;
+                break;
+            }
+        }
+
+        await updateStatus(`[SYSTEM] Balance is ${balanceData}. Automatically selecting tier: ${targetAmount}`);
+
+        // Click the target tier block
+        const clickedTier = await page.evaluate((amt) => {
+            const elements = Array.from(document.querySelectorAll('div, span, button'));
+            for (let el of elements) {
+                if ((el.innerText || '').trim() === amt.toString() && el.offsetParent !== null) {
+                    el.click();
+                    return true;
+                }
             }
             return false;
-        }, withdrawAmount);
+        }, targetAmount);
 
-        if (!amountClicked) throw new Error(`Could not locate the physical button for: ${withdrawAmount}`);
+        if (!clickedTier) throw new Error(`Could not locate the physical button for tier: ${targetAmount}`);
         await new Promise(r => setTimeout(r, 1500));
 
+        // Click Withdrawal Now
         await updateStatus(`[SYSTEM] Clicking "Withdrawal Now"...`);
         await page.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('*'));
-            for (let el of elements) {
+            Array.from(document.querySelectorAll('*')).forEach(el => {
                 if (el.innerText && el.innerText.trim() === 'Withdrawal Now') el.click();
-            }
+            });
         });
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 3000));
 
-        // --- STEP 4: CONFIRMATION PAGE ---
+        // Confirmation Page
         await updateStatus('[SYSTEM] Processing confirmation screen...');
         await page.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('*'));
-            for (let el of elements) {
-                if (el.innerText && el.innerText.trim() === 'Withdrawal') el.click();
-            }
+            Array.from(document.querySelectorAll('*')).forEach(el => {
+                if (el.innerText && el.innerText.trim() === 'Withdrawal' && el.offsetParent !== null) el.click();
+            });
         });
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 3000));
 
-        // --- STEP 5: ENTER PIN & FINALIZE ---
-        await updateStatus('[SYSTEM] Entering withdrawal password digit-by-digit...');
+        // PIN Code
+        await updateStatus('[SYSTEM] Entering withdrawal PIN...');
         const pinInputs = await page.$$('input[type="password"], input[type="number"], input[type="text"]');
-        
         const visiblePinInputs = [];
         for (let input of pinInputs) {
-            const isVis = await input.evaluate(el => el.offsetParent !== null && window.getComputedStyle(el).display !== 'none');
-            if (isVis) visiblePinInputs.push(input);
+            if (await input.evaluate(el => el.offsetParent !== null)) visiblePinInputs.push(input);
         }
 
         const pin = '111111';
-        
         if (visiblePinInputs.length === 6 || visiblePinInputs.length > 1) {
             for (let i = 0; i < pin.length && i < visiblePinInputs.length; i++) {
                 await visiblePinInputs[i].click();
@@ -370,40 +379,139 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         }
         await new Promise(r => setTimeout(r, 1500));
 
-        await updateStatus('[SYSTEM] Clicking final Confirm button...');
+        // Final Confirm
+        await updateStatus('[SYSTEM] Submitting final confirmation...');
         await page.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('*'));
-            for (let el of elements) {
-                if (el.innerText && el.innerText.trim() === 'Confirm') el.click();
-            }
+            Array.from(document.querySelectorAll('*')).forEach(el => {
+                if (el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null) el.click();
+            });
         });
-        
-        await updateStatus('[SYSTEM] Final confirmation submitted. Waiting for server response...');
-        await new Promise(r => setTimeout(r, 5000)); 
 
-        await updateStatus(`[SUCCESS] Withdrawal of ${withdrawAmount} sequence completed.`);
-        
-        // 📸 FINAL SCREENSHOT
+        await updateStatus('[SYSTEM] Waiting for server response...');
+        await new Promise(r => setTimeout(r, 5000));
+
+        await updateStatus(`[SUCCESS] Auto-withdrawal of ${targetAmount} completed.`);
         const screenshotBuffer = await page.screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Transaction Final State` });
+        await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Wsjobs Final State` });
 
     } catch (err) {
         await updateStatus(`[ERROR] Sequence failed: ${err.message}`);
-        if (browser) {
-            try {
-                await new Promise(r => setTimeout(r, 2000));
-                const pages = await browser.pages();
-                if (pages.length > 0) {
-                    const errBuffer = await pages[0].screenshot({ type: 'png' });
-                    await bot.sendPhoto(chatId, errBuffer, { caption: '[DIAGNOSTIC] The screen at the exact moment of failure.' });
-                }
-            } catch (snapErr) {}
-        }
     } finally {
-        if (browser) {
-            await browser.close();
-        }
+        if (browser) await browser.close();
     }
+});
+
+
+// --- CROSS-PLATFORM BALANCE CHECKER ---
+bot.onText(/\/balance/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    // This temporary message gets deleted right before sending the clean result
+    let statusMsg = await bot.sendMessage(chatId, `⏳ Fetching balances...`);
+
+    let wsjobsBal = '0.00';
+    let m4uBal = '0.00';
+
+    // --- 1. Wsjobs Balance Fetch ---
+    let wBrowser = null;
+    try {
+        wBrowser = await puppeteer.launch({
+            headless: true,
+            executablePath: getChromePath(),
+            userDataDir: './wsjobs_auth_session',
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        });
+        const wPage = await wBrowser.newPage();
+        await wPage.setViewport({ width: 412, height: 915 });
+        await wPage.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 3000));
+
+        if (await wPage.$('input[type="password"]')) {
+            const allInputs = await wPage.$$('input');
+            const vis = [];
+            for(let i of allInputs) if(await i.evaluate(e=>e.offsetParent!==null)) vis.push(i);
+            if(vis.length>=2) {
+                await vis[0].type('09163916311');
+                await vis[1].type('Emmamama');
+                await wPage.keyboard.press('Enter');
+                await wPage.waitForNavigation({waitUntil:'networkidle2', timeout: 10000}).catch(()=>{});
+                await wPage.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
+                await new Promise(r => setTimeout(r, 3000));
+            }
+        }
+
+        wsjobsBal = await wPage.evaluate(() => {
+            const els = Array.from(document.querySelectorAll('*'));
+            for (let el of els) {
+                const txt = (el.innerText || '').trim();
+                if (txt === 'Withdrawable' || txt === 'Balance') {
+                    const match = (el.parentElement.innerText || '').match(/[\d,]+\.\d{2}/);
+                    if (match) return match[0];
+                }
+            }
+            return '0.00';
+        });
+    } catch(e) {
+        wsjobsBal = 'Error';
+    } finally {
+        if(wBrowser) await wBrowser.close();
+    }
+
+    // --- 2. M4U Balance Fetch (Reuses engine if running!) ---
+    try {
+        let mBrowser = m4uBrowser;
+        let shouldClose = false;
+        if (!mBrowser) {
+            mBrowser = await puppeteer.launch({
+                headless: true,
+                executablePath: getChromePath(),
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+            });
+            shouldClose = true;
+        }
+        const mPage = await mBrowser.newPage();
+        await mPage.setViewport({ width: 412, height: 915 });
+        await mPage.goto('https://taskm4u.com/#/mine', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 3000));
+
+        if (mPage.url().includes('login')) {
+            const inputs = await mPage.$$('input');
+            if (inputs.length >= 2) {
+                await inputs[0].type('Staring');
+                await inputs[1].type('Emmama');
+                await mPage.evaluate(() => {
+                    Array.from(document.querySelectorAll('*')).forEach(el => {
+                        if (el.innerText && el.innerText.trim() === 'Login') el.click();
+                    });
+                });
+                await mPage.waitForNavigation({waitUntil:'networkidle2', timeout:10000}).catch(()=>{});
+                await mPage.goto('https://taskm4u.com/#/mine', { waitUntil: 'networkidle2' });
+                await new Promise(r => setTimeout(r, 3000));
+            }
+        }
+
+        m4uBal = await mPage.evaluate(() => {
+            const els = Array.from(document.querySelectorAll('*'));
+            for (let el of els) {
+                const txt = (el.innerText || '').trim();
+                if (txt === 'Account Balance') {
+                    const match = (el.parentElement.innerText || '').match(/[\d,]+\.\d{2}/);
+                    if (match) return match[0];
+                }
+            }
+            return '0.00';
+        });
+
+        await mPage.close();
+        if (shouldClose) await mBrowser.close();
+    } catch(e) {
+        m4uBal = 'Error';
+    }
+
+    // --- 3. FINAL CLEAN OUTPUT ---
+    bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{}); // Delete the "Fetching" message
+    bot.sendMessage(chatId, `Wsjobs: ${wsjobsBal}\nM4U: ${m4uBal}`); // Send pure text output
 });
 
 
