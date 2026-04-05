@@ -399,20 +399,27 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    let statusMsg = await bot.sendMessage(chatId, `⏳ Fetching balances...`);
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Fetching balances...');
 
     let wsjobsBal = '0.00';
     let m4uBal = '0.00';
 
     // --- 1. Wsjobs Balance Fetch ---
-    let wBrowser = null;
     try {
-        wBrowser = await puppeteer.launch({
-            headless: true,
-            executablePath: getChromePath(),
-            userDataDir: './wsjobs_auth_session',
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-        });
+        let wBrowser = globalTaskBrowser;
+        let shouldCloseW = false;
+        
+        if (!wBrowser) {
+            wBrowser = await puppeteer.launch({
+                headless: true,
+                executablePath: getChromePath(),
+                userDataDir: './wsjobs_auth_session',
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+            });
+            shouldCloseW = true;
+        }
+        
+        // Explicitly open a fresh, separate tab for Wsjobs
         const wPage = await wBrowser.newPage();
         await wPage.setViewport({ width: 412, height: 915 });
         
@@ -448,24 +455,30 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             if (match) return match[1];
             return '0.00';
         });
+
+        // Explicitly close the Wsjobs tab immediately after scraping
+        await wPage.close().catch(() => {});
+        
+        if (shouldCloseW) await wBrowser.close();
     } catch(e) {
         wsjobsBal = 'Error';
-    } finally {
-        if(wBrowser) await wBrowser.close();
     }
 
     // --- 2. M4U Balance Fetch ---
     try {
         let mBrowser = m4uBrowser;
-        let shouldClose = false;
+        let shouldCloseM = false;
+        
         if (!mBrowser) {
             mBrowser = await puppeteer.launch({
                 headless: true,
                 executablePath: getChromePath(),
                 args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
             });
-            shouldClose = true;
+            shouldCloseM = true;
         }
+        
+        // Explicitly open a fresh, separate tab for M4U
         const mPage = await mBrowser.newPage();
         await mPage.setViewport({ width: 412, height: 915 });
         
@@ -493,22 +506,17 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             }
         }
 
-        // EXACT LOGIC FROM YOUR WITHDRAWAL COMMAND
         m4uBal = await mPage.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('*'));
-            for (let i = 0; i < elements.length; i++) {
-                const text = (elements[i].innerText || '').trim();
-                if (text === 'Account Balance') {
-                    const containerText = elements[i].parentElement.innerText || '';
-                    const match = containerText.match(/[\d,]+\.\d{2}/); 
-                    if (match) return match[0];
-                }
-            }
+            const rawText = document.body.innerText || document.body.textContent || '';
+            const match = rawText.match(/Account\s*Balance[\s\S]*?([\d,]+\.\d{2})/i); 
+            if (match) return match[1];
             return '0.00';
         });
 
-        await mPage.close();
-        if (shouldClose) await mBrowser.close();
+        // Explicitly close the M4U tab immediately after scraping
+        await mPage.close().catch(() => {});
+        
+        if (shouldCloseM) await mBrowser.close();
     } catch(e) {
         m4uBal = 'Error';
     }
@@ -517,6 +525,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
     bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{}); 
     bot.sendMessage(chatId, `Wsjobs: ${wsjobsBal}\nM4U: ${m4uBal}`); 
 });
+
 
      
 // Usage: /task 127
