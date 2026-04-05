@@ -267,15 +267,56 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         if (!withdrawalClicked) throw new Error("Could not find 'Account Withdrawal' link.");
         await new Promise(r => setTimeout(r, 3000)); 
 
-        // --- STEP 3: SELECT AMOUNT & WITHDRAW ---
+                // --- STEP 3: THE GEOMETRIC SMART CLICKER ---
         await updateStatus(`[SYSTEM] Selecting amount: ${withdrawAmount}...`);
-        const amountClicked = await clickByText(withdrawAmount, true); 
-        if (!amountClicked) throw new Error(`Could not find a button for the amount: ${withdrawAmount}`);
+        
+        const amountClicked = await page.evaluate((amount) => {
+            // Grab literally every single element on the page
+            const allElements = Array.from(document.querySelectorAll('*'));
+            
+            let targetNode = null;
+            let smallestArea = Infinity;
+
+            for (let el of allElements) {
+                // Read whatever text is visible inside this element
+                const text = (el.innerText || el.textContent || '').trim();
+                
+                if (text.includes(amount)) {
+                    // 1. Ignore the header (Withdrawable Amount...)
+                    // 2. Ignore the footer (Minimum/Maximum instructions...)
+                    if (text.includes('Withdrawable') || text.includes('Minimum') || text.includes('Maximum')) {
+                        continue;
+                    }
+
+                    // Get the physical dimensions of this element on the screen
+                    const rect = el.getBoundingClientRect();
+                    const area = rect.width * rect.height;
+
+                    // Drill down to find the absolute smallest box that contains the number.
+                    // This bypasses all the invisible background wrappers and hits the exact button.
+                    if (area > 0 && area < smallestArea) {
+                        smallestArea = area;
+                        targetNode = el;
+                    }
+                }
+            }
+
+            // If we found the physical button, scroll to it and tap it
+            if (targetNode) {
+                targetNode.scrollIntoView({ block: 'center' });
+                targetNode.click();
+                return true;
+            }
+            return false;
+        }, withdrawAmount);
+
+        if (!amountClicked) throw new Error(`Could not locate the physical button for: ${withdrawAmount}`);
         await new Promise(r => setTimeout(r, 1000));
 
         await updateStatus(`[SYSTEM] Clicking "Withdrawal Now"...`);
         await clickByText('Withdrawal Now', false);
         await new Promise(r => setTimeout(r, 2000));
+
 
         // --- STEP 4: CONFIRMATION PAGE ---
         await updateStatus('[SYSTEM] Processing confirmation screen...');
