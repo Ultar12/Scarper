@@ -473,7 +473,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await new Promise(r => setTimeout(r, 3000));
 
 
-       await updateStatus('[SYSTEM] Entering withdrawal PIN...');
+               await updateStatus('[SYSTEM] Entering withdrawal PIN...');
         const pin = '111111'; // Ensure this matches your actual PIN
 
         // --- NEW: SCREENSHOT BEFORE TYPING PIN ---
@@ -481,27 +481,21 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await bot.sendPhoto(chatId, prePinSnap, { caption: '[DEBUG] State BEFORE typing PIN' });
         // -----------------------------------------
 
+        // 1. Find the first active box and click it ONCE to get the cursor blinking
         const pinInputs = await page.$$('input');
-        const activePinInputs = [];
-        
         for (let input of pinInputs) {
-            // REMOVED the opacity check. Many sites use an invisible input overlay to capture PINs!
             if (await input.evaluate(el => window.getComputedStyle(el).display !== 'none' && el.type !== 'hidden')) {
-                activePinInputs.push(input);
+                await input.click();
+                await new Promise(r => setTimeout(r, 500)); // Wait for focus to lock
+                break; // Stop looking after we click the first one
             }
         }
 
-        if (activePinInputs.length >= 6) {
-            // SCENARIO A: The site uses 6 distinct physical input boxes
-            for (let i = 0; i < 6; i++) {
-                // Force raw browser focus to bypass transparent layers
-                await activePinInputs[i].evaluate(el => el.focus()); 
-                await activePinInputs[i].type(pin[i], { delay: 150 });
-            }
-        } else if (activePinInputs.length > 0) {
-            // SCENARIO B: The site uses 1 transparent master input that controls the 6 UI boxes
-            await activePinInputs[0].evaluate(el => el.focus());
-            await activePinInputs[0].type(pin, { delay: 150 });
+        // 2. Blind type using the master keyboard. 
+        // We press the keys at the page-level so it doesn't crash if the website re-renders the boxes.
+        for (let i = 0; i < pin.length; i++) {
+            await page.keyboard.press(pin[i]);
+            await new Promise(r => setTimeout(r, 600)); // 600ms pause = slow, deliberate human typing
         }
 
         await new Promise(r => setTimeout(r, 1500));
