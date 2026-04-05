@@ -464,7 +464,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
         wsjobsBal = 'Error';
     }
 
-        // --- 2. M4U Balance Fetch ---
+    // --- 2. M4U Balance Fetch ---
     try {
         let mBrowser = m4uBrowser;
         let shouldCloseM = false;
@@ -487,7 +487,6 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
         if (mPage.url().includes('login')) {
             const inputs = await mPage.$$('input');
             if (inputs.length >= 2) {
-                // Exact login logic from the withdraw command (NO input clearing)
                 await inputs[0].type('Staring', { delay: 50 });
                 await inputs[1].type('Emmama', { delay: 50 });
                 await new Promise(r => setTimeout(r, 1000));
@@ -503,6 +502,31 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
                 await new Promise(r => setTimeout(r, 4000));
             }
         }
+
+        // --- ADDED SCREENSHOT STEP HERE ---
+        const debugSnap = await mPage.screenshot({ type: 'png' });
+        await bot.sendPhoto(chatId, debugSnap, { caption: '[DEBUG] M4U Page Status before scraping' });
+
+        // Exact scraper logic from the withdraw command
+        m4uBal = await mPage.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('*'));
+            for (let i = 0; i < elements.length; i++) {
+                const text = (elements[i].innerText || '').trim();
+                if (text === 'Account Balance') {
+                    const containerText = elements[i].parentElement.innerText || '';
+                    const match = containerText.match(/[\d,]+\.\d{2}/);
+                    if (match) return match[0];
+                }
+            }
+            return '0.00';
+        });
+
+        await mPage.close().catch(() => {});
+        if (shouldCloseM) await mBrowser.close();
+    } catch(e) {
+        m4uBal = 'Error';
+    }
+
 
         // Exact scraper logic from the withdraw command
        m4uBal = await mPage.evaluate(() => {
