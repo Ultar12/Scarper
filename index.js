@@ -189,20 +189,16 @@ bot.onText(/\/checknum\s+(.+)/, async (msg, match) => {
     }
 });
 
-
-
-        // Usage: /withdraw 12000
+// Usage: /withdraw 12000
 bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
     const withdrawAmount = match[1];
 
-    // Send the INITIAL message and save its ID so we can edit it later
     let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting secure browser to withdraw ${withdrawAmount}...`);
     const msgId = statusMsg.message_id;
 
-    // Helper function to edit the message instantly
     const updateStatus = async (text) => {
         await bot.editMessageText(text, { chat_id: chatId, message_id: msgId }).catch(() => {});
     };
@@ -219,6 +215,24 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         await page.setViewport({ width: 412, height: 915 }); 
         await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
+        // --- BULLETPROOF DOM CLICKER ---
+        // This function searches the raw HTML for the exact text and physically clicks it
+        const clickByText = async (textToFind, exactMatch = false) => {
+            return await page.evaluate((text, exact) => {
+                const elements = Array.from(document.querySelectorAll('div, span, a, button, p, li'));
+                for (let el of elements) {
+                    if (!el.innerText) continue;
+                    const inner = el.innerText.trim();
+                    if (exact && inner === text) {
+                        el.click(); return true;
+                    } else if (!exact && inner.includes(text)) {
+                        el.click(); return true;
+                    }
+                }
+                return false;
+            }, textToFind, exactMatch);
+        };
+
         // --- STEP 1: LOGIN ---
         await updateStatus('[SYSTEM] Loading login page...');
         await page.goto('https://www.wsjobs-ng.com/login', { waitUntil: 'networkidle2' });
@@ -229,54 +243,43 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
             await inputs[1].type('Emmamama', { delay: 50 });
         }
         
-        const loginBtn = await page.waitForSelector("xpath///*[contains(text(), 'Login')]", { timeout: 5000 }).catch(() => null);
-        if (loginBtn) await loginBtn.click();
+        await clickByText('Login', true);
         
-        await new Promise(r => setTimeout(r, 4000)); 
+        // Wait 6 full seconds to allow the SPA to natively route to the Home page
+        await updateStatus('[SYSTEM] Login submitted. Waiting for native home page load...');
+        await new Promise(r => setTimeout(r, 6000)); 
 
-        // --- STEP 2: USER DASHBOARD ---
-        await updateStatus('[SYSTEM] Login successful. Navigating to User Dashboard...');
-        // Teleport to the User page where the Account Withdrawal button lives
-        await page.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 2000)); 
+        // --- STEP 2: NATIVE NAVIGATION ---
+        // Try to click the "Confirm" button to close the welcome popup if it exists
+        await updateStatus('[SYSTEM] Clearing popups...');
+        await clickByText('Confirm', true); 
+        await new Promise(r => setTimeout(r, 1000)); 
 
-        await updateStatus('[SYSTEM] Clicking "Account Withdrawal" menu...');
-        const withdrawalLink = await page.waitForSelector("xpath///*[contains(text(), 'Account Withdrawal')]", { timeout: 5000 }).catch(() => null);
-        if (withdrawalLink) {
-            await withdrawalLink.click();
-        } else {
-            throw new Error("Could not find the 'Account Withdrawal' link on the User page.");
-        }
-        
-        // Wait for the actual withdrawal page (with the amount buttons) to load
+        // Click the "Account" tab on the bottom navigation bar
+        await updateStatus('[SYSTEM] Clicking the "Account" tab on the bottom menu...');
+        const accountClicked = await clickByText('Account', true);
+        if (!accountClicked) throw new Error("Could not find the 'Account' tab at the bottom of the screen.");
+        await new Promise(r => setTimeout(r, 3000)); 
+
+        // Click the Account Withdrawal menu item
+        await updateStatus('[SYSTEM] Clicking "Account Withdrawal"...');
+        const withdrawalClicked = await clickByText('Account Withdrawal', false);
+        if (!withdrawalClicked) throw new Error("Could not find 'Account Withdrawal' link.");
         await new Promise(r => setTimeout(r, 3000)); 
 
         // --- STEP 3: SELECT AMOUNT & WITHDRAW ---
         await updateStatus(`[SYSTEM] Selecting amount: ${withdrawAmount}...`);
-        
-        const buttonClicked = await page.evaluate((amount) => {
-            const elements = Array.from(document.querySelectorAll('div, span, button, a'));
-            for (let el of elements) {
-                if (el.innerText && el.innerText.trim() === amount) {
-                    el.click();
-                    return true;
-                }
-            }
-            return false;
-        }, withdrawAmount);
-
-        if (!buttonClicked) throw new Error(`Could not find a button for the amount: ${withdrawAmount}`);
+        const amountClicked = await clickByText(withdrawAmount, true); 
+        if (!amountClicked) throw new Error(`Could not find a button for the amount: ${withdrawAmount}`);
         await new Promise(r => setTimeout(r, 1000));
 
         await updateStatus(`[SYSTEM] Clicking "Withdrawal Now"...`);
-        const withdrawNowBtn = await page.waitForSelector("xpath///*[contains(text(), 'Withdrawal Now')]", { timeout: 5000 }).catch(() => null);
-        if (withdrawNowBtn) await withdrawNowBtn.click();
+        await clickByText('Withdrawal Now', false);
         await new Promise(r => setTimeout(r, 2000));
 
         // --- STEP 4: CONFIRMATION PAGE ---
         await updateStatus('[SYSTEM] Processing confirmation screen...');
-        const confirmWithdrawalBtn = await page.waitForSelector("xpath///*[text()='Withdrawal']", { timeout: 5000 }).catch(() => null);
-        if (confirmWithdrawalBtn) await confirmWithdrawalBtn.click();
+        await clickByText('Withdrawal', true);
         await new Promise(r => setTimeout(r, 2000));
 
         // --- STEP 5: ENTER PIN & FINALIZE ---
@@ -292,15 +295,13 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         await new Promise(r => setTimeout(r, 1000));
 
         await updateStatus('[SYSTEM] Clicking final Confirm button...');
-        const finalConfirmBtn = await page.waitForSelector("xpath///*[text()='Confirm']", { timeout: 5000 }).catch(() => null);
-        if (finalConfirmBtn) await finalConfirmBtn.click();
+        await clickByText('Confirm', true);
         
         await updateStatus('[SYSTEM] Final confirmation submitted. Waiting for server response...');
         await new Promise(r => setTimeout(r, 5000)); 
 
         await updateStatus(`[SUCCESS] Withdrawal of ${withdrawAmount} sequence completed.`);
         
-        // Take the final proof picture and send it as a new message
         const screenshotBuffer = await page.screenshot({ type: 'png' });
         await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Transaction Final State` });
 
