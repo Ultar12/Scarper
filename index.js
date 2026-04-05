@@ -393,9 +393,6 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
     }
 });
 
-
-
-
 // --- CROSS-PLATFORM BALANCE CHECKER ---
 bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
@@ -417,6 +414,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
         });
         const wPage = await wBrowser.newPage();
         await wPage.setViewport({ width: 412, height: 915 });
+        
         await wPage.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
 
@@ -425,19 +423,28 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             const vis = [];
             for(let i of allInputs) if(await i.evaluate(e=>e.offsetParent!==null)) vis.push(i);
             if(vis.length>=2) {
-                await vis[0].type('09163916311');
-                await vis[1].type('Emmamama');
-                await wPage.keyboard.press('Enter');
-                await wPage.waitForNavigation({waitUntil:'networkidle2', timeout: 10000}).catch(()=>{});
+                await vis[0].evaluate(el => el.value = '');
+                await vis[0].type('09163916311', { delay: 50 });
+                await vis[1].evaluate(el => el.value = '');
+                await vis[1].type('Emmamama', { delay: 50 });
+                await new Promise(r => setTimeout(r, 1000));
+                
+                await wPage.evaluate(() => {
+                    Array.from(document.querySelectorAll('*')).forEach(el => {
+                        if (el.innerText && el.innerText.trim() === 'Login' && el.offsetParent !== null) el.click();
+                    });
+                });
+                
+                await wPage.waitForNavigation({waitUntil:'networkidle2', timeout: 15000}).catch(()=>{});
                 await wPage.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
                 await new Promise(r => setTimeout(r, 4000));
             }
         }
 
-        // Apply ultra-resilient scanner for Wsjobs
+        // Bulletproof Scanner
         wsjobsBal = await wPage.evaluate(() => {
-            const text = document.body.innerText || '';
-            const match = text.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
+            const rawText = document.body.textContent || '';
+            const match = rawText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
             if (match) return match[1];
             return '0.00';
         });
@@ -461,29 +468,43 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
         }
         const mPage = await mBrowser.newPage();
         await mPage.setViewport({ width: 412, height: 915 });
+        
         await mPage.goto('https://taskm4u.com/#/mine', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
 
         if (mPage.url().includes('login')) {
             const inputs = await mPage.$$('input');
             if (inputs.length >= 2) {
-                await inputs[0].type('Staring');
-                await inputs[1].type('Emmama');
+                await inputs[0].evaluate(el => el.value = '');
+                await inputs[0].type('Staring', { delay: 50 });
+                await inputs[1].evaluate(el => el.value = '');
+                await inputs[1].type('Emmama', { delay: 50 });
+                await new Promise(r => setTimeout(r, 1000));
+                
                 await mPage.evaluate(() => {
                     Array.from(document.querySelectorAll('*')).forEach(el => {
                         if (el.innerText && el.innerText.trim() === 'Login') el.click();
                     });
                 });
-                await mPage.waitForNavigation({waitUntil:'networkidle2', timeout:10000}).catch(()=>{});
+                
+                await mPage.waitForNavigation({waitUntil:'networkidle2', timeout:15000}).catch(()=>{});
                 await mPage.goto('https://taskm4u.com/#/mine', { waitUntil: 'networkidle2' });
                 await new Promise(r => setTimeout(r, 4000));
             }
         }
 
-        // Apply ultra-resilient scanner for M4U
+        // M4U Smart Scanner
         m4uBal = await mPage.evaluate(() => {
-            const text = document.body.innerText || '';
-            const match = text.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
+            const elements = Array.from(document.querySelectorAll('div, span, p'));
+            for (let el of elements) {
+                if ((el.innerText || '').trim() === 'Account Balance') {
+                    const parentText = el.parentElement.innerText || '';
+                    const match = parentText.match(/[\d,]+\.\d{2}/);
+                    if (match) return match[0];
+                }
+            }
+            const rawText = document.body.textContent || '';
+            const match = rawText.match(/Account\s*Balance[\s\r\n]*([\d,]+(?:\.\d+)?)/i);
             if (match) return match[1];
             return '0.00';
         });
@@ -498,6 +519,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
     bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{}); 
     bot.sendMessage(chatId, `Wsjobs: ${wsjobsBal}\nM4U: ${m4uBal}`); 
 });
+
 
 
 // Usage: /task 127
