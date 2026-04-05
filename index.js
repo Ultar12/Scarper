@@ -238,10 +238,7 @@ bot.onText(/\/pair\s+m4u/i, async (msg) => {
 
 
 
-
-
-
- // --- WSJOBS SMART WITHDRAWAL ---
+// --- WSJOBS SMART WITHDRAWAL ---
 // Usage: /withdraw task
 bot.onText(/\/withdraw\s+task/i, async (msg) => {
     const chatId = msg.chat.id.toString();
@@ -265,7 +262,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await page.setViewport({ width: 412, height: 915 });
         await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-        // Step 1: Check Session
+        // Step 1: Check Session on User Dashboard
         await updateStatus('[SYSTEM] Checking Wsjobs session...');
         await page.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
@@ -286,26 +283,17 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             }
         }
 
-        // Step 2: Teleport to Withdrawal Page
-        await updateStatus('[SYSTEM] Going to withdrawal page to scan clean balance...');
-        await page.goto('https://www.wsjobs-ng.com/withdrawal', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 4000));
-
-        // Step 3: Scan Balance & Determine Tier
-        await updateStatus('[SYSTEM] Scanning Withdrawable Amount...');
+        // Step 2: Scan Balance directly from User Page
+        await updateStatus('[SYSTEM] Scanning Account Balance...');
         const balanceData = await page.evaluate(() => {
-            const els = Array.from(document.querySelectorAll('*'));
-            for (let el of els) {
-                const text = (el.innerText || '').trim();
-                if (text.includes('Withdrawable Amount')) {
-                    const match = text.match(/[\d,]+\.\d{2}/);
-                    if (match) return match[0];
-                }
-            }
+            const text = document.body.innerText || '';
+            // Ultra-resilient scanner: Handles hidden line breaks, spaces, and colons perfectly
+            const match = text.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
+            if (match) return match[1];
             return null;
         });
 
-        if (!balanceData) throw new Error("Could not detect Withdrawable Amount.");
+        if (!balanceData) throw new Error("Could not detect Account Balance on the user page.");
 
         const rawBalance = parseFloat(balanceData.replace(/,/g, ''));
         if (rawBalance < 12000) {
@@ -324,6 +312,11 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         }
 
         await updateStatus(`[SYSTEM] Balance is ${balanceData}. Automatically selecting tier: ${targetAmount}`);
+
+        // Step 3: Teleport to Withdrawal Page
+        await updateStatus('[SYSTEM] Jumping to withdrawal page to execute...');
+        await page.goto('https://www.wsjobs-ng.com/withdrawal', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 4000));
 
         // Click the target tier block
         const clickedTier = await page.evaluate((amt) => {
@@ -401,13 +394,14 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 });
 
 
+
+
 // --- CROSS-PLATFORM BALANCE CHECKER ---
 bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    // This temporary message gets deleted right before sending the clean result
-    let statusMsg = await bot.sendMessage(chatId, `Fetching balances...`);
+    let statusMsg = await bot.sendMessage(chatId, `⏳ Fetching balances...`);
 
     let wsjobsBal = '0.00';
     let m4uBal = '0.00';
@@ -440,10 +434,10 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             }
         }
 
-        // THE FIX: Smart Regex that grabs the number even if there are no decimals!
+        // Apply ultra-resilient scanner for Wsjobs
         wsjobsBal = await wPage.evaluate(() => {
             const text = document.body.innerText || '';
-            const match = text.match(/Account Balance:\s*([\d,]+(?:\.\d+)?)/i);
+            const match = text.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
             if (match) return match[1];
             return '0.00';
         });
@@ -453,7 +447,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
         if(wBrowser) await wBrowser.close();
     }
 
-    // --- 2. M4U Balance Fetch (Reuses engine if running!) ---
+    // --- 2. M4U Balance Fetch ---
     try {
         let mBrowser = m4uBrowser;
         let shouldClose = false;
@@ -486,10 +480,10 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             }
         }
 
-        // THE FIX: Smart Regex for M4U's line-break formatting
+        // Apply ultra-resilient scanner for M4U
         m4uBal = await mPage.evaluate(() => {
             const text = document.body.innerText || '';
-            const match = text.match(/Account Balance[\s\r\n]+([\d,]+(?:\.\d+)?)/i);
+            const match = text.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
             if (match) return match[1];
             return '0.00';
         });
@@ -506,8 +500,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
 });
 
 
-
-    // Usage: /task 127
+// Usage: /task 127
 bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -539,22 +532,36 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         }
         browser = globalTaskBrowser;
 
-        // --- HELPER: SMART TUTORIAL SWEEPER ---
+        // --- THE GOLDEN FIX: SMART TUTORIAL POLLER ---
         const sweepTutorial = async (targetPage) => {
-            for (let i = 0; i < 10; i++) { 
+            let emptyChecks = 0;
+            // It will loop up to 20 times, clicking through all slides and waiting
+            for (let i = 0; i < 20; i++) { 
                 const clicked = await targetPage.evaluate(() => {
-                    const elements = Array.from(document.querySelectorAll('button, span, div, a'));
+                    const elements = Array.from(document.querySelectorAll('*'));
                     for (let el of elements) {
                         const txt = (el.innerText || '').trim().toLowerCase();
-                        if ((txt === 'next →' || txt.includes('next →') || txt === 'done') && el.offsetParent !== null) {
-                            el.click();
-                            return true;
+                        
+                        // We strictly look for "next" accompanied by an arrow, OR the word "done"
+                        if ((txt.includes('next') && (txt.includes('→') || txt.includes('->') || txt.includes('>'))) || txt === 'done') {
+                            if (el.offsetParent !== null) {
+                                el.click();
+                                return true;
+                            }
                         }
                     }
                     return false;
                 });
-                if (!clicked) break; 
-                await new Promise(r => setTimeout(r, 1000)); 
+
+                if (clicked) {
+                    emptyChecks = 0; // We found one! Reset the empty check counter.
+                    await new Promise(r => setTimeout(r, 1000)); // Wait 1 second for the slide animation
+                } else {
+                    emptyChecks++;
+                    // If we check 4 times (4 seconds) and see nothing, it's truly clear!
+                    if (emptyChecks >= 4) break; 
+                    await new Promise(r => setTimeout(r, 1000));
+                }
             }
         };
 
@@ -580,7 +587,6 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
 
             if (visibleInputs.length >= 2) {
-                // Clear any junk in the boxes just in case
                 await visibleInputs[0].evaluate(el => el.value = '');
                 await visibleInputs[0].click();
                 await visibleInputs[0].type('09163916311', { delay: 50 });
@@ -591,7 +597,6 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                 
                 await new Promise(r => setTimeout(r, 1000));
                 
-                // THE FIX: Physically tap the Login button instead of hitting Enter!
                 await page1.evaluate(() => {
                     const elements = Array.from(document.querySelectorAll('*'));
                     for (let el of elements) {
@@ -610,10 +615,11 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         }
 
         // --- STEP 2: SWEEP MASTER TAB ---
-        await updateStatus('[SYSTEM] Clearing tutorials on Master Tab...');
+        await updateStatus('[SYSTEM] Scanning for delayed tutorials on Master Tab...');
         await sweepTutorial(page1);
 
         // --- STEP 3: COUNT TARGETS & SPAWN CLONES ---
+        await updateStatus(`[SYSTEM] Target acquisition phase for: ${targetSuffix}...`);
         const targetCount = await page1.evaluate((suffixStr) => {
             const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
             let count = 0;
@@ -645,7 +651,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         }
 
         // --- STEP 4: TARGET ACQUISITION ---
-        await updateStatus(`[SYSTEM] Clicking "Send" on all tabs...`);
+        await updateStatus(`[SYSTEM] Tabs clear. Clicking "Send" on all targets...`);
         
         const clickResults = await Promise.all(pages.map((p, index) => {
             return p.evaluate((suffixStr, tabIndex) => {
