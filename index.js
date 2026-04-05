@@ -44,6 +44,57 @@ const pool = new Pool({
 
 const store = new PostgresStore({ pool: pool });
 
+// --- BROWSER SESSION DATABASE MANAGER ---
+pool.query(`CREATE TABLE IF NOT EXISTS browser_sessions (platform VARCHAR(50) PRIMARY KEY, cookies JSONB);`)
+    .then(() => pool.query(`ALTER TABLE browser_sessions ADD COLUMN IF NOT EXISTS local_storage JSONB;`))
+    .then(() => console.log('[SYSTEM] Browser Session DB Ready.'))
+    .catch(console.error);
+
+const saveSessionToDB = async (platform, page) => {
+    try {
+        const cookies = await page.cookies();
+        // Extract all cache/localStorage
+        const localStorageData = await page.evaluate(() => Object.assign({}, window.localStorage));
+        
+        await pool.query(
+            `INSERT INTO browser_sessions (platform, cookies, local_storage) VALUES ($1, $2, $3) 
+             ON CONFLICT (platform) DO UPDATE SET cookies = EXCLUDED.cookies, local_storage = EXCLUDED.local_storage`,
+            [platform, JSON.stringify(cookies), JSON.stringify(localStorageData)]
+        );
+        console.log(`[SYSTEM] Saved ${platform} cookies and cache to Database.`);
+    } catch (err) {
+        console.error(`[ERROR] Failed to save session to DB:`, err);
+    }
+};
+
+const loadSessionFromDB = async (platform, page) => {
+    try {
+        const res = await pool.query(`SELECT cookies, local_storage FROM browser_sessions WHERE platform = $1`, [platform]);
+        if (res.rows.length > 0) {
+            const { cookies, local_storage } = res.rows[0];
+            
+            if (cookies && cookies.length > 0) {
+                await page.setCookie(...cookies);
+            }
+            if (local_storage && Object.keys(local_storage).length > 0) {
+                await page.evaluate((ls) => {
+                    for (let key in ls) window.localStorage.setItem(key, ls[key]);
+                }, local_storage);
+            }
+            console.log(`[SYSTEM] Loaded ${platform} cookies and cache from Database.`);
+            return true;
+        }
+    } catch (err) {
+        console.error(`[ERROR] Failed to load session from DB:`, err);
+    }
+    return false;
+};
+
+// Global variables to track open tabs and handle the 1-hour idle timeout
+let activeTaskPages = [];
+let taskIdleTimer = null;
+
+
 // --- 2. HEROKU WEB SERVER SETUP ---
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -540,8 +591,6 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
 });
 
 
-
-     
 // Usage: /task 127
 bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
@@ -560,26 +609,33 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     let pages = []; 
 
     try {
+        // --- 1-HOUR IDLE TIMER CLEANUP ---
+        if (taskIdleTimer) clearTimeout(taskIdleTimer);
+        if (activeTaskPages.length > 0) {
+            await updateStatus('[SYSTEM] Closing previous task tabs to free memory...');
+            for (let p of activeTaskPages) await p.close().catch(()=>{});
+            activeTaskPages = [];
+        }
+
         // --- THE ENGINE WARM-UP ---
         if (typeof globalTaskBrowser === 'undefined' || !globalTaskBrowser) {
             await updateStatus('[SYSTEM] Cold Boot: Launching background Chrome engine...');
             globalTaskBrowser = await puppeteer.launch({
                 headless: true,
                 executablePath: getChromePath(),
-                userDataDir: './wsjobs_auth_session', 
                 args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
             });
         } else {
-            await updateStatus('[SYSTEM] Warm Boot: Engine already running. Lightning fast start!');
+            await updateStatus('[SYSTEM] Warm Boot: Engine already running.');
         }
         browser = globalTaskBrowser;
 
         // --- DYNAMIC TUTORIAL TRACKER ---
         const sweepTutorial = async (targetPage) => {
             await new Promise(r => setTimeout(r, 2500)); 
-            
             let maxAttempts = 20; 
             let emptyChecks = 0;
+            let didSweep = false;
             
             while (maxAttempts > 0 && emptyChecks < 3) {
                 maxAttempts--;
@@ -600,20 +656,26 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
                 if (clicked) {
                     emptyChecks = 0; 
+                    didSweep = true;
                     await new Promise(r => setTimeout(r, 1000)); 
                 } else {
                     emptyChecks++; 
                     await new Promise(r => setTimeout(r, 1000)); 
                 }
             }
+            return didSweep;
         };
 
-        // --- STEP 1: INITIALIZE MASTER TAB ---
-        await updateStatus('[SYSTEM] Opening Master Tab...');
+        // --- STEP 1: INITIALIZE MASTER TAB & INJECT DB DATA ---
+        await updateStatus('[SYSTEM] Opening Master Tab & loading DB credentials...');
         const page1 = await browser.newPage();
         pages.push(page1);
         await page1.setViewport({ width: 412, height: 915 }); 
         await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+
+        // Go to base URL first so localStorage injects safely without cross-domain errors
+        await page1.goto('https://www.wsjobs-ng.com', { waitUntil: 'networkidle2' });
+        await loadSessionFromDB('wsjobs_task', page1);
 
         await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000)); 
@@ -621,7 +683,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         const requiresLogin = await page1.$('input[type="password"]') !== null;
 
         if (requiresLogin) {
-            await updateStatus('[SYSTEM] Session expired. Performing Physical Login...');
+            await updateStatus('[SYSTEM] DB Session missing/expired. Performing Physical Login...');
             const allInputs = await page1.$$('input');
             const visibleInputs = [];
             for (let input of allInputs) {
@@ -657,9 +719,13 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             await new Promise(r => setTimeout(r, 4000));
         }
 
-        // --- STEP 2: SWEEP MASTER TAB ---
-        await updateStatus('[SYSTEM] Scanning for tutorials on Master Tab...');
+        // --- STEP 2: SWEEP MASTER TAB & SAVE PERMANENT CACHE ---
+        await updateStatus('[SYSTEM] Checking tutorials on Master Tab...');
         await sweepTutorial(page1);
+
+        // ALWAYS save the cookies + cache after sweeping to lock the "tutorial finished" memory
+        await updateStatus('[SYSTEM] Locking updated cookies/cache into Database...');
+        await saveSessionToDB('wsjobs_task', page1);
 
         // --- STEP 3: COUNT TARGETS & SPAWN CLONES ---
         await updateStatus(`[SYSTEM] Target acquisition phase for: ${targetSuffix}...`);
@@ -680,6 +746,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
         await updateStatus(`[SYSTEM] Found ${targetCount} matching numbers. Spawning ${targetCount - 1} clone tabs...`);
 
+        // Spawn Clones (Because they open in the same browser context, they instantly inherit the saved cache!)
         for (let i = 1; i < targetCount; i++) {
             const newPage = await browser.newPage();
             pages.push(newPage);
@@ -689,11 +756,11 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
         if (pages.length > 1) {
             await Promise.all(pages.slice(1).map(p => p.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' })));
+            await new Promise(r => setTimeout(r, 3000));
         }
 
-        // --- STEP 3.5: FINAL SWEEP ON ALL TABS ---
-        await updateStatus(`[SYSTEM] Performing Aggressive Pre-Strike Sweep on all tabs...`);
-        await Promise.all(pages.map(p => sweepTutorial(p)));
+        // Just a final safety check on clones (should instantly pass because of inherited cache)
+        await Promise.all(pages.slice(1).map(p => sweepTutorial(p)));
 
         // --- STEP 4: TARGET ACQUISITION ---
         await updateStatus(`[SYSTEM] Tabs are clear. Clicking "Send" on all targets...`);
@@ -733,7 +800,6 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         }));
 
-        // NEW: SEND SCREENSHOT OF EVERY TAB BEFORE CLICKING CONFIRM
         await updateStatus(`[SYSTEM] Capturing pre-strike screenshots of all active tabs...`);
         for (let idx = 0; idx < pages.length; idx++) {
             if (clickResults[idx]) {
@@ -771,6 +837,14 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         const screenshotBuffer = await pages[0].screenshot({ type: 'png' });
         await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Snapshot from Master Tab after executing ${targetCount} synchronized clicks.` });
 
+        // --- STEP 6: KEEP TABS OPEN & ARM IDLE TIMER ---
+        activeTaskPages = pages; 
+        taskIdleTimer = setTimeout(async () => {
+            bot.sendMessage(chatId, '[SYSTEM] 1 hour idle timeout reached. Closing inactive task tabs to save RAM.').catch(()=>{});
+            for (let p of activeTaskPages) await p.close().catch(()=>{});
+            activeTaskPages = [];
+        }, 60 * 60 * 1000); // 1 hour in milliseconds
+
     } catch (err) {
         await updateStatus(`[ERROR] Sequence failed: ${err.message}`);
         if (pages.length > 0) {
@@ -779,14 +853,12 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                 await bot.sendPhoto(chatId, errBuffer, { caption: '[DIAGNOSTIC] State of Master Tab at crash.' });
             } catch (snapErr) {}
         }
-    } finally {
-        for (let p of pages) {
-            await p.close().catch(() => {});
-        }
+        // If it crashes, clean up the broken tabs immediately
+        for (let p of pages) await p.close().catch(()=>{});
     }
+    // NOTICE: The "finally" block that used to close the tabs is completely GONE.
 });
 
- 
 
 
 bot.onText(/\/status/, (msg) => {
