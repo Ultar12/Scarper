@@ -441,7 +441,6 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             }
         }
 
-        // Bulletproof Scanner for Wsjobs
         wsjobsBal = await wPage.evaluate(() => {
             const rawText = document.body.textContent || '';
             const match = rawText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
@@ -493,27 +492,17 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             }
         }
 
-        // THE FIX: M4U Smart Line-by-Line Scanner
+        // THE FIX: Using the exact robust logic from the original withdraw function!
         m4uBal = await mPage.evaluate(() => {
-            const allText = document.body.innerText || '';
-            // Split the entire page text line by line visually
-            const lines = allText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-            
-            for (let i = 0; i < lines.length; i++) {
-                if (lines[i] === 'Account Balance' || lines[i].includes('Account Balance')) {
-                    // Grab the next line right under it!
-                    if (i + 1 < lines.length) {
-                        const nextLine = lines[i + 1];
-                        const match = nextLine.match(/^([\d,]+(?:\.\d+)?)/);
-                        if (match) return match[1];
-                    }
+            const elements = Array.from(document.querySelectorAll('*'));
+            for (let i = 0; i < elements.length; i++) {
+                const text = (elements[i].innerText || '').trim();
+                if (text === 'Account Balance') {
+                    const containerText = elements[i].parentElement.innerText || '';
+                    const match = containerText.match(/[\d,]+\.\d{2}/);
+                    if (match) return match[0];
                 }
             }
-
-            // Fallback just in case
-            const rawText = document.body.textContent || '';
-            const match2 = rawText.match(/Account\s*Balance[\s\r\n]*([\d,]+(?:\.\d+)?)/i);
-            if (match2) return match2[1];
             return '0.00';
         });
 
@@ -527,6 +516,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
     bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{}); 
     bot.sendMessage(chatId, `Wsjobs: ${wsjobsBal}\nM4U: ${m4uBal}`); 
 });
+
 
 // Usage: /task 127
 bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
