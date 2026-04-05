@@ -189,6 +189,8 @@ bot.onText(/\/checknum\s+(.+)/, async (msg, match) => {
     }
 });
 
+
+
 // Usage: /withdraw 12000
 bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
@@ -215,8 +217,7 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         await page.setViewport({ width: 412, height: 915 }); 
         await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-        // --- BULLETPROOF DOM CLICKER ---
-        // This function searches the raw HTML for the exact text and physically clicks it
+        // --- HELPER: CLICK BY TEXT ---
         const clickByText = async (textToFind, exactMatch = false) => {
             return await page.evaluate((text, exact) => {
                 const elements = Array.from(document.querySelectorAll('div, span, a, button, p, li'));
@@ -245,26 +246,14 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         
         await clickByText('Login', true);
         
-        // Wait 6 full seconds to allow the SPA to natively route to the Home page
-        await updateStatus('[SYSTEM] Login submitted. Waiting for native home page load...');
-        await new Promise(r => setTimeout(r, 6000)); 
-
-                // Add this right after the 6000ms timeout in Step 1
-        const homeSnap = await page.screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, homeSnap, { caption: '[TRACE] Successfully reached Home Page' });
-
-
-        // --- STEP 2: NATIVE NAVIGATION ---
-        // Try to click the "Confirm" button to close the welcome popup if it exists
-        await updateStatus('[SYSTEM] Clearing popups...');
-        await clickByText('Confirm', true); 
-        await new Promise(r => setTimeout(r, 1000)); 
-
-        // Click the "Account" tab on the bottom navigation bar
-        await updateStatus('[SYSTEM] Clicking the "Account" tab on the bottom menu...');
-        const accountClicked = await clickByText('Account', true);
-        if (!accountClicked) throw new Error("Could not find the 'Account' tab at the bottom of the screen.");
+        // Wait 3 seconds to let the website confirm the password and drop the login cookie
+        await updateStatus('[SYSTEM] Login submitted. Securing authentication token...');
         await new Promise(r => setTimeout(r, 3000)); 
+
+        // --- STEP 2: TELEPORT TO USER DASHBOARD ---
+        await updateStatus('[SYSTEM] Bypassing popups: Teleporting directly to User Dashboard...');
+        await page.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 3000)); // Let the user page fully load
 
         // Click the Account Withdrawal menu item
         await updateStatus('[SYSTEM] Clicking "Account Withdrawal"...');
@@ -272,33 +261,25 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         if (!withdrawalClicked) throw new Error("Could not find 'Account Withdrawal' link.");
         await new Promise(r => setTimeout(r, 3000)); 
 
-                // --- STEP 3: THE GEOMETRIC SMART CLICKER ---
+        // --- STEP 3: THE GEOMETRIC SMART CLICKER ---
         await updateStatus(`[SYSTEM] Selecting amount: ${withdrawAmount}...`);
-        
         const amountClicked = await page.evaluate((amount) => {
-            // Grab literally every single element on the page
             const allElements = Array.from(document.querySelectorAll('*'));
-            
             let targetNode = null;
             let smallestArea = Infinity;
 
             for (let el of allElements) {
-                // Read whatever text is visible inside this element
                 const text = (el.innerText || el.textContent || '').trim();
-                
                 if (text.includes(amount)) {
-                    // 1. Ignore the header (Withdrawable Amount...)
-                    // 2. Ignore the footer (Minimum/Maximum instructions...)
+                    // Ignore the big header and footer boxes
                     if (text.includes('Withdrawable') || text.includes('Minimum') || text.includes('Maximum')) {
                         continue;
                     }
-
-                    // Get the physical dimensions of this element on the screen
+                    
                     const rect = el.getBoundingClientRect();
                     const area = rect.width * rect.height;
-
-                    // Drill down to find the absolute smallest box that contains the number.
-                    // This bypasses all the invisible background wrappers and hits the exact button.
+                    
+                    // Drill down to the smallest physical button
                     if (area > 0 && area < smallestArea) {
                         smallestArea = area;
                         targetNode = el;
@@ -306,7 +287,6 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
                 }
             }
 
-            // If we found the physical button, scroll to it and tap it
             if (targetNode) {
                 targetNode.scrollIntoView({ block: 'center' });
                 targetNode.click();
@@ -322,7 +302,6 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         await clickByText('Withdrawal Now', false);
         await new Promise(r => setTimeout(r, 2000));
 
-
         // --- STEP 4: CONFIRMATION PAGE ---
         await updateStatus('[SYSTEM] Processing confirmation screen...');
         await clickByText('Withdrawal', true);
@@ -330,7 +309,6 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
 
         // --- STEP 5: ENTER PIN & FINALIZE ---
         await updateStatus('[SYSTEM] Entering withdrawal password (111111)...');
-        
         const pinInputs = await page.$$('input[type="password"], input[type="number"], input[type="text"]');
         if (pinInputs.length > 0) {
             await pinInputs[0].click();
@@ -368,6 +346,8 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         }
     }
 });
+
+
 
 
 bot.onText(/\/status/, (msg) => {
