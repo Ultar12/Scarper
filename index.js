@@ -395,6 +395,183 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
     }
 });
 
+// Usage: /task 127
+bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    const targetSuffix = match[1];
+
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting Multi-Thread Protocol for tasks ending in: ${targetSuffix}...`);
+    const msgId = statusMsg.message_id;
+
+    const updateStatus = async (text) => {
+        await bot.editMessageText(text, { chat_id: chatId, message_id: msgId }).catch(() => {});
+    };
+
+    let browser = null;
+    try {
+        browser = await puppeteer.launch({
+            headless: true,
+            executablePath: getChromePath(),
+            userDataDir: './wsjobs_auth_session', // THE MAGIC: Using local Heroku drive session!
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        });
+
+        // --- STEP 1: INITIALIZE MASTER TAB & AUTHENTICATE ---
+        await updateStatus('[SYSTEM] Initializing Master Tab and checking local session...');
+        const page1 = await browser.newPage();
+        await page1.setViewport({ width: 412, height: 915 }); 
+        await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+
+        await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 4000)); 
+
+        const requiresLogin = await page1.$('input[type="password"]') !== null;
+
+        if (requiresLogin) {
+            await updateStatus('[SYSTEM] Session expired. Performing Login on Master Tab...');
+            const allInputs = await page1.$$('input');
+            const visibleInputs = [];
+            for (let input of allInputs) {
+                const isVisible = await input.evaluate(el => el.offsetParent !== null && window.getComputedStyle(el).display !== 'none');
+                if (isVisible) visibleInputs.push(input);
+            }
+
+            if (visibleInputs.length >= 2) {
+                await visibleInputs[0].click();
+                await visibleInputs[0].type('09163916311', { delay: 100 });
+                await visibleInputs[1].click();
+                await visibleInputs[1].type('Emmamama', { delay: 100 });
+                
+                await new Promise(r => setTimeout(r, 1000));
+                await page1.keyboard.press('Enter');
+                
+                try {
+                    await page1.evaluate(() => {
+                        Array.from(document.querySelectorAll('*')).forEach(el => {
+                            if (el.innerText && el.innerText.trim() === 'Login') el.click();
+                        });
+                    });
+                } catch(e) {}
+            } else {
+                throw new Error("Could not find the physical input boxes on the screen.");
+            }
+            
+            await updateStatus('[SYSTEM] Login submitted. Waiting to natively land on Task Dashboard...');
+            await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+            await new Promise(r => setTimeout(r, 4000)); 
+            
+            // It might have redirected to /home or /user, so force it back to /task just to be safe
+            await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
+            await new Promise(r => setTimeout(r, 3000));
+        } else {
+            await updateStatus('[SYSTEM] Active local session loaded! Skipped login step.');
+        }
+
+        // --- STEP 2: SPAWN THE CLONE TABS ---
+        await updateStatus(`[SYSTEM] Master Tab authenticated. Spawning 3 clone tabs...`);
+        const pages = [page1]; // Array to hold all 4 tabs
+
+        for (let i = 1; i < 4; i++) {
+            const newPage = await browser.newPage();
+            await newPage.setViewport({ width: 412, height: 915 }); 
+            await newPage.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+            // Because of userDataDir, these new tabs are automatically logged in!
+            pages.push(newPage);
+        }
+
+        // Navigate Tabs 2, 3, and 4 to the task page simultaneously
+        await Promise.all(pages.slice(1).map(p => p.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' })));
+        await new Promise(r => setTimeout(r, 4000)); 
+
+        // --- STEP 3: TARGET ACQUISITION (ASSIGNING ROWS) ---
+        await updateStatus(`[SYSTEM] Synchronizing target: ${targetSuffix}. Clicking Send on respective rows...`);
+        
+        // We use Promise.all to make all 4 tabs search and click their designated row at the exact same time
+        const clickResults = await Promise.all(pages.map((p, index) => {
+            return p.evaluate((suffixStr, tabIndex) => {
+                const allElements = Array.from(document.querySelectorAll('*'));
+                // Find all active Send buttons
+                const sendBtns = allElements.filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
+                
+                let matchCount = 0;
+                for (let btn of sendBtns) {
+                    // Check the text of the container holding this button to see if the number matches
+                    let containerText = '';
+                    if (btn.parentElement && btn.parentElement.parentElement) {
+                        containerText = btn.parentElement.parentElement.innerText || '';
+                    }
+                    
+                    if (containerText.includes(suffixStr)) {
+                        // Tab 1 (index 0) clicks 1st match. Tab 2 (index 1) clicks 2nd match, etc.
+                        if (matchCount === tabIndex) {
+                            btn.scrollIntoView({ block: 'center' });
+                            btn.click();
+                            return true;
+                        }
+                        matchCount++;
+                    }
+                }
+                return false;
+            }, targetSuffix, index);
+        }));
+
+        // Quick pause to let the "Are you sure you want to send?" popup render
+        await new Promise(r => setTimeout(r, 2000));
+
+        // --- STEP 4: THE SYNCHRONIZED STRIKE ---
+        await updateStatus(`[SYSTEM] Waiting for popups to render across all tabs...`);
+        
+        // Verify the popup actually appeared on the tabs that clicked "Send"
+        await Promise.all(pages.map(async (p, idx) => {
+            if (clickResults[idx]) {
+                await p.waitForFunction(() => {
+                    return Array.from(document.querySelectorAll('*')).some(el => el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null);
+                }, { timeout: 5000 }).catch(() => null);
+            }
+        }));
+
+        await updateStatus(`[SYSTEM] FIRE: Executing simultaneous Confirm clicks!`);
+        // Click Confirm on all 4 tabs at the exact same millisecond
+        await Promise.all(pages.map(async (p, idx) => {
+            if (clickResults[idx]) {
+                await p.evaluate(() => {
+                    const elements = Array.from(document.querySelectorAll('*'));
+                    for (let el of elements) {
+                        if (el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null) {
+                            el.click();
+                        }
+                    }
+                });
+            }
+        }));
+
+        await updateStatus('[SYSTEM] Strike complete. Waiting for server response...');
+        await new Promise(r => setTimeout(r, 4000)); 
+
+        // 📸 PROOF FROM TAB 1
+        await updateStatus(`[SUCCESS] Multi-Thread Task execution finished for ${targetSuffix}.`);
+        const screenshotBuffer = await pages[0].screenshot({ type: 'png' });
+        await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Snapshot from Master Tab after synchronized strike.` });
+
+    } catch (err) {
+        await updateStatus(`[ERROR] Sequence failed: ${err.message}`);
+        if (browser) {
+            try {
+                const activePages = await browser.pages();
+                if (activePages.length > 0) {
+                    const errBuffer = await activePages[0].screenshot({ type: 'png' });
+                    await bot.sendPhoto(chatId, errBuffer, { caption: '[DIAGNOSTIC] State of Master Tab at crash.' });
+                }
+            } catch (snapErr) {}
+        }
+    } finally {
+        if (browser) {
+            await browser.close();
+        }
+    }
+});
 
 
 
