@@ -125,9 +125,7 @@ async function initializeWhatsApp(chatId, targetPhoneNumber) {
         await waClient.destroy().catch(() => {});
     }
 
-    let pairingCodeRequested = false;
-
-    waClient = new Client({
+    let clientConfig = {
         authStrategy: new RemoteAuth({
             clientId: 'ultar_bot_session',
             store: store,
@@ -135,7 +133,6 @@ async function initializeWhatsApp(chatId, targetPhoneNumber) {
         }),
         puppeteer: {
             headless: true,
-            // Uses the locator function to strictly identify the Chrome binary path
             executablePath: getChromePath(),
             args: [
                 '--no-sandbox',
@@ -147,24 +144,27 @@ async function initializeWhatsApp(chatId, targetPhoneNumber) {
                 '--disable-gpu'
             ]
         }
+    };
+
+    if (targetPhoneNumber) {
+        clientConfig.pairWithPhoneNumber = { phoneNumber: targetPhoneNumber };
+    }
+
+    waClient = new Client(clientConfig);
+
+    // THE LATCH: Prevents the bot from spamming you with duplicate codes
+    let codeSent = false; 
+
+    waClient.on('code', (code) => {
+        if (codeSent) return; // If the latch is locked, ignore the duplicate request
+        codeSent = true;      // Lock the latch immediately after receiving the first code
+        
+        const formattedCode = code.match(/.{1,4}/g)?.join('-') || code;
+        bot.sendMessage(chatId, `[PAIRING CODE GENERATED]\n\nYour code is: \`${formattedCode}\`\n\nEnter this code in your WhatsApp notification.`, { parse_mode: 'Markdown' });
     });
 
-    // The 'qr' event fires when the browser has successfully loaded the WhatsApp Web DOM.
-    // This is the absolute safest time to inject the Pairing Code request.
     waClient.on('qr', async (qr) => {
-        if (targetPhoneNumber) {
-            if (!pairingCodeRequested) {
-                pairingCodeRequested = true;
-                try {
-                    const code = await waClient.requestPairingCode(targetPhoneNumber);
-                    const formattedCode = code.match(/.{1,4}/g)?.join('-') || code;
-                    bot.sendMessage(chatId, `[PAIRING CODE GENERATED]\n\nYour code is: \`${formattedCode}\`\n\nEnter this code in your WhatsApp notification.`, { parse_mode: 'Markdown' });
-                } catch (err) {
-                    bot.sendMessage(chatId, `[ERROR] Failed to generate pairing code: ${err.message}`);
-                }
-            }
-        } else {
-            // Generate QR image for standard scanning
+        if (!targetPhoneNumber) {
             try {
                 const qrBuffer = await QRCode.toBuffer(qr, { type: 'png', width: 400 });
                 bot.sendPhoto(chatId, qrBuffer, { caption: '[SYSTEM] Scan this QR code.' });
@@ -198,5 +198,6 @@ async function initializeWhatsApp(chatId, targetPhoneNumber) {
         bot.sendMessage(chatId, `[CRITICAL ERROR] Failed to boot Puppeteer: ${err.message}`);
     }
 }
+
 
 console.log('System booting. Waiting for Telegram commands...');
