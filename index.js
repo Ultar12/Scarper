@@ -239,13 +239,25 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         if (withdrawalLink) await withdrawalLink.click();
         await new Promise(r => setTimeout(r, 3000)); 
 
-        // --- STEP 3: SELECT AMOUNT & WITHDRAW ---
+                // --- STEP 3: SELECT AMOUNT & WITHDRAW ---
         bot.sendMessage(chatId, `[SYSTEM] Selecting amount: ${withdrawAmount}...`);
         
-        const amountBox = await page.waitForSelector(`xpath///*[text()='${withdrawAmount}']`, { timeout: 5000 }).catch(() => null);
-        if (amountBox) {
-            await amountBox.click();
-        } else {
+        // We use a browser evaluation script. This strips away all hidden spaces,
+        // icons, and formatting, and clicks the element that visually says "12000".
+        const buttonClicked = await page.evaluate((amount) => {
+            const elements = Array.from(document.querySelectorAll('div, span, button, a'));
+            for (let el of elements) {
+                // .innerText reads what is visually on screen, ignoring hidden code.
+                // .trim() removes any accidental spaces the developer left in.
+                if (el.innerText && el.innerText.trim() === amount) {
+                    el.click();
+                    return true;
+                }
+            }
+            return false;
+        }, withdrawAmount);
+
+        if (!buttonClicked) {
             throw new Error(`Could not find a button for the amount: ${withdrawAmount}`);
         }
         await new Promise(r => setTimeout(r, 1000));
@@ -253,6 +265,7 @@ bot.onText(/\/withdraw\s+(\d+)/, async (msg, match) => {
         const withdrawNowBtn = await page.waitForSelector("xpath///*[contains(text(), 'Withdrawal Now')]", { timeout: 5000 }).catch(() => null);
         if (withdrawNowBtn) await withdrawNowBtn.click();
         await new Promise(r => setTimeout(r, 2000));
+
 
         // --- STEP 4: CONFIRMATION PAGE ---
         bot.sendMessage(chatId, '[SYSTEM] Processing confirmation screen...');
