@@ -474,7 +474,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
 
             await updateStatus('[SYSTEM] Brute-forcing withdrawal PIN...');
-        
+        const pin = '111111';
         // 1. Lock focus on the very first box ONCE and let the website's auto-cursor take over
         const inputs = await page.$$('input');
         for (let input of inputs) {
