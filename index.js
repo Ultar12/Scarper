@@ -1174,23 +1174,42 @@ bot.onText(/^\/pop$/i, async (msg) => {
             await new Promise(r => setTimeout(r, 4000));
         }
 
-        // 4. THE 6-STEP SWEEPER LOOP
-        await updateStatus('[SYSTEM] Target locked. Engaging 6-step tutorial sweeper...');
+                // 4. THE AGGRESSIVE 6-STEP SWEEPER
+        await updateStatus('[SYSTEM] Waiting for website to spawn the tutorial...');
+        
+        // Force the bot to wait up to 10 seconds for the popup to actually appear on the screen!
+        await page.waitForFunction(() => {
+            const bodyText = document.body.innerText.toLowerCase();
+            return bodyText.includes('1 of 6') || bodyText.includes('next →');
+        }, { timeout: 10000 }).catch(() => {});
+
+        await updateStatus('[SYSTEM] Target locked. Engaging aggressive tutorial sweeper...');
         
         let clickCount = 0;
-        // Loop 10 times just to be safe, but it will break early if the popups are gone
-        for (let i = 0; i < 10; i++) {
+        
+        // Loop 20 times. Do NOT exit early. Keep smashing until the screen is permanently clear.
+        for (let i = 0; i < 20; i++) {
             const clicked = await page.evaluate(() => {
-                const buttons = Array.from(document.querySelectorAll('button, div, span, a'));
-                for (let btn of buttons) {
-                    if (btn.offsetParent === null) continue;
-                    const txt = (btn.innerText || '').trim().toLowerCase();
+                // Grab every single element on the page
+                const elements = Array.from(document.querySelectorAll('*'));
+                
+                // Read from bottom-to-top to hit the popup layer first
+                for (let el of elements.reverse()) { 
+                    if (el.offsetParent === null) continue;
                     
-                    // Look for 'Next', 'Next ->', 'Next →', or 'Done'
-                    if (txt.includes('next') || txt === 'done') {
-                        // Synthetic overlay-penetrating click
-                        btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                        btn.click();
+                    const txt = (el.innerText || '').trim().toLowerCase();
+                    
+                    // Exact matching to prevent clicking giant background containers
+                    if (txt === 'next' || txt === 'next →' || txt === 'done') {
+                        // Ghost-click bypass
+                        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                        el.click();
+                        
+                        // Hit the parent too just in case the event listener is higher up
+                        if (el.parentElement) {
+                            el.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                            el.parentElement.click();
+                        }
                         return true;
                     }
                 }
@@ -1199,19 +1218,19 @@ bot.onText(/^\/pop$/i, async (msg) => {
 
             if (clicked) {
                 clickCount++;
-                await new Promise(r => setTimeout(r, 1000)); // Wait 1 second for the next slide to animate in
+                await updateStatus(`[SYSTEM] Smashed step ${clickCount}...`);
+                await new Promise(r => setTimeout(r, 1200)); // Wait 1.2s for the next slide to animate in
             } else {
-                break; // Exit the loop when no more Next/Done buttons exist
+                await new Promise(r => setTimeout(r, 500)); // Pause briefly and check again
             }
         }
 
         // 5. Save the clean state and screenshot
         if (clickCount > 0) {
-            await updateStatus(`[SYSTEM] Smashed through ${clickCount} tutorial steps. Saving clean memory to Database...`);
-            // This is critical: It saves the cache so the website knows not to show you the tutorial again tomorrow
+            await updateStatus(`[SYSTEM] Cleared ${clickCount} popups. Saving clean memory to Database...`);
             await saveSessionToDB('wsjobs_task', page);
         } else {
-            await updateStatus(`[SYSTEM] No tutorial popups detected. The screen is already clean.`);
+            await updateStatus(`[SYSTEM] No tutorial popups found. The screen was already clean.`);
         }
 
         await new Promise(r => setTimeout(r, 2000));
