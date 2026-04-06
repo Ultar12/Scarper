@@ -515,14 +515,77 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             }
         });
 
-        await updateStatus('[SYSTEM] Waiting for server response...');
-        
-        // Give the website 6 seconds to process the spinner and show the "Submit Success" toast
-        await new Promise(r => setTimeout(r, 6000));
+                await updateStatus('[SYSTEM] Waiting for server response...');
+        await new Promise(r => setTimeout(r, 4000)); // Wait for initial spinner or error modal
 
-        await updateStatus(`[SUCCESS] Auto-withdrawal completed.`);
+        // --- NEW: ERROR DETECTION AND RE-ENTRY LOGIC ---
+        const errorModalDetected = await page.evaluate(() => {
+            const body = document.body.innerText || '';
+            return body.includes('password incorrect') || body.includes('Re-enter');
+        });
+
+        if (errorModalDetected) {
+            await updateStatus('[SYSTEM] Incorrect PIN modal detected. Clicking Re-enter...');
+            
+            // 1. Click Re-enter
+            await page.evaluate(() => {
+                const elements = Array.from(document.querySelectorAll('*'));
+                for (let el of elements) {
+                    if ((el.innerText || '').trim() === 'Re-enter' && el.offsetParent !== null) {
+                        el.click();
+                        return;
+                    }
+                }
+            });
+            await new Promise(r => setTimeout(r, 2000)); // Wait for modal to close and boxes to clear
+
+            await updateStatus('[SYSTEM] Re-typing withdrawal PIN...');
+            
+            // 2. Click the first box again
+            const retryInputs = await page.$$('input');
+            for (let input of retryInputs) {
+                if (await input.evaluate(el => window.getComputedStyle(el).display !== 'none' && el.type !== 'hidden')) {
+                    await input.click();
+                    await new Promise(r => setTimeout(r, 500));
+                    break; 
+                }
+            }
+
+            // 3. Blind type again
+            for (let i = 0; i < pin.length; i++) {
+                await page.keyboard.press(pin[i]);
+                await new Promise(r => setTimeout(r, 600));
+            }
+            await new Promise(r => setTimeout(r, 1500));
+
+            // 4. SCREENSHOT BEFORE CONFIRMING A SECOND TIME
+            const retryPreSnap = await page.screenshot({ type: 'png' });
+            await bot.sendPhoto(chatId, retryPreSnap, { caption: '[DEBUG] State AFTER typing PIN on Re-enter, right before second Confirm' });
+
+            // 5. Click Confirm again
+            await updateStatus('[SYSTEM] Submitting second confirmation...');
+            await page.evaluate(() => {
+                const elements = Array.from(document.querySelectorAll('*'));
+                for (let el of elements) {
+                    const txt = (el.innerText || el.textContent || '').trim();
+                    if (txt === 'Confirm' && el.offsetParent !== null) {
+                        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        el.click();
+                        if (el.parentElement) el.parentElement.click();
+                        return; 
+                    }
+                }
+            });
+            
+            await new Promise(r => setTimeout(r, 6000)); // Wait for the final spinner
+        } else {
+            // Give it 2 more seconds if no error modal popped up, just to be safe
+            await new Promise(r => setTimeout(r, 2000)); 
+        }
+
+        await updateStatus('[SUCCESS] Auto-withdrawal completed.');
         const screenshotBuffer = await page.screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Wsjobs Final State` });
+        await bot.sendPhoto(chatId, screenshotBuffer, { caption: '[SUCCESS] Wsjobs Final State' });
 
     } catch (err) {
         await updateStatus(`[ERROR] Sequence failed: ${err.message}`);
