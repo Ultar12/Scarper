@@ -473,11 +473,32 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await new Promise(r => setTimeout(r, 3000));
 
 
-      await updateStatus('[SYSTEM] Entering PIN with dynamic tracking + 12x brute-force...');
-        const pin = '11111111';
-        // Loop 12 times, pressing '1', and RE-SCANNING the screen every single time!
+              await updateStatus('[SYSTEM] Executing 3-Click bypass and dynamic typing...');
+        const pin = '111111';
+        // --- 1. THE 3-CLICK BYPASS ---
+        const initialInputs = await page.$$('input');
+        for (let input of initialInputs) {
+            const isValid = await input.evaluate(el => el.type !== 'hidden' && (el.offsetParent !== null || window.getComputedStyle(el).opacity === '0'));
+            if (isValid) {
+                await updateStatus('[SYSTEM] Tapping first box 3 times to clear popups...');
+                // Tap 1: Triggers the popup
+                await input.click().catch(() => {});
+                await new Promise(r => setTimeout(r, 600)); 
+                
+                // Tap 2: Closes the popup
+                await input.click().catch(() => {});
+                await new Promise(r => setTimeout(r, 600)); 
+                
+                // Tap 3: Officially locks focus & brings up the keyboard
+                await input.click().catch(() => {});
+                await new Promise(r => setTimeout(r, 800)); 
+                break; // Stop after doing this to the first box
+            }
+        }
+
+        // --- 2. DYNAMIC 12x BRUTE-FORCE TYPING ---
         for (let i = 0; i < 12; i++) {
-            // 1. Scan the screen for the freshest version of the boxes
+            // Re-scan the screen for the freshest boxes
             const inputs = await page.$$('input');
             const activeInputs = [];
             
@@ -486,25 +507,17 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                 if (isValid) activeInputs.push(input);
             }
 
-            // 2. Click the box and type
+            // Silently focus the box and type (NO clicking here to avoid triggering the popup again)
             if (activeInputs.length >= 6) {
-                // Cap the box index at 5 (which is the 6th box) so it doesn't crash on loops 7-12
                 const boxIndex = Math.min(i, 5); 
                 await activeInputs[boxIndex].evaluate(el => el.focus());
-                await activeInputs[boxIndex].click().catch(() => {});
-                await new Promise(r => setTimeout(r, 200));
-                
                 await page.keyboard.press('1');
             } else if (activeInputs.length > 0) {
-                // If it's 1 invisible master box, just focus it on the first loop
-                if (i === 0) {
-                    await activeInputs[0].evaluate(el => el.focus());
-                    await activeInputs[0].click().catch(() => {});
-                }
+                await activeInputs[0].evaluate(el => el.focus());
                 await page.keyboard.press('1');
             }
             
-            // 3. Wait 500ms for the website to finish destroying and rebuilding the boxes
+            // Wait 500ms for the website to digest the keystroke and move the cursor
             await new Promise(r => setTimeout(r, 500)); 
         }
 
@@ -512,8 +525,8 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
         // --- SCREENSHOT AFTER TYPING THE PIN ---
         const postPinSnap = await page.screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, postPinSnap, { caption: '[DEBUG] State AFTER dynamic 12x typing, right before Confirm' });
-   
+        await bot.sendPhoto(chatId, postPinSnap, { caption: '[DEBUG] State AFTER 3-click bypass and 12x typing, right before Confirm' });
+
         // 3. AGGRESSIVE CONFIRM CLICK
         await updateStatus('[SYSTEM] Submitting final confirmation...');
         await page.evaluate(() => {
