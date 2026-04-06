@@ -473,44 +473,45 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await new Promise(r => setTimeout(r, 3000));
 
 
-             await updateStatus('[SYSTEM] Hard-injecting withdrawal PIN directly into website memory...');
+    await updateStatus('[SYSTEM] Entering withdrawal PIN with dynamic DOM tracking...');
         const pin = '111111'; // Ensure this matches your actual PIN
-
-        // --- DIRECT DOM INJECTION HACK ---
-        await page.evaluate((pinCode) => {
-            const inputs = Array.from(document.querySelectorAll('input'));
+        
+        // Loop 6 times, and RE-SCAN the screen every single time to survive DOM re-renders!
+        for (let i = 0; i < pin.length; i++) {
+            // 1. Scan the screen for the freshest version of the boxes
+            const inputs = await page.$$('input');
+            const activeInputs = [];
             
-            // Find all inputs that are actually part of the PIN field (ignoring random hidden tokens)
-            const activeInputs = inputs.filter(el => 
-                el.type !== 'hidden' && 
-                (el.offsetParent !== null || window.getComputedStyle(el).opacity === '0')
-            );
+            for (let input of inputs) {
+                const isValid = await input.evaluate(el => el.type !== 'hidden' && (el.offsetParent !== null || window.getComputedStyle(el).opacity === '0'));
+                if (isValid) activeInputs.push(input);
+            }
 
-            // Vue/React bypass: We must use the native HTML setter, otherwise the framework ignores the change
-            const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-
+            // 2. Click the specific box for this digit and type it
             if (activeInputs.length >= 6) {
                 // Scenario A: 6 individual physical boxes
-                for (let i = 0; i < 6; i++) {
-                    activeInputs[i].focus();
-                    nativeSetter.call(activeInputs[i], pinCode[i]);
-                    activeInputs[i].dispatchEvent(new Event('input', { bubbles: true }));
-                    activeInputs[i].dispatchEvent(new Event('change', { bubbles: true }));
-                }
+                await activeInputs[i].evaluate(el => el.focus());
+                await activeInputs[i].click().catch(() => {});
+                await new Promise(r => setTimeout(r, 200));
+                await page.keyboard.press(pin[i]);
             } else if (activeInputs.length > 0) {
-                // Scenario B: 1 master hidden box
-                activeInputs[0].focus();
-                nativeSetter.call(activeInputs[0], pinCode);
-                activeInputs[0].dispatchEvent(new Event('input', { bubbles: true }));
-                activeInputs[0].dispatchEvent(new Event('change', { bubbles: true }));
+                // Scenario B: 1 invisible master box
+                if (i === 0) {
+                    await activeInputs[0].evaluate(el => el.focus());
+                    await activeInputs[0].click().catch(() => {});
+                }
+                await page.keyboard.press(pin[i]);
             }
-        }, pin);
+            
+            // 3. Wait 500ms for the website to finish destroying and rebuilding the boxes
+            await new Promise(r => setTimeout(r, 500)); 
+        }
 
         await new Promise(r => setTimeout(r, 1500));
 
-        // --- SCREENSHOT AFTER INJECTING THE PIN ---
+        // --- SCREENSHOT AFTER TYPING THE PIN ---
         const postPinSnap = await page.screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, postPinSnap, { caption: '[DEBUG] State AFTER hard-injecting PIN, right before Confirm' });
+        await bot.sendPhoto(chatId, postPinSnap, { caption: '[DEBUG] State AFTER dynamic typing, right before Confirm' });
 
 
         // 3. AGGRESSIVE CONFIRM CLICK
