@@ -536,66 +536,82 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await new Promise(r => setTimeout(r, 3000));
 
 
-          await updateStatus('[SYSTEM] Executing 3-Click bypass and Hands-Off typing...');
-        const pin = '111111'; 
-        // --- 1. THE 3-CLICK BYPASS ---
-        const initialInputs = await page.$$('input');
-        for (let input of initialInputs) {
-            const isValid = await input.evaluate(el => el.type !== 'hidden' && (el.offsetParent !== null || window.getComputedStyle(el).opacity === '0'));
-            if (isValid) {
-                await updateStatus('[SYSTEM] Tapping box 3 times to clear popups and lock cursor...');
-                
-                // Tap 1: Triggers the popup
-                await input.click().catch(() => {});
-                await new Promise(r => setTimeout(r, 600)); 
-                
-                // Tap 2: Closes the popup
-                await input.click().catch(() => {});
-                await new Promise(r => setTimeout(r, 600)); 
-                
-                // Tap 3: Officially locks focus & brings up the keyboard
-                await input.click().catch(() => {});
-                await new Promise(r => setTimeout(r, 1200)); // Wait 1.2s for cursor to fully settle
-                break; // Stop after doing this to the first box
+        // --- 1. TARGETED PIN INPUT (BOX-BY-BOX) ---
+        await updateStatus('[SYSTEM] Identifying PIN boxes...');
+        
+        const pinInputs = await page.evaluate(() => {
+            const inputs = Array.from(document.querySelectorAll('input'));
+            return inputs
+                .filter(el => {
+                    const style = window.getComputedStyle(el);
+                    return el.type !== 'hidden' && 
+                           style.display !== 'none' && 
+                           style.visibility !== 'hidden' &&
+                           el.offsetParent !== null;
+                })
+                .map((el, index) => ({ index })); 
+        });
+
+        if (pinInputs.length >= 6) {
+            await updateStatus(`[SYSTEM] Found ${pinInputs.length} boxes. Inputting PIN...`);
+            for (let i = 0; i < 6; i++) {
+                await page.evaluate((idx) => {
+                    const inputs = Array.from(document.querySelectorAll('input'))
+                        .filter(el => el.offsetParent !== null && el.type !== 'hidden');
+                    if (inputs[idx]) {
+                        inputs[idx].focus();
+                        inputs[idx].value = ''; 
+                    }
+                }, i);
+                await page.keyboard.press('1');
+                await new Promise(r => setTimeout(r, 400)); 
+            }
+        } else {
+            // Fallback if specific boxes aren't detected as separate inputs
+            await updateStatus('[SYSTEM] Precise boxes not found. Using Tab-Sequence...');
+            for (let i = 0; i < 6; i++) {
+                await page.keyboard.press('1');
+                await new Promise(r => setTimeout(r, 200));
+                await page.keyboard.press('Tab'); 
+                await new Promise(r => setTimeout(r, 200));
             }
         }
 
-        // --- 2. HANDS-OFF TYPING ---
-        // We DO NOT touch or scan the DOM in this loop. We just press the keys and let the website move the cursor!
-        await updateStatus('[SYSTEM] Typing PIN naturally...');
-        
-        // Let's do 8 keystrokes just to be safe. If the 6 boxes fill up, the extra 2 keystrokes will safely be ignored.
-        for (let i = 0; i < 8; i++) {
-            await page.keyboard.press('1');
-            await new Promise(r => setTimeout(r, 800)); // 800ms is a very slow, safe, human-like delay
-        }
+        // --- 2. LOCK VALUES & SCREENSHOT ---
+        await updateStatus('[SYSTEM] Blurring input to lock values...');
+        // Clicks the white space below the boxes to trigger 'change' events
+        await page.mouse.click(200, 300); 
+        await new Promise(r => setTimeout(r, 800));
 
-        await new Promise(r => setTimeout(r, 1500));
-
-        // --- SCREENSHOT AFTER TYPING THE PIN ---
         const postPinSnap = await page.screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, postPinSnap, { caption: '[DEBUG] State AFTER Hands-Off typing, right before Confirm' });
+        await bot.sendPhoto(chatId, postPinSnap, { caption: '[DEBUG] State AFTER targeted typing' });
 
-        // 3. AGGRESSIVE CONFIRM CLICK
+        // --- 3. SUBMIT CONFIRMATION ---
         await updateStatus('[SYSTEM] Submitting final confirmation...');
-        await page.evaluate(() => {
+        const confirmClicked = await page.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('*'));
             for (let el of elements) {
                 const txt = (el.innerText || el.textContent || '').trim();
                 if (txt === 'Confirm' && el.offsetParent !== null) {
-                    // Force synthetic mouse click to bypass UI traps
+                    el.scrollIntoView({ block: 'center' });
                     el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
                     el.click();
-                    if (el.parentElement) el.parentElement.click();
-                    return; // Stop searching once we click it
+                    return true;
                 }
             }
+            return false;
         });
 
-                await updateStatus('[SYSTEM] Waiting for server response...');
-        await new Promise(r => setTimeout(r, 4000)); // Wait for initial spinner or error modal
+        // Failover: Physical coordinate tap if the button text wasn't clickable
+        if (!confirmClicked) {
+            await updateStatus('[SYSTEM] DOM click failed. Tapping button coordinates...');
+            await page.mouse.click(200, 355); 
+        }
 
-        // --- NEW: ERROR DETECTION AND RE-ENTRY LOGIC ---
+        // --- 4. SERVER RESPONSE & ERROR HANDLING ---
+        await updateStatus('[SYSTEM] Waiting for server response...');
+        await new Promise(r => setTimeout(r, 4000)); 
+
         const errorModalDetected = await page.evaluate(() => {
             const body = document.body.innerText || '';
             return body.includes('password incorrect') || body.includes('Re-enter');
@@ -604,7 +620,6 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         if (errorModalDetected) {
             await updateStatus('[SYSTEM] Incorrect PIN modal detected. Clicking Re-enter...');
             
-            // 1. Click Re-enter
             await page.evaluate(() => {
                 const elements = Array.from(document.querySelectorAll('*'));
                 for (let el of elements) {
@@ -614,53 +629,22 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                     }
                 }
             });
-            await new Promise(r => setTimeout(r, 2000)); // Wait for modal to close and boxes to clear
+            await new Promise(r => setTimeout(r, 2000)); 
 
             await updateStatus('[SYSTEM] Re-typing withdrawal PIN...');
-            
-            // 2. Click the first box again
-            const retryInputs = await page.$$('input');
-            for (let input of retryInputs) {
-                if (await input.evaluate(el => window.getComputedStyle(el).display !== 'none' && el.type !== 'hidden')) {
-                    await input.click();
-                    await new Promise(r => setTimeout(r, 500));
-                    break; 
-                }
+            // Simple retry sequence
+            for (let i = 0; i < 6; i++) {
+                await page.keyboard.press('1');
+                await new Promise(r => setTimeout(r, 500));
             }
-
-            // 3. Blind type again
-            for (let i = 0; i < pin.length; i++) {
-                await page.keyboard.press(pin[i]);
-                await new Promise(r => setTimeout(r, 600));
-            }
-            await new Promise(r => setTimeout(r, 1500));
-
-            // 4. SCREENSHOT BEFORE CONFIRMING A SECOND TIME
-            const retryPreSnap = await page.screenshot({ type: 'png' });
-            await bot.sendPhoto(chatId, retryPreSnap, { caption: '[DEBUG] State AFTER typing PIN on Re-enter, right before second Confirm' });
-
-            // 5. Click Confirm again
-            await updateStatus('[SYSTEM] Submitting second confirmation...');
-            await page.evaluate(() => {
-                const elements = Array.from(document.querySelectorAll('*'));
-                for (let el of elements) {
-                    const txt = (el.innerText || el.textContent || '').trim();
-                    if (txt === 'Confirm' && el.offsetParent !== null) {
-                        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                        el.click();
-                        if (el.parentElement) el.parentElement.click();
-                        return; 
-                    }
-                }
-            });
             
-            await new Promise(r => setTimeout(r, 6000)); // Wait for the final spinner
+            await page.mouse.click(200, 355); // Confirm via coordinate for speed
+            await new Promise(r => setTimeout(r, 6000)); 
         } else {
-            // Give it 2 more seconds if no error modal popped up, just to be safe
             await new Promise(r => setTimeout(r, 2000)); 
         }
 
-        await updateStatus('[SUCCESS] Auto-withdrawal completed.');
+        await updateStatus('[SUCCESS] Auto-withdrawal sequence finished.');
         const screenshotBuffer = await page.screenshot({ type: 'png' });
         await bot.sendPhoto(chatId, screenshotBuffer, { caption: '[SUCCESS] Wsjobs Final State' });
 
@@ -670,6 +654,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         if (page) await page.close().catch(() => {});
     }
 });
+
 
 // --- CONTINUOUS TASK MODE ---
 let taskModeActive = false;
