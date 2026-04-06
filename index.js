@@ -473,13 +473,8 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await new Promise(r => setTimeout(r, 3000));
 
 
-               await updateStatus('[SYSTEM] Entering withdrawal PIN...');
+     await updateStatus('[SYSTEM] Entering withdrawal PIN...');
         const pin = '111111'; // Ensure this matches your actual PIN
-
-        // --- NEW: SCREENSHOT BEFORE TYPING PIN ---
-        const prePinSnap = await page.screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, prePinSnap, { caption: '[DEBUG] State BEFORE typing PIN' });
-        // -----------------------------------------
 
         // 1. Find the first active box and click it ONCE to get the cursor blinking
         const pinInputs = await page.$$('input');
@@ -487,37 +482,45 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             if (await input.evaluate(el => window.getComputedStyle(el).display !== 'none' && el.type !== 'hidden')) {
                 await input.click();
                 await new Promise(r => setTimeout(r, 500)); // Wait for focus to lock
-                break; // Stop looking after we click the first one
+                break; 
             }
         }
 
-        // 2. Blind type using the master keyboard. 
-        // We press the keys at the page-level so it doesn't crash if the website re-renders the boxes.
+        // 2. Blind type using the master keyboard to bypass DOM re-renders.
         for (let i = 0; i < pin.length; i++) {
             await page.keyboard.press(pin[i]);
-            await new Promise(r => setTimeout(r, 600)); // 600ms pause = slow, deliberate human typing
+            await new Promise(r => setTimeout(r, 600)); // 600ms pause mimics human typing
         }
 
         await new Promise(r => setTimeout(r, 1500));
 
-        // --- NEW: SCREENSHOT AFTER TYPING THE PIN ---
+        // --- SCREENSHOT AFTER TYPING THE PIN ---
         const postPinSnap = await page.screenshot({ type: 'png' });
         await bot.sendPhoto(chatId, postPinSnap, { caption: '[DEBUG] State AFTER typing PIN, right before Confirm' });
         // --------------------------------------------------
 
+        // 3. AGGRESSIVE CONFIRM CLICK
         await updateStatus('[SYSTEM] Submitting final confirmation...');
-
-
         await page.evaluate(() => {
-            Array.from(document.querySelectorAll('*')).forEach(el => {
-                if (el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null) el.click();
-            });
+            const elements = Array.from(document.querySelectorAll('*'));
+            for (let el of elements) {
+                const txt = (el.innerText || el.textContent || '').trim();
+                if (txt === 'Confirm' && el.offsetParent !== null) {
+                    // Force synthetic mouse click to bypass UI traps
+                    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    el.click();
+                    if (el.parentElement) el.parentElement.click();
+                    return; // Stop searching once we click it
+                }
+            }
         });
 
         await updateStatus('[SYSTEM] Waiting for server response...');
-        await new Promise(r => setTimeout(r, 5000));
+        
+        // Give the website 6 seconds to process the spinner and show the "Submit Success" toast
+        await new Promise(r => setTimeout(r, 6000));
 
-        await updateStatus(`[SUCCESS] Auto-withdrawal of ${targetAmount} completed.`);
+        await updateStatus(`[SUCCESS] Auto-withdrawal completed.`);
         const screenshotBuffer = await page.screenshot({ type: 'png' });
         await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Wsjobs Final State` });
 
