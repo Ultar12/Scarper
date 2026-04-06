@@ -1050,7 +1050,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         // Just a final safety check on clones (should instantly pass because of inherited cache)
         await Promise.all(pages.slice(1).map(p => sweepTutorial(p)));
 
-                // --- STEP 4: TARGET ACQUISITION (GHOST CLICKS) ---
+                        // --- STEP 4: TARGET ACQUISITION (GHOST CLICKS) ---
         await updateStatus(`[SYSTEM] Tabs are clear. Ghost-clicking "Send" on all targets...`);
         
         const clickResults = await Promise.all(pages.map((p, index) => {
@@ -1068,10 +1068,9 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                             
                             // Synthetic Overlay-Penetrating Click
                             const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-                            btn.dispatchEvent(clickEvent); // Forces the JS to trigger even if hidden
-                            btn.click(); // Fallback
+                            btn.dispatchEvent(clickEvent); 
+                            btn.click(); 
                             
-                            // Some sites put the listener on the parent container
                             if (btn.parentElement) {
                                 btn.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
                                 btn.parentElement.click();
@@ -1085,20 +1084,12 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }, targetSuffix, index);
         }));
 
-        await new Promise(r => setTimeout(r, 2000));
+        // --- NEW: 3 SECOND WAIT ---
+        await updateStatus(`[SYSTEM] Waiting 3 seconds for popups to initialize...`);
+        await new Promise(r => setTimeout(r, 3000));
 
-        // --- STEP 5: PRE-STRIKE SCREENSHOTS & TIMEBOMB ---
-        await updateStatus(`[SYSTEM] Waiting for Confirm popups to load (ignoring tutorials)...`);
-        
-        await Promise.all(pages.map(async (p, idx) => {
-            if (clickResults[idx]) {
-                await p.waitForFunction(() => {
-                    return Array.from(document.querySelectorAll('*')).some(el => el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null);
-                }, { timeout: 7000 }).catch(() => null); // 7 seconds to let laggy tabs load
-            }
-        }));
-
-        await updateStatus(`[SYSTEM] Capturing pre-strike screenshots of all active tabs...`);
+        // --- STEP 5: PRE-STRIKE SCREENSHOTS ---
+        await updateStatus(`[SYSTEM] Capturing pre-strike screenshots...`);
         for (let idx = 0; idx < pages.length; idx++) {
             if (clickResults[idx]) {
                 try {
@@ -1108,6 +1099,11 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         }
 
+        // --- NEW: 10 SECOND WAIT ---
+        await updateStatus(`[SYSTEM] Screenshots complete. Waiting 10 seconds for all tabs to fully synchronize...`);
+        await new Promise(r => setTimeout(r, 10000));
+
+        // --- STEP 6: SYNCHRONIZED CONFIRM STRIKE ---
         await updateStatus(`[SYSTEM] Executing INSTANT synchronized Confirm ghost-clicks...`);
         
         await Promise.all(pages.map(async (p, idx) => {
@@ -1116,7 +1112,6 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                     const elements = Array.from(document.querySelectorAll('*'));
                     for (let el of elements) {
                         if (el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null) {
-                            // Penetrating click for Confirm
                             const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
                             el.dispatchEvent(clickEvent);
                             el.click();
@@ -1133,12 +1128,32 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         // Wait 4 seconds for the website to process the instant clicks before taking the final screenshot
         await new Promise(r => setTimeout(r, 4000));
 
+        // --- STEP 7: FETCH BALANCE & FINISH ---
+        await updateStatus(`[SYSTEM] Strike executed! Fetching final state and updated balance...`);
+        
+        // Take the screenshot of the Task page FIRST to prove it worked
+        const screenshotBuffer = await pages[0].screenshot({ type: 'png' });
+
+        // Navigate the Master Tab to the User Profile to scrape the balance safely
+        let currentBalance = "Unknown";
+        try {
+            await pages[0].goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
+            await new Promise(r => setTimeout(r, 3000)); // Let the profile page load
+            currentBalance = await pages[0].evaluate(() => {
+                const rawText = document.body.textContent || '';
+                const match = rawText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
+                if (match) return match[1];
+                return 'Unknown';
+            });
+        } catch (e) {}
 
         await updateStatus(`[SUCCESS] Strike executed simultaneously!`);
-        const screenshotBuffer = await pages[0].screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Snapshot from Master Tab after executing ${targetCount} synchronized clicks.` });
+        await bot.sendPhoto(chatId, screenshotBuffer, { 
+            caption: `[SUCCESS] Snapshot from Master Tab after executing ${targetCount} synchronized clicks.\n\n💰 *Current Balance:* \`${currentBalance}\``,
+            parse_mode: 'Markdown'
+        });
 
-        // --- STEP 6: KEEP TABS OPEN & ARM IDLE TIMER ---
+        // --- STEP 8: KEEP TABS OPEN & ARM IDLE TIMER ---
         activeTaskPages = pages; 
         taskIdleTimer = setTimeout(async () => {
             bot.sendMessage(chatId, '[SYSTEM] 1 hour idle timeout reached. Closing inactive task tabs to save RAM.').catch(()=>{});
@@ -1154,13 +1169,10 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                 await bot.sendPhoto(chatId, errBuffer, { caption: '[DIAGNOSTIC] State of Master Tab at crash.' });
             } catch (snapErr) {}
         }
-        // If it crashes, clean up the broken tabs immediately
         for (let p of pages) await p.close().catch(()=>{});
     }
-    // NOTICE: The "finally" block that used to close the tabs is completely GONE.
+
 });
-
-
 
 bot.onText(/\/status/, (msg) => {
     if (msg.chat.id.toString() !== ADMIN_ID) return;
