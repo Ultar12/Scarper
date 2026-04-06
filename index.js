@@ -1185,13 +1185,26 @@ bot.onText(/^\/pop$/i, async (msg) => {
     let page = null;
 
     try {
-        // 1. Warm up the engine
-        if (typeof globalTaskBrowser === 'undefined' || !globalTaskBrowser) {
-            await updateStatus('[SYSTEM] Launching Chrome engine...');
+                // 1. Warm up the engine (WITH AUTO-RECOVERY)
+        // Check if browser doesn't exist OR if Heroku killed the connection
+        if (typeof globalTaskBrowser === 'undefined' || !globalTaskBrowser || !globalTaskBrowser.isConnected()) {
+            await updateStatus('[SYSTEM] Launching fresh Chrome engine (Crash Recovery)...');
+            
+            // Clean up any zombie processes just in case
+            if (typeof globalTaskBrowser !== 'undefined' && globalTaskBrowser) {
+                try { await globalTaskBrowser.close(); } catch (e) {}
+            }
+
             globalTaskBrowser = await puppeteer.launch({
                 headless: true,
                 executablePath: getChromePath(),
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+                args: [
+                    '--no-sandbox', 
+                    '--disable-setuid-sandbox', 
+                    '--disable-dev-shm-usage', 
+                    '--disable-gpu',
+                    '--js-flags="--max-old-space-size=250"' // Forces Chrome to use less Heroku RAM
+                ]
             });
         }
         browser = globalTaskBrowser;
