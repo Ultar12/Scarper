@@ -473,33 +473,47 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await new Promise(r => setTimeout(r, 3000));
 
 
-            await updateStatus('[SYSTEM] Brute-forcing withdrawal PIN...');
+      await updateStatus('[SYSTEM] Entering PIN with dynamic tracking + 12x brute-force...');
         const pin = '111111';
-        // 1. Lock focus on the very first box ONCE and let the website's auto-cursor take over
-        const inputs = await page.$$('input');
-        for (let input of inputs) {
-            const isValid = await input.evaluate(el => el.type !== 'hidden' && (el.offsetParent !== null || window.getComputedStyle(el).opacity === '0'));
-            if (isValid) {
-                await input.evaluate(el => el.focus());
-                await input.click().catch(() => {});
-                await new Promise(r => setTimeout(r, 800)); // Wait for the cursor to blink
-                break; // Stop after clicking the first valid box
+        // Loop 12 times, pressing '1', and RE-SCANNING the screen every single time!
+        for (let i = 0; i < 12; i++) {
+            // 1. Scan the screen for the freshest version of the boxes
+            const inputs = await page.$$('input');
+            const activeInputs = [];
+            
+            for (let input of inputs) {
+                const isValid = await input.evaluate(el => el.type !== 'hidden' && (el.offsetParent !== null || window.getComputedStyle(el).opacity === '0'));
+                if (isValid) activeInputs.push(input);
             }
-        }
 
-        // 2. The Brute-Force Hack: Spam the digit 10 times slowly!
-        // It will perfectly fill the 6 boxes, and safely discard the extra 4 keystrokes.
-        for (let i = 0; i < 10; i++) {
-            await page.keyboard.press('1');
-            await new Promise(r => setTimeout(r, 400)); // 400ms pause so the site doesn't crash
+            // 2. Click the box and type
+            if (activeInputs.length >= 6) {
+                // Cap the box index at 5 (which is the 6th box) so it doesn't crash on loops 7-12
+                const boxIndex = Math.min(i, 5); 
+                await activeInputs[boxIndex].evaluate(el => el.focus());
+                await activeInputs[boxIndex].click().catch(() => {});
+                await new Promise(r => setTimeout(r, 200));
+                
+                await page.keyboard.press('1');
+            } else if (activeInputs.length > 0) {
+                // If it's 1 invisible master box, just focus it on the first loop
+                if (i === 0) {
+                    await activeInputs[0].evaluate(el => el.focus());
+                    await activeInputs[0].click().catch(() => {});
+                }
+                await page.keyboard.press('1');
+            }
+            
+            // 3. Wait 500ms for the website to finish destroying and rebuilding the boxes
+            await new Promise(r => setTimeout(r, 500)); 
         }
 
         await new Promise(r => setTimeout(r, 1500));
 
         // --- SCREENSHOT AFTER TYPING THE PIN ---
         const postPinSnap = await page.screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, postPinSnap, { caption: '[DEBUG] State AFTER brute-force typing, right before Confirm' });
-
+        await bot.sendPhoto(chatId, postPinSnap, { caption: '[DEBUG] State AFTER dynamic 12x typing, right before Confirm' });
+   
         // 3. AGGRESSIVE CONFIRM CLICK
         await updateStatus('[SYSTEM] Submitting final confirmation...');
         await page.evaluate(() => {
