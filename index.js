@@ -474,7 +474,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
 
               await updateStatus('[SYSTEM] Executing 3-Click bypass and dynamic typing...');
-        const pin = '111111';
+        const pin = '1';
         // --- 1. THE 3-CLICK BYPASS ---
         const initialInputs = await page.$$('input');
         for (let input of initialInputs) {
