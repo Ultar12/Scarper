@@ -473,14 +473,15 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await new Promise(r => setTimeout(r, 3000));
 
 
-              await updateStatus('[SYSTEM] Executing 3-Click bypass and dynamic typing...');
-        const pin = '1';
+          await updateStatus('[SYSTEM] Executing 3-Click bypass and Hands-Off typing...');
+        
         // --- 1. THE 3-CLICK BYPASS ---
         const initialInputs = await page.$$('input');
         for (let input of initialInputs) {
             const isValid = await input.evaluate(el => el.type !== 'hidden' && (el.offsetParent !== null || window.getComputedStyle(el).opacity === '0'));
             if (isValid) {
-                await updateStatus('[SYSTEM] Tapping first box 3 times to clear popups...');
+                await updateStatus('[SYSTEM] Tapping box 3 times to clear popups and lock cursor...');
+                
                 // Tap 1: Triggers the popup
                 await input.click().catch(() => {});
                 await new Promise(r => setTimeout(r, 600)); 
@@ -491,41 +492,26 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                 
                 // Tap 3: Officially locks focus & brings up the keyboard
                 await input.click().catch(() => {});
-                await new Promise(r => setTimeout(r, 800)); 
+                await new Promise(r => setTimeout(r, 1200)); // Wait 1.2s for cursor to fully settle
                 break; // Stop after doing this to the first box
             }
         }
 
-        // --- 2. DYNAMIC 12x BRUTE-FORCE TYPING ---
-        for (let i = 0; i < 20; i++) {
-            // Re-scan the screen for the freshest boxes
-            const inputs = await page.$$('input');
-            const activeInputs = [];
-            
-            for (let input of inputs) {
-                const isValid = await input.evaluate(el => el.type !== 'hidden' && (el.offsetParent !== null || window.getComputedStyle(el).opacity === '0'));
-                if (isValid) activeInputs.push(input);
-            }
-
-            // Silently focus the box and type (NO clicking here to avoid triggering the popup again)
-            if (activeInputs.length >= 6) {
-                const boxIndex = Math.min(i, 5); 
-                await activeInputs[boxIndex].evaluate(el => el.focus());
-                await page.keyboard.press('1');
-            } else if (activeInputs.length > 0) {
-                await activeInputs[0].evaluate(el => el.focus());
-                await page.keyboard.press('1');
-            }
-            
-            // Wait 500ms for the website to digest the keystroke and move the cursor
-            await new Promise(r => setTimeout(r, 500)); 
+        // --- 2. HANDS-OFF TYPING ---
+        // We DO NOT touch or scan the DOM in this loop. We just press the keys and let the website move the cursor!
+        await updateStatus('[SYSTEM] Typing PIN naturally...');
+        
+        // Let's do 8 keystrokes just to be safe. If the 6 boxes fill up, the extra 2 keystrokes will safely be ignored.
+        for (let i = 0; i < 8; i++) {
+            await page.keyboard.press('1');
+            await new Promise(r => setTimeout(r, 800)); // 800ms is a very slow, safe, human-like delay
         }
 
         await new Promise(r => setTimeout(r, 1500));
 
         // --- SCREENSHOT AFTER TYPING THE PIN ---
         const postPinSnap = await page.screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, postPinSnap, { caption: '[DEBUG] State AFTER 3-click bypass and 12x typing, right before Confirm' });
+        await bot.sendPhoto(chatId, postPinSnap, { caption: '[DEBUG] State AFTER Hands-Off typing, right before Confirm' });
 
         // 3. AGGRESSIVE CONFIRM CLICK
         await updateStatus('[SYSTEM] Submitting final confirmation...');
