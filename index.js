@@ -1103,7 +1103,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await updateStatus(`[SYSTEM] Screenshots complete. Waiting 10 seconds for all tabs to fully synchronize...`);
         await new Promise(r => setTimeout(r, 10000));
 
-        // --- STEP 6: SYNCHRONIZED CONFIRM STRIKE ---
+               // --- STEP 6: SYNCHRONIZED CONFIRM STRIKE ---
         await updateStatus(`[SYSTEM] Executing INSTANT synchronized Confirm ghost-clicks...`);
         
         await Promise.all(pages.map(async (p, idx) => {
@@ -1125,11 +1125,12 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         }));
 
-        // Wait 4 seconds for the website to process the instant clicks before taking the final screenshot
-        await new Promise(r => setTimeout(r, 4000));
+        // --- NEW: 15 SECOND WAIT ---
+        await updateStatus(`[SYSTEM] Clicks fired! Waiting 15 seconds for the server to process all tabs...`);
+        await new Promise(r => setTimeout(r, 15000));
 
         // --- STEP 7: FETCH BALANCE & FINISH ---
-        await updateStatus(`[SYSTEM] Strike executed! Fetching final state and updated balance...`);
+        await updateStatus(`[SYSTEM] Fetching final state and updated balance...`);
         
         // Take the screenshot of the Task page FIRST to prove it worked
         const screenshotBuffer = await pages[0].screenshot({ type: 'png' });
@@ -1147,7 +1148,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             });
         } catch (e) {}
 
-        await updateStatus(`[SUCCESS] Strike executed simultaneously!`);
+        await updateStatus(`[SUCCESS] Strike sequence fully completed!`);
         await bot.sendPhoto(chatId, screenshotBuffer, { 
             caption: `[SUCCESS] Snapshot from Master Tab after executing ${targetCount} synchronized clicks.\n\n💰 *Current Balance:* \`${currentBalance}\``,
             parse_mode: 'Markdown'
@@ -1171,6 +1172,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         }
         for (let p of pages) await p.close().catch(()=>{});
     }
+ 
 
 });
 
