@@ -1129,30 +1129,33 @@ bot.onText(/\/withdraw\s+m4u/i, async (msg) => {
         });
         await new Promise(r => setTimeout(r, 3000));
 
-        // --- 4. CONFIRMATION PAGE & POPUP ---
-        await updateStatus(`[SYSTEM] Submitting primary confirmation...`);
-        await m4uPage.evaluate(() => {
-            Array.from(document.querySelectorAll('*')).forEach(el => {
-                // Ensure it's the Confirm button and it's visible
-                if (el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null) {
-                    el.click();
+                // --- 4. SMART MULTI-STEP WIZARD SWEEPER ---
+        await updateStatus(`[SYSTEM] Navigating M4U multi-step withdrawal wizard...`);
+        
+        // Loop 4 times to blast through Step 1, Step 2, Step 3, and any final "Kind Reminder" popups
+        for (let step = 0; step < 4; step++) {
+            await m4uPage.evaluate(() => {
+                const confirmBtns = Array.from(document.querySelectorAll('*')).filter(el => {
+                    const txt = (el.innerText || el.textContent || '').trim();
+                    // Catch both 'Confirm' and 'Withdraw' buttons as we move through the wizard steps
+                    return (txt === 'Confirm' || txt === 'Withdraw') && el.offsetParent !== null;
+                });
+                
+                if (confirmBtns.length > 0) {
+                    // Always grab the last one to bypass overlapping background layers
+                    const targetBtn = confirmBtns[confirmBtns.length - 1];
+                    targetBtn.scrollIntoView({ block: 'center' });
+                    
+                    // Aggressive synthetic click to guarantee the website registers it
+                    targetBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    targetBtn.click();
+                    if (targetBtn.parentElement) targetBtn.parentElement.click();
                 }
             });
-        });
-        await new Promise(r => setTimeout(r, 2000));
+            // Wait 3 seconds for the next step of the wizard to load before looping again
+            await new Promise(r => setTimeout(r, 3000)); 
+        }
 
-        await updateStatus(`[SYSTEM] Bypassing "Kind Reminder" modal...`);
-        // The modal appears over the screen. We grab the LAST 'Confirm' button in the DOM (which is usually the modal popup)
-        await m4uPage.evaluate(() => {
-            const confirmBtns = Array.from(document.querySelectorAll('*')).filter(el => 
-                el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null
-            );
-            if (confirmBtns.length > 0) {
-                // Click the highest z-index / most recent one in the DOM
-                confirmBtns[confirmBtns.length - 1].click();
-            }
-        });
-        await new Promise(r => setTimeout(r, 4000));
 
         // --- 5. SNAPSHOT & FINISH ---
         await updateStatus(`[SUCCESS] Full withdrawal of ${balanceData} executed successfully!`);
