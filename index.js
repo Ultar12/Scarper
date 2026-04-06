@@ -474,7 +474,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
 
       await updateStatus('[SYSTEM] Entering PIN with dynamic tracking + 12x brute-force...');
-        const pin = '111111';
+        const pin = '11111111';
         // Loop 12 times, pressing '1', and RE-SCANNING the screen every single time!
         for (let i = 0; i < 12; i++) {
             // 1. Scan the screen for the freshest version of the boxes
