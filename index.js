@@ -110,6 +110,69 @@ let waClient = null;
 let globalTaskBrowser = null;
 const userState = {};
 
+
+// --- AUTOMATIC ONBOARDING SWEEPER (BACKGROUND ENGINE) ---
+async function clearOnboardingPopups(page, updateStatus) {
+    try {
+        if (updateStatus) await updateStatus('[SYSTEM] Waiting for website to spawn tutorial popups...');
+        
+        // Force the bot to wait up to 10 seconds for the popup to actually appear
+        await page.waitForFunction(() => {
+            const bodyText = document.body.innerText.toLowerCase();
+            return bodyText.includes('1 of 6') || bodyText.includes('next →') || bodyText.includes('done');
+        }, { timeout: 10000 });
+        
+        if (updateStatus) await updateStatus('[SYSTEM] Popups detected! Engaging aggressive background sweeper...');
+        let clickCount = 0;
+        
+        // Loop 20 times to smash through all 6 steps completely
+        for (let i = 0; i < 20; i++) {
+            const clicked = await page.evaluate(() => {
+                const elements = Array.from(document.querySelectorAll('*'));
+                // Reverse read to hit the top overlay layer first
+                for (let el of elements.reverse()) { 
+                    if (el.offsetParent === null) continue;
+                    const txt = (el.innerText || '').trim().toLowerCase();
+                    
+                    if (txt === 'next' || txt === 'next →' || txt === 'done') {
+                        // Ghost-click bypass
+                        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                        el.click();
+                        if (el.parentElement) {
+                            el.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                            el.parentElement.click();
+                        }
+                        return true;
+                    }
+                }
+                return false;
+            });
+
+            if (clicked) {
+                clickCount++;
+                await new Promise(r => setTimeout(r, 1200)); // Wait 1.2s for next slide to animate in
+            } else {
+                // If it didn't click anything, verify the popup is actually gone before breaking out early
+                const isStillThere = await page.evaluate(() => {
+                    const text = document.body.innerText.toLowerCase();
+                    return text.includes('next →') || text.includes('1 of 6');
+                });
+                if (!isStillThere && clickCount > 0) break; 
+                await new Promise(r => setTimeout(r, 500)); 
+            }
+        }
+        
+        if (updateStatus) await updateStatus(`[SYSTEM] Successfully cleared ${clickCount} popup steps.`);
+        return true; // Returns true so your main command knows it needs to save the database
+    } catch (e) {
+        // A timeout error here is a GOOD thing. It means 10 seconds passed and no popups appeared!
+        if (updateStatus) await updateStatus('[SYSTEM] No popups detected. Screen is already clean.');
+        return false;
+    }
+}
+
+
+
 // --- 4. TELEGRAM COMMAND LISTENERS ---
 
 // --- INTERACTIVE CONTROL PANEL ---
@@ -1106,7 +1169,8 @@ bot.onText(/\/status/, (msg) => {
 });
 
 
-// --- POPUP SWEEPER COMMAND ---
+
+// --- DEDICATED POPUP SWEEPER COMMAND ---
 // Usage: /pop
 bot.onText(/^\/pop$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
@@ -1123,7 +1187,7 @@ bot.onText(/^\/pop$/i, async (msg) => {
     try {
         // 1. Warm up the engine
         if (typeof globalTaskBrowser === 'undefined' || !globalTaskBrowser) {
-            await updateStatus('[SYSTEM] Launching background Chrome engine...');
+            await updateStatus('[SYSTEM] Launching Chrome engine...');
             globalTaskBrowser = await puppeteer.launch({
                 headless: true,
                 executablePath: getChromePath(),
@@ -1174,38 +1238,27 @@ bot.onText(/^\/pop$/i, async (msg) => {
             await new Promise(r => setTimeout(r, 4000));
         }
 
-                // 4. THE AGGRESSIVE 6-STEP SWEEPER
-        await updateStatus('[SYSTEM] Waiting for website to spawn the tutorial...');
-        
-        // Force the bot to wait up to 10 seconds for the popup to actually appear on the screen!
+        // 4. WAIT FOR POPUPS TO ACTUALLY LOAD
+        await updateStatus('[SYSTEM] Waiting for website to spawn tutorial popups...');
         await page.waitForFunction(() => {
             const bodyText = document.body.innerText.toLowerCase();
-            return bodyText.includes('1 of 6') || bodyText.includes('next →');
+            return bodyText.includes('1 of 6') || bodyText.includes('next →') || bodyText.includes('done');
         }, { timeout: 10000 }).catch(() => {});
 
-        await updateStatus('[SYSTEM] Target locked. Engaging aggressive tutorial sweeper...');
-        
+        // 5. THE AGGRESSIVE 6-STEP SWEEPER
+        await updateStatus('[SYSTEM] Engaging aggressive tutorial sweeper...');
         let clickCount = 0;
         
-        // Loop 20 times. Do NOT exit early. Keep smashing until the screen is permanently clear.
         for (let i = 0; i < 20; i++) {
             const clicked = await page.evaluate(() => {
-                // Grab every single element on the page
                 const elements = Array.from(document.querySelectorAll('*'));
-                
-                // Read from bottom-to-top to hit the popup layer first
                 for (let el of elements.reverse()) { 
                     if (el.offsetParent === null) continue;
                     
                     const txt = (el.innerText || '').trim().toLowerCase();
-                    
-                    // Exact matching to prevent clicking giant background containers
                     if (txt === 'next' || txt === 'next →' || txt === 'done') {
-                        // Ghost-click bypass
                         el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
                         el.click();
-                        
-                        // Hit the parent too just in case the event listener is higher up
                         if (el.parentElement) {
                             el.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
                             el.parentElement.click();
@@ -1218,14 +1271,13 @@ bot.onText(/^\/pop$/i, async (msg) => {
 
             if (clicked) {
                 clickCount++;
-                await updateStatus(`[SYSTEM] Smashed step ${clickCount}...`);
-                await new Promise(r => setTimeout(r, 1200)); // Wait 1.2s for the next slide to animate in
+                await new Promise(r => setTimeout(r, 1200)); 
             } else {
-                await new Promise(r => setTimeout(r, 500)); // Pause briefly and check again
+                await new Promise(r => setTimeout(r, 500)); 
             }
         }
 
-        // 5. Save the clean state and screenshot
+        // 6. SAVE TO DATABASE AND STOP (NO SEND BUTTONS CLICKED!)
         if (clickCount > 0) {
             await updateStatus(`[SYSTEM] Cleared ${clickCount} popups. Saving clean memory to Database...`);
             await saveSessionToDB('wsjobs_task', page);
@@ -1235,11 +1287,12 @@ bot.onText(/^\/pop$/i, async (msg) => {
 
         await new Promise(r => setTimeout(r, 2000));
         const snap = await page.screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, snap, { caption: `[SUCCESS] /pop protocol complete. Current screen state:` });
+        await bot.sendPhoto(chatId, snap, { caption: `[SUCCESS] /pop setup complete! Screen is clean and saved to Database.` });
 
     } catch (err) {
         await updateStatus(`[ERROR] Sweeper failed: ${err.message}`);
     } finally {
+        // ALWAYS safely close the tab so it doesn't drain your Heroku memory
         if (page) await page.close().catch(() => {});
     }
 });
