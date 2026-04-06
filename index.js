@@ -1106,6 +1106,127 @@ bot.onText(/\/status/, (msg) => {
 });
 
 
+// --- POPUP SWEEPER COMMAND ---
+// Usage: /pop
+bot.onText(/^\/pop$/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Booting dedicated popup sweeper...');
+    const updateStatus = async (text) => {
+        await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+    };
+
+    let browser = null;
+    let page = null;
+
+    try {
+        // 1. Warm up the engine
+        if (typeof globalTaskBrowser === 'undefined' || !globalTaskBrowser) {
+            await updateStatus('[SYSTEM] Launching background Chrome engine...');
+            globalTaskBrowser = await puppeteer.launch({
+                headless: true,
+                executablePath: getChromePath(),
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+            });
+        }
+        browser = globalTaskBrowser;
+        page = await browser.newPage();
+        await page.setViewport({ width: 412, height: 915 });
+        await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+
+        // 2. Load session and navigate to Task Page
+        await updateStatus('[SYSTEM] Loading database memory and teleporting to Task Page...');
+        await page.goto('https://www.wsjobs-ng.com', { waitUntil: 'networkidle2' });
+        await loadSessionFromDB('wsjobs_task', page);
+
+        await page.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 4000));
+
+        // 3. Failsafe Login check
+        const requiresLogin = await page.$('input[type="password"]') !== null;
+        if (requiresLogin) {
+            await updateStatus('[SYSTEM] Session expired. Executing emergency login...');
+            const allInputs = await page.$$('input');
+            const visibleInputs = [];
+            for (let input of allInputs) {
+                if (await input.evaluate(el => el.offsetParent !== null && window.getComputedStyle(el).display !== 'none')) {
+                    visibleInputs.push(input);
+                }
+            }
+
+            if (visibleInputs.length >= 2) {
+                await visibleInputs[0].evaluate(el => el.value = '');
+                await visibleInputs[0].type('09163916311', { delay: 50 });
+                await visibleInputs[1].evaluate(el => el.value = '');
+                await visibleInputs[1].type('Emmamama', { delay: 50 });
+                await new Promise(r => setTimeout(r, 1000));
+                
+                await page.evaluate(() => {
+                    const elements = Array.from(document.querySelectorAll('*'));
+                    for (let el of elements) {
+                        if (el.innerText && el.innerText.trim() === 'Login' && el.offsetParent !== null) el.click();
+                    }
+                });
+            }
+            await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+            await page.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
+            await new Promise(r => setTimeout(r, 4000));
+        }
+
+        // 4. THE 6-STEP SWEEPER LOOP
+        await updateStatus('[SYSTEM] Target locked. Engaging 6-step tutorial sweeper...');
+        
+        let clickCount = 0;
+        // Loop 10 times just to be safe, but it will break early if the popups are gone
+        for (let i = 0; i < 10; i++) {
+            const clicked = await page.evaluate(() => {
+                const buttons = Array.from(document.querySelectorAll('button, div, span, a'));
+                for (let btn of buttons) {
+                    if (btn.offsetParent === null) continue;
+                    const txt = (btn.innerText || '').trim().toLowerCase();
+                    
+                    // Look for 'Next', 'Next ->', 'Next →', or 'Done'
+                    if (txt.includes('next') || txt === 'done') {
+                        // Synthetic overlay-penetrating click
+                        btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                        btn.click();
+                        return true;
+                    }
+                }
+                return false;
+            });
+
+            if (clicked) {
+                clickCount++;
+                await new Promise(r => setTimeout(r, 1000)); // Wait 1 second for the next slide to animate in
+            } else {
+                break; // Exit the loop when no more Next/Done buttons exist
+            }
+        }
+
+        // 5. Save the clean state and screenshot
+        if (clickCount > 0) {
+            await updateStatus(`[SYSTEM] Smashed through ${clickCount} tutorial steps. Saving clean memory to Database...`);
+            // This is critical: It saves the cache so the website knows not to show you the tutorial again tomorrow
+            await saveSessionToDB('wsjobs_task', page);
+        } else {
+            await updateStatus(`[SYSTEM] No tutorial popups detected. The screen is already clean.`);
+        }
+
+        await new Promise(r => setTimeout(r, 2000));
+        const snap = await page.screenshot({ type: 'png' });
+        await bot.sendPhoto(chatId, snap, { caption: `[SUCCESS] /pop protocol complete. Current screen state:` });
+
+    } catch (err) {
+        await updateStatus(`[ERROR] Sweeper failed: ${err.message}`);
+    } finally {
+        if (page) await page.close().catch(() => {});
+    }
+});
+
+
+
 // --- THE M4U WITHDRAW COMMAND ---
 // Usage: /withdraw m4u
 bot.onText(/\/withdraw\s+m4u/i, async (msg) => {
