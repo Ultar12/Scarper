@@ -473,46 +473,32 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await new Promise(r => setTimeout(r, 3000));
 
 
-    await updateStatus('[SYSTEM] Entering withdrawal PIN with dynamic DOM tracking...');
-        const pin = '111111'; // Ensure this matches your actual PIN
+            await updateStatus('[SYSTEM] Brute-forcing withdrawal PIN...');
         
-        // Loop 6 times, and RE-SCAN the screen every single time to survive DOM re-renders!
-        for (let i = 0; i < pin.length; i++) {
-            // 1. Scan the screen for the freshest version of the boxes
-            const inputs = await page.$$('input');
-            const activeInputs = [];
-            
-            for (let input of inputs) {
-                const isValid = await input.evaluate(el => el.type !== 'hidden' && (el.offsetParent !== null || window.getComputedStyle(el).opacity === '0'));
-                if (isValid) activeInputs.push(input);
+        // 1. Lock focus on the very first box ONCE and let the website's auto-cursor take over
+        const inputs = await page.$$('input');
+        for (let input of inputs) {
+            const isValid = await input.evaluate(el => el.type !== 'hidden' && (el.offsetParent !== null || window.getComputedStyle(el).opacity === '0'));
+            if (isValid) {
+                await input.evaluate(el => el.focus());
+                await input.click().catch(() => {});
+                await new Promise(r => setTimeout(r, 800)); // Wait for the cursor to blink
+                break; // Stop after clicking the first valid box
             }
+        }
 
-            // 2. Click the specific box for this digit and type it
-            if (activeInputs.length >= 6) {
-                // Scenario A: 6 individual physical boxes
-                await activeInputs[i].evaluate(el => el.focus());
-                await activeInputs[i].click().catch(() => {});
-                await new Promise(r => setTimeout(r, 200));
-                await page.keyboard.press(pin[i]);
-            } else if (activeInputs.length > 0) {
-                // Scenario B: 1 invisible master box
-                if (i === 0) {
-                    await activeInputs[0].evaluate(el => el.focus());
-                    await activeInputs[0].click().catch(() => {});
-                }
-                await page.keyboard.press(pin[i]);
-            }
-            
-            // 3. Wait 500ms for the website to finish destroying and rebuilding the boxes
-            await new Promise(r => setTimeout(r, 500)); 
+        // 2. The Brute-Force Hack: Spam the digit 10 times slowly!
+        // It will perfectly fill the 6 boxes, and safely discard the extra 4 keystrokes.
+        for (let i = 0; i < 10; i++) {
+            await page.keyboard.press('1');
+            await new Promise(r => setTimeout(r, 400)); // 400ms pause so the site doesn't crash
         }
 
         await new Promise(r => setTimeout(r, 1500));
 
         // --- SCREENSHOT AFTER TYPING THE PIN ---
         const postPinSnap = await page.screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, postPinSnap, { caption: '[DEBUG] State AFTER dynamic typing, right before Confirm' });
-
+        await bot.sendPhoto(chatId, postPinSnap, { caption: '[DEBUG] State AFTER brute-force typing, right before Confirm' });
 
         // 3. AGGRESSIVE CONFIRM CLICK
         await updateStatus('[SYSTEM] Submitting final confirmation...');
