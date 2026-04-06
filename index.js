@@ -987,8 +987,8 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         // Just a final safety check on clones (should instantly pass because of inherited cache)
         await Promise.all(pages.slice(1).map(p => sweepTutorial(p)));
 
-        // --- STEP 4: TARGET ACQUISITION ---
-        await updateStatus(`[SYSTEM] Tabs are clear. Clicking "Send" on all targets...`);
+                // --- STEP 4: TARGET ACQUISITION (GHOST CLICKS) ---
+        await updateStatus(`[SYSTEM] Tabs are clear. Ghost-clicking "Send" on all targets...`);
         
         const clickResults = await Promise.all(pages.map((p, index) => {
             return p.evaluate((suffixStr, tabIndex) => {
@@ -1001,8 +1001,18 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                     }
                     if (containerText.includes(suffixStr)) {
                         if (matchCount === tabIndex) {
-                            btn.scrollIntoView({ block: 'center' });
-                            btn.click();
+                            btn.scrollIntoView({ block: 'center', behavior: 'instant' });
+                            
+                            // Synthetic Overlay-Penetrating Click
+                            const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+                            btn.dispatchEvent(clickEvent); // Forces the JS to trigger even if hidden
+                            btn.click(); // Fallback
+                            
+                            // Some sites put the listener on the parent container
+                            if (btn.parentElement) {
+                                btn.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                                btn.parentElement.click();
+                            }
                             return true;
                         }
                         matchCount++;
@@ -1015,13 +1025,13 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await new Promise(r => setTimeout(r, 2000));
 
         // --- STEP 5: PRE-STRIKE SCREENSHOTS & TIMEBOMB ---
-        await updateStatus(`[SYSTEM] Waiting for popups to render...`);
+        await updateStatus(`[SYSTEM] Waiting for Confirm popups to load (ignoring tutorials)...`);
         
         await Promise.all(pages.map(async (p, idx) => {
             if (clickResults[idx]) {
                 await p.waitForFunction(() => {
                     return Array.from(document.querySelectorAll('*')).some(el => el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null);
-                }, { timeout: 5000 }).catch(() => null);
+                }, { timeout: 7000 }).catch(() => null); // 7 seconds to let laggy tabs load
             }
         }));
 
@@ -1035,7 +1045,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         }
 
-                await updateStatus(`[SYSTEM] Executing INSTANT synchronized Confirm clicks on all tabs...`);
+        await updateStatus(`[SYSTEM] Executing INSTANT synchronized Confirm ghost-clicks...`);
         
         await Promise.all(pages.map(async (p, idx) => {
             if (clickResults[idx]) {
@@ -1043,7 +1053,14 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                     const elements = Array.from(document.querySelectorAll('*'));
                     for (let el of elements) {
                         if (el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null) {
+                            // Penetrating click for Confirm
+                            const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+                            el.dispatchEvent(clickEvent);
                             el.click();
+                            if (el.parentElement) {
+                                el.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                                el.parentElement.click();
+                            }
                         }
                     }
                 });
