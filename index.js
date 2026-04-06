@@ -497,7 +497,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         }
 
         // --- 2. DYNAMIC 12x BRUTE-FORCE TYPING ---
-        for (let i = 0; i < 12; i++) {
+        for (let i = 0; i < 20; i++) {
             // Re-scan the screen for the freshest boxes
             const inputs = await page.$$('input');
             const activeInputs = [];
