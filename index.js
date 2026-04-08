@@ -1011,6 +1011,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             return didSweep;
         };
 
+                
                 // --- STEP 1: INITIALIZE MASTER TAB & INJECT DB DATA ---
         await updateStatus('[SYSTEM] Opening Master Tab & loading DB credentials...');
         const page1 = await browser.newPage();
@@ -1039,11 +1040,11 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             if (visibleInputs.length >= 2) {
                 await visibleInputs[0].evaluate(el => el.value = '');
                 await visibleInputs[0].click();
-                await visibleInputs[0].type(process.env.USERNAME, { delay: 50 });
+                await visibleInputs[0].type(String(process.env.USERNAME), { delay: 50 });
                 
                 await visibleInputs[1].evaluate(el => el.value = '');
                 await visibleInputs[1].click();
-                await visibleInputs[1].type(process.env.PASS, { delay: 50 });
+                await visibleInputs[1].type(String(process.env.PASS), { delay: 50 });
                 
                 await new Promise(r => setTimeout(r, 1000));
                 
@@ -1104,11 +1105,11 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             if (visibleInputs2.length >= 2) {
                 await visibleInputs2[0].evaluate(el => el.value = '');
                 await visibleInputs2[0].click();
-                await visibleInputs2[0].type(process.env.USERNAME2, { delay: 50 });
+                await visibleInputs2[0].type(String(process.env.USERNAME2), { delay: 50 });
                 
                 await visibleInputs2[1].evaluate(el => el.value = '');
                 await visibleInputs2[1].click();
-                await visibleInputs2[1].type(process.env.PASS2, { delay: 50 });
+                await visibleInputs2[1].type(String(process.env.PASS2), { delay: 50 });
                 
                 await new Promise(r => setTimeout(r, 1000));
                 
@@ -1130,6 +1131,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             await saveSessionToDB('wsjobs_task', page1);
             await updateStatus('[SYSTEM] Successfully switched to Account 2.');
         }
+
 
         // --- STEP 2: SWEEP MASTER TAB & SAVE PERMANENT CACHE ---
         await updateStatus('[SYSTEM] Checking tutorials on Master Tab...');
