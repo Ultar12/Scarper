@@ -1749,7 +1749,6 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                 // --- STEP 7: FETCH FINAL BALANCE & CALCULATE PROFIT ---
         await updateStatus(`[SYSTEM] Fetching final state and calculating profit...`);
         
-        const screenshotBuffer = await pages[0].screenshot({ type: 'png' });
 
         let currentBalanceText = "Unknown";
         let earnedDisplay = "Unknown";
