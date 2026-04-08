@@ -94,6 +94,10 @@ const loadSessionFromDB = async (platform, page) => {
 let activeTaskPages = [];
 let taskIdleTimer = null;
 
+  // Variables to track profit
+let initialBalanceText = "0";
+let initialBalanceNum = 0;
+
 
 // --- 2. HEROKU WEB SERVER SETUP ---
 const app = express();
@@ -1321,6 +1325,25 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             await new Promise(r => setTimeout(r, 4000));
         }
 
+
+                // --- STEP 1.5: FETCH INITIAL BALANCE ---
+        await updateStatus('[SYSTEM] Fetching initial balance before strike...');
+        await page1.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 3000));
+
+        initialBalanceText = await page1.evaluate(() => {
+            const rawText = document.body.textContent || '';
+            const match = rawText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
+            if (match) return match[1];
+            return '0';
+        });
+        initialBalanceNum = parseFloat(initialBalanceText.replace(/,/g, '')) || 0;
+
+        await updateStatus('[SYSTEM] Teleporting to Task page...');
+        await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 4000));
+
+
         // --- STEP 2: SWEEP MASTER TAB & SAVE PERMANENT CACHE ---
         await updateStatus('[SYSTEM] Checking tutorials on Master Tab...');
         await sweepTutorial(page1);
@@ -1362,7 +1385,8 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         }
 
         // Just a final safety check on clones (should instantly pass because of inherited cache)
-        await Promise.all(pages.slice(1).map(p => sweepTutorial(p)));
+        // Sweep clones silently using the global function (passing null prevents it from spamming Telegram statuses)
+    await Promise.all(pages.slice(1).map(p => clearOnboardingPopups(p, null)));
 
                         // --- STEP 4: TARGET ACQUISITION (GHOST CLICKS) ---
         await updateStatus(`[SYSTEM] Tabs are clear. Ghost-clicking "Send" on all targets...`);
@@ -1443,30 +1467,38 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await updateStatus(`[SYSTEM] Clicks fired! Waiting 15 seconds for the server to process all tabs...`);
         await new Promise(r => setTimeout(r, 15000));
 
-        // --- STEP 7: FETCH BALANCE & FINISH ---
-        await updateStatus(`[SYSTEM] Fetching final state and updated balance...`);
+        // --- STEP        // --- STEP 7: FETCH FINAL BALANCE & CALCULATE PROFIT ---
+        await updateStatus(`[SYSTEM] Fetching final state and calculating profit...`);
         
-        // Take the screenshot of the Task page FIRST to prove it worked
         const screenshotBuffer = await pages[0].screenshot({ type: 'png' });
 
-        // Navigate the Master Tab to the User Profile to scrape the balance safely
-        let currentBalance = "Unknown";
+        let currentBalanceText = "Unknown";
+        let earnedDisplay = "Unknown";
         try {
             await pages[0].goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
-            await new Promise(r => setTimeout(r, 3000)); // Let the profile page load
-            currentBalance = await pages[0].evaluate(() => {
+            await new Promise(r => setTimeout(r, 3000)); 
+            currentBalanceText = await pages[0].evaluate(() => {
                 const rawText = document.body.textContent || '';
                 const match = rawText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
                 if (match) return match[1];
                 return 'Unknown';
             });
+            
+            // Calculate the math!
+            let finalBalanceNum = parseFloat(currentBalanceText.replace(/,/g, ''));
+            if (!isNaN(initialBalanceNum) && !isNaN(finalBalanceNum)) {
+                earnedDisplay = `+${(finalBalanceNum - initialBalanceNum).toFixed(2)}`;
+            }
         } catch (e) {}
 
         await updateStatus(`[SUCCESS] Strike sequence fully completed!`);
         await bot.sendPhoto(chatId, screenshotBuffer, { 
-            caption: `[SUCCESS] Snapshot from Master Tab after executing ${targetCount} synchronized clicks.\n\n💰 *Current Balance:* \`${currentBalance}\``,
+            caption: `[SUCCESS] Snapshot from Master Tab after executing ${targetCount} synchronized clicks.\n\n` +
+                
+                     `Profit:* \`${earnedDisplay}\``,
             parse_mode: 'Markdown'
         });
+
 
         // --- STEP 8: KEEP TABS OPEN & ARM IDLE TIMER ---
         activeTaskPages = pages; 
