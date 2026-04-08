@@ -9,6 +9,9 @@ const path = require('path');
 const puppeteer = require('puppeteer'); 
 const QRCode = require('qrcode');
 
+
+const screenshotBuffer = await pages[0].screenshot({ type: 'png' });
+
 // --- BULLETPROOF CHROME LOCATOR ---
 function getChromePath() {
     const possiblePaths = [
