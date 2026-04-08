@@ -936,8 +936,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
 });
 
 
-
-  // Usage: /task 127
+// Usage: /task 127
 bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -1019,6 +1018,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await page1.setViewport({ width: 412, height: 915 }); 
         await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
+        // Go to base URL first so localStorage injects safely without cross-domain errors
         await page1.goto('https://www.wsjobs-ng.com', { waitUntil: 'networkidle2' });
         await loadSessionFromDB('wsjobs_task', page1);
 
@@ -1028,7 +1028,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         const requiresLogin = await page1.$('input[type="password"]') !== null;
 
         if (requiresLogin) {
-            await updateStatus('[SYSTEM] DB Session missing/expired. Performing Physical Login with Account 1...');
+            await updateStatus('[SYSTEM] DB Session missing/expired. Performing Physical Login...');
             const allInputs = await page1.$$('input');
             const visibleInputs = [];
             for (let input of allInputs) {
@@ -1039,11 +1039,11 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             if (visibleInputs.length >= 2) {
                 await visibleInputs[0].evaluate(el => el.value = '');
                 await visibleInputs[0].click();
-                await visibleInputs[0].type(String(process.env.USERNAME), { delay: 50 });
+                await visibleInputs[0].type('09163916500', { delay: 50 });
                 
                 await visibleInputs[1].evaluate(el => el.value = '');
                 await visibleInputs[1].click();
-                await visibleInputs[1].type(String(process.env.PASS), { delay: 50 });
+                await visibleInputs[1].type('Emmamama', { delay: 50 });
                 
                 await new Promise(r => setTimeout(r, 1000));
                 
@@ -1067,90 +1067,31 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         // --- STEP 2: SWEEP MASTER TAB & SAVE PERMANENT CACHE ---
         await updateStatus('[SYSTEM] Checking tutorials on Master Tab...');
         await sweepTutorial(page1);
+
+        // ALWAYS save the cookies + cache after sweeping to lock the "tutorial finished" memory
         await updateStatus('[SYSTEM] Locking updated cookies/cache into Database...');
         await saveSessionToDB('wsjobs_task', page1);
 
-        // --- STEP 3: COUNT TARGETS & SMART FALLBACK ---
+        // --- STEP 3: COUNT TARGETS & SPAWN CLONES ---
         await updateStatus(`[SYSTEM] Target acquisition phase for: ${targetSuffix}...`);
-        
-        let usingAcc2 = false;
-        
-        let targetCount = await page1.evaluate((suffixStr) => {
+        const targetCount = await page1.evaluate((suffixStr) => {
             const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
             let count = 0;
             for (let btn of sendBtns) {
                 let containerText = '';
-                if (btn.parentElement && btn.parentElement.parentElement) containerText = btn.parentElement.parentElement.innerText || '';
+                if (btn.parentElement && btn.parentElement.parentElement) {
+                    containerText = btn.parentElement.parentElement.innerText || '';
+                }
                 if (containerText.includes(suffixStr)) count++;
             }
             return count > 4 ? 4 : count; 
         }, targetSuffix);
 
-        // --- THE FALLBACK LOGIC ---
-        if (targetCount === 0) {
-            await updateStatus(`[SYSTEM] 0 targets found in Account 1. Switching to Account 2 to check...`);
-            usingAcc2 = true;
-            
-            // Wipe Acc 1 memory temporarily
-            await page1.evaluate(() => window.localStorage.clear());
-            const cookies = await page1.cookies();
-            await page1.deleteCookie(...cookies);
-            
-            // Reload and Login to Acc 2
-            await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
-            await new Promise(r => setTimeout(r, 4000));
-            
-            const allInputs2 = await page1.$$('input');
-            const visInputs2 = [];
-            for (let i of allInputs2) {
-                if (await i.evaluate(el => el.offsetParent !== null && window.getComputedStyle(el).display !== 'none')) visInputs2.push(i);
-            }
-
-            if (visInputs2.length >= 2) {
-                await visInputs2[0].evaluate(el => el.value = '');
-                await visInputs2[0].click();
-                await visInputs2[0].type(String(process.env.USERNAME2), { delay: 50 });
-                
-                await visInputs2[1].evaluate(el => el.value = '');
-                await visInputs2[1].click();
-                await visInputs2[1].type(String(process.env.PASS2), { delay: 50 });
-                
-                await new Promise(r => setTimeout(r, 1000));
-                await page1.evaluate(() => {
-                    Array.from(document.querySelectorAll('*')).forEach(el => {
-                        if (el.innerText && el.innerText.trim() === 'Login' && el.offsetParent !== null) el.click();
-                    });
-                });
-            }
-            
-            await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-            await new Promise(r => setTimeout(r, 4000));
-            await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
-            await new Promise(r => setTimeout(r, 4000));
-            
-            // Sweep popups on Acc 2 just in case
-            await sweepTutorial(page1);
-
-            // Re-Count Targets on Acc 2!
-            await updateStatus(`[SYSTEM] Scanning Account 2 for ${targetSuffix}...`);
-            targetCount = await page1.evaluate((suffixStr) => {
-                const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
-                let count = 0;
-                for (let btn of sendBtns) {
-                    let containerText = '';
-                    if (btn.parentElement && btn.parentElement.parentElement) containerText = btn.parentElement.parentElement.innerText || '';
-                    if (containerText.includes(suffixStr)) count++;
-                }
-                return count > 4 ? 4 : count; 
-            }, targetSuffix);
-
-            if (targetCount === 0) {
-                throw new Error(`Found 0 targets ending with ${targetSuffix} in BOTH Account 1 and Account 2.`);
-            }
-        }
+        if (targetCount === 0) throw new Error(`Found 0 numbers ending with ${targetSuffix}.`);
 
         await updateStatus(`[SYSTEM] Found ${targetCount} matching numbers. Spawning ${targetCount - 1} clone tabs...`);
 
+        // Spawn Clones (Because they open in the same browser context, they instantly inherit the saved cache!)
         for (let i = 1; i < targetCount; i++) {
             const newPage = await browser.newPage();
             pages.push(newPage);
@@ -1162,9 +1103,11 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             await Promise.all(pages.slice(1).map(p => p.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' })));
             await new Promise(r => setTimeout(r, 3000));
         }
+
+        // Just a final safety check on clones (should instantly pass because of inherited cache)
         await Promise.all(pages.slice(1).map(p => sweepTutorial(p)));
 
-        // --- STEP 4: TARGET ACQUISITION (GHOST CLICKS) ---
+                        // --- STEP 4: TARGET ACQUISITION (GHOST CLICKS) ---
         await updateStatus(`[SYSTEM] Tabs are clear. Ghost-clicking "Send" on all targets...`);
         
         const clickResults = await Promise.all(pages.map((p, index) => {
@@ -1179,9 +1122,12 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                     if (containerText.includes(suffixStr)) {
                         if (matchCount === tabIndex) {
                             btn.scrollIntoView({ block: 'center', behavior: 'instant' });
+                            
+                            // Synthetic Overlay-Penetrating Click
                             const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
                             btn.dispatchEvent(clickEvent); 
                             btn.click(); 
+                            
                             if (btn.parentElement) {
                                 btn.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
                                 btn.parentElement.click();
@@ -1195,6 +1141,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }, targetSuffix, index);
         }));
 
+        // --- NEW: 3 SECOND WAIT ---
         await updateStatus(`[SYSTEM] Waiting 3 seconds for popups to initialize...`);
         await new Promise(r => setTimeout(r, 3000));
 
@@ -1209,10 +1156,11 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         }
 
+        // --- NEW: 10 SECOND WAIT ---
         await updateStatus(`[SYSTEM] Screenshots complete. Waiting 10 seconds for all tabs to fully synchronize...`);
         await new Promise(r => setTimeout(r, 10000));
 
-        // --- STEP 6: SYNCHRONIZED CONFIRM STRIKE ---
+               // --- STEP 6: SYNCHRONIZED CONFIRM STRIKE ---
         await updateStatus(`[SYSTEM] Executing INSTANT synchronized Confirm ghost-clicks...`);
         
         await Promise.all(pages.map(async (p, idx) => {
@@ -1234,18 +1182,21 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         }));
 
+        // --- NEW: 15 SECOND WAIT ---
         await updateStatus(`[SYSTEM] Clicks fired! Waiting 15 seconds for the server to process all tabs...`);
         await new Promise(r => setTimeout(r, 15000));
 
         // --- STEP 7: FETCH BALANCE & FINISH ---
         await updateStatus(`[SYSTEM] Fetching final state and updated balance...`);
         
+        // Take the screenshot of the Task page FIRST to prove it worked
         const screenshotBuffer = await pages[0].screenshot({ type: 'png' });
 
+        // Navigate the Master Tab to the User Profile to scrape the balance safely
         let currentBalance = "Unknown";
         try {
             await pages[0].goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
-            await new Promise(r => setTimeout(r, 3000)); 
+            await new Promise(r => setTimeout(r, 3000)); // Let the profile page load
             currentBalance = await pages[0].evaluate(() => {
                 const rawText = document.body.textContent || '';
                 const match = rawText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
@@ -1260,57 +1211,13 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             parse_mode: 'Markdown'
         });
 
-        // --- STEP 8: RETURN TO BASE & ARM IDLE TIMER ---
-        if (usingAcc2) {
-            await updateStatus(`[SYSTEM] Strike complete on Account 2. Switching Master Tab back to Account 1...`);
-            
-            for (let i = 1; i < pages.length; i++) await pages[i].close().catch(()=>{});
-            pages = [pages[0]]; 
-
-            await pages[0].evaluate(() => window.localStorage.clear());
-            const cookies = await pages[0].cookies();
-            await pages[0].deleteCookie(...cookies);
-            
-            await pages[0].goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
-            await new Promise(r => setTimeout(r, 4000));
-            
-            const allInputs1 = await pages[0].$$('input');
-            const visInputs1 = [];
-            for (let i of allInputs1) {
-                if (await i.evaluate(el => el.offsetParent !== null && window.getComputedStyle(el).display !== 'none')) visInputs1.push(i);
-            }
-
-            if (visInputs1.length >= 2) {
-                await visInputs1[0].evaluate(el => el.value = '');
-                await visInputs1[0].click();
-                await visInputs1[0].type(String(process.env.USERNAME), { delay: 50 });
-                
-                await visInputs1[1].evaluate(el => el.value = '');
-                await visInputs1[1].click();
-                await visInputs1[1].type(String(process.env.PASS), { delay: 50 });
-                
-                await new Promise(r => setTimeout(r, 1000));
-                await pages[0].evaluate(() => {
-                    Array.from(document.querySelectorAll('*')).forEach(el => {
-                        if (el.innerText && el.innerText.trim() === 'Login' && el.offsetParent !== null) el.click();
-                    });
-                });
-            }
-            
-            await pages[0].waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-            await new Promise(r => setTimeout(r, 4000));
-            await pages[0].goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
-            await new Promise(r => setTimeout(r, 4000));
-
-            await updateStatus(`[SYSTEM] Account 1 Restored. Ready for next task.`);
-        }
-
+        // --- STEP 8: KEEP TABS OPEN & ARM IDLE TIMER ---
         activeTaskPages = pages; 
         taskIdleTimer = setTimeout(async () => {
             bot.sendMessage(chatId, '[SYSTEM] 1 hour idle timeout reached. Closing inactive task tabs to save RAM.').catch(()=>{});
             for (let p of activeTaskPages) await p.close().catch(()=>{});
             activeTaskPages = [];
-        }, 60 * 60 * 1000); 
+        }, 60 * 60 * 1000); // 1 hour in milliseconds
 
     } catch (err) {
         await updateStatus(`[ERROR] Sequence failed: ${err.message}`);
@@ -1322,9 +1229,9 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         }
         for (let p of pages) await p.close().catch(()=>{});
     }
+ 
+
 });
-      
-            
 
 bot.onText(/\/status/, (msg) => {
     if (msg.chat.id.toString() !== ADMIN_ID) return;
