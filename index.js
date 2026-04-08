@@ -565,10 +565,15 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await updateStatus('[SYSTEM] Typing PIN naturally...');
         
         // Let's do 8 keystrokes just to be safe. If the 6 boxes fill up, the extra 2 keystrokes will safely be ignored.
+                const client = await page.target().createCDPSession();
         for (let i = 0; i < 8; i++) {
-            await page.keyboard.press('1');
-            await new Promise(r => setTimeout(r, 800)); // 800ms is a very slow, safe, human-like delay
+            await client.send('Input.dispatchKeyEvent', { type: 'keyDown', text: '1', unmodifiedText: '1', key: '1' });
+            await client.send('Input.dispatchKeyEvent', { type: 'char', text: '1', unmodifiedText: '1', key: '1' });
+            await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: '1' });
+            await new Promise(r => setTimeout(r, 800)); 
         }
+        await client.detach();
+
 
         await new Promise(r => setTimeout(r, 1500));
 
