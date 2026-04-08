@@ -10,7 +10,6 @@ const puppeteer = require('puppeteer');
 const QRCode = require('qrcode');
 
 
-const screenshotBuffer = await pages[0].screenshot({ type: 'png' });
 
 // --- BULLETPROOF CHROME LOCATOR ---
 function getChromePath() {
@@ -531,7 +530,7 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
         await updateStatus(`[ISOLATED SYSTEM] Fetching final state...`);
         const screenshotBuffer = await pages[0].screenshot({ type: 'png' });
 
-        let currentBalance = "Unknown";
+        
         try {
             await pages[0].goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
             await new Promise(r => setTimeout(r, 3000)); 
