@@ -190,7 +190,7 @@ bot.onText(/\/start/i, (msg) => {
         parse_mode: 'Markdown',
         reply_markup: {
             keyboard: [
-                [{ text: 'Pair M4U' }, { text: 'Withdraw' }],
+                [{ text: 'Withdraw' }, { text: 'Task' }],
                 [{ text: 'Balance' }]
             ],
             resize_keyboard: true,
@@ -1196,11 +1196,26 @@ bot.onText(/^(?:Task|task)$/i, async (msg) => {
     if (taskModeTimer) clearTimeout(taskModeTimer);
     taskModeTimer = setTimeout(() => {
         taskModeActive = false;
-        bot.sendMessage(chatId, '[SYSTEM] Task Mode automatically ended after 30 minutes of inactivity.');
+        // Bring the keyboard back when it times out!
+        bot.sendMessage(chatId, '[SYSTEM] Task Mode automatically ended after 30 minutes of inactivity.', {
+            reply_markup: {
+                keyboard: [
+                    [{ text: 'Pair M4U' }, { text: 'Withdraw' }],
+                    [{ text: 'Balance' }]
+                ],
+                resize_keyboard: true,
+                is_persistent: true
+            }
+        });
     }, 30 * 60 * 1000);
     
-    await bot.sendMessage(chatId, '[ACTIVE] Continuous Task Mode Activated!\n\nJust send me the raw target numbers (e.g., 657). I will automatically close old tabs, open fresh ones, and execute the strike.\n\nType Stop to end this mode.', { parse_mode: 'Markdown' });
+    // Remove the keyboard when activating
+    await bot.sendMessage(chatId, '[ACTIVE] Continuous Task Mode Activated!\n\nJust send me the raw target numbers (e.g., 657). I will automatically close old tabs, open fresh ones, and execute the strike.\n\nType Stop to end this mode.', { 
+        parse_mode: 'Markdown',
+        reply_markup: { remove_keyboard: true } // THIS HIDES THE KEYBOARD
+    });
 });
+
 
 // Universal STOP Command (Kills Task Mode, WA Login, and M4U Pairing)
 bot.onText(/^(?:Stop|stop|\/stop)$/i, async (msg) => {
@@ -1213,7 +1228,17 @@ bot.onText(/^(?:Stop|stop|\/stop)$/i, async (msg) => {
     if (taskModeActive) {
         taskModeActive = false;
         if (taskModeTimer) clearTimeout(taskModeTimer);
-        bot.sendMessage(chatId, '[INACTIVE] Task Mode Deactivated.');
+        // Bring the keyboard back!
+        bot.sendMessage(chatId, '[INACTIVE] Task Mode Deactivated. Main menu restored.', {
+            reply_markup: {
+                keyboard: [
+                    [{ text: 'Pair M4U' }, { text: 'Withdraw' }],
+                    [{ text: 'Balance' }]
+                ],
+                resize_keyboard: true,
+                is_persistent: true
+            }
+        });
         stoppedSomething = true;
     }
 
@@ -1241,6 +1266,7 @@ bot.onText(/^(?:Stop|stop|\/stop)$/i, async (msg) => {
         bot.sendMessage(chatId, '[SYSTEM] No active processes to stop.');
     }
 });
+
 
 
 // The smart listener that catches your numbers
