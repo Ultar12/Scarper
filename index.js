@@ -1750,8 +1750,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await updateStatus(`[SYSTEM] Fetching final state and calculating profit...`);
         
 
-        let currentBalanceText = "Unknown";
-        let earnedDisplay = "Unknown";
+        
         try {
             await pages[0].goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
             await new Promise(r => setTimeout(r, 3000)); 
