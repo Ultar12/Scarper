@@ -305,35 +305,44 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
 });
 
 
-// Usage: /tt 127
+
+            
+        
+    // Usage: /tt 127
 bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
     const targetSuffix = match[1]; 
 
-    let statusMsg = await bot.sendMessage(chatId, `[ISOLATED SYSTEM] Booting standalone /tt sequence for suffix: ${targetSuffix}...`);
+    let statusMsg = await bot.sendMessage(chatId, `[INCOGNITO SYSTEM] Booting standalone /tt sequence for: ${targetSuffix}...`);
     const msgId = statusMsg.message_id;
 
     const updateStatus = async (text) => {
         await bot.editMessageText(text, { chat_id: chatId, message_id: msgId }).catch(() => {});
     };
 
-    let ttBrowser = null;
+    let ttContext = null;
     let pages = []; 
 
     try {
-        // --- 1. LAUNCH ISOLATED BROWSER (NO SHARED MEMORY) ---
-        await updateStatus('[ISOLATED SYSTEM] Launching completely fresh Chrome instance...');
-        ttBrowser = await puppeteer.launch({
-            headless: true,
-            executablePath: getChromePath(),
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-        });
+        // --- 1. USE GLOBAL BROWSER (INCOGNITO MODE) ---
+        await updateStatus('[INCOGNITO SYSTEM] Connecting to Global Engine...');
+        if (typeof globalTaskBrowser === 'undefined' || !globalTaskBrowser || !globalTaskBrowser.isConnected()) {
+            await updateStatus('[INCOGNITO SYSTEM] Global Engine offline. Cold Booting...');
+            globalTaskBrowser = await puppeteer.launch({
+                headless: true,
+                executablePath: getChromePath(),
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+            });
+        }
+        
+        // This creates a completely isolated session that shares RAM with the main engine
+        ttContext = await globalTaskBrowser.createIncognitoBrowserContext();
 
-        // --- LOCAL TUTORIAL SWEEPER (USING EXACT /POP LOGIC) ---
+        // --- LOCAL TUTORIAL SWEEPER ---
         const sweepTutorial = async (targetPage) => {
-            await new Promise(r => setTimeout(r, 2500)); // Wait for initial render
+            await new Promise(r => setTimeout(r, 2500)); 
             let clickCount = 0;
             let emptyChecks = 0;
             
@@ -372,8 +381,8 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
         };
 
         // --- 2. INITIALIZE MASTER TAB (NO DATABASE LOADING) ---
-        await updateStatus('[ISOLATED SYSTEM] Opening TT Master Tab...');
-        const page1 = await ttBrowser.newPage();
+        await updateStatus('[INCOGNITO SYSTEM] Opening TT Master Tab...');
+        const page1 = await ttContext.newPage();
         pages.push(page1);
         await page1.setViewport({ width: 412, height: 915 }); 
         await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
@@ -384,7 +393,7 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
         const requiresLogin = await page1.$('input[type="password"]') !== null;
 
         if (requiresLogin) {
-            await updateStatus('[ISOLATED SYSTEM] Performing Fresh Login with Main Account...');
+            await updateStatus('[INCOGNITO SYSTEM] Performing Fresh Login with Main Account...');
             const allInputs = await page1.$$('input');
             const visibleInputs = [];
             for (let input of allInputs) {
@@ -395,14 +404,10 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
             if (visibleInputs.length >= 2) {
                 await visibleInputs[0].evaluate(el => el.value = '');
                 await visibleInputs[0].click();
-                
-                // HARDCODED MAIN ACCOUNT
                 await visibleInputs[0].type('09163916311', { delay: 50 });
                 
                 await visibleInputs[1].evaluate(el => el.value = '');
                 await visibleInputs[1].click();
-                
-                // HARDCODED PASSWORD
                 await visibleInputs[1].type('Emmamama', { delay: 50 });
                 
                 await new Promise(r => setTimeout(r, 1000));
@@ -425,15 +430,11 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
         }
 
         // --- 3. SWEEP MASTER TAB ---
-        await updateStatus('[ISOLATED SYSTEM] Checking tutorials on TT Master Tab...');
+        await updateStatus('[INCOGNITO SYSTEM] Checking tutorials...');
         await sweepTutorial(page1);
 
-        // --- 4. EXACT /TASK TARGET SCANNER (NO FALLBACK) ---
-                // --- 4. EXACT /TASK TARGET SCANNER (NO FALLBACK) ---
-        await updateStatus(`[ISOLATED SYSTEM] Target acquisition phase for: ${targetSuffix}...`);
-        
         // Wait up to 10 seconds for the website to actually load the tasks onto the screen
-        await updateStatus(`[ISOLATED SYSTEM] Waiting for tasks to populate on screen...`);
+        await updateStatus(`[INCOGNITO SYSTEM] Waiting for tasks to populate on screen...`);
         for (let i = 0; i < 10; i++) {
             const tasksExist = await page1.evaluate(() => {
                 return Array.from(document.querySelectorAll('*')).some(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
@@ -442,6 +443,8 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
             await new Promise(r => setTimeout(r, 1000));
         }
 
+        // --- 4. EXACT /TASK TARGET SCANNER (NO FALLBACK) ---
+        await updateStatus(`[INCOGNITO SYSTEM] Target acquisition phase for: ${targetSuffix}...`);
         
         const targetCount = await page1.evaluate((suffixStr) => {
             const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
@@ -456,16 +459,15 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
             return count > 4 ? 4 : count; 
         }, targetSuffix);
 
-        // IF 0 TARGETS, CRASH IMMEDIATELY (NO ACCOUNT 2 LOGIC)
         if (targetCount === 0) {
             throw new Error(`Found 0 numbers ending with ${targetSuffix} on Main Account.`);
         }
 
-        await updateStatus(`[ISOLATED SYSTEM] Found ${targetCount} matching numbers. Spawning ${targetCount - 1} clone tabs...`);
+        await updateStatus(`[INCOGNITO SYSTEM] Found ${targetCount} matching numbers. Spawning clones...`);
 
         // Spawn Clones
         for (let i = 1; i < targetCount; i++) {
-            const newPage = await ttBrowser.newPage();
+            const newPage = await ttContext.newPage();
             pages.push(newPage);
             await newPage.setViewport({ width: 412, height: 915 }); 
             await newPage.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
@@ -478,7 +480,7 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
         await Promise.all(pages.slice(1).map(p => sweepTutorial(p)));
 
         // --- 5. EXACT /TASK GHOST CLICKS ---
-        await updateStatus(`[ISOLATED SYSTEM] Tabs clear. Ghost-clicking "Send"...`);
+        await updateStatus(`[INCOGNITO SYSTEM] Tabs clear. Ghost-clicking "Send"...`);
         
         const clickResults = await Promise.all(pages.map((p, index) => {
             return p.evaluate((suffixStr, tabIndex) => {
@@ -508,10 +510,10 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
             }, targetSuffix, index);
         }));
 
-        await updateStatus(`[ISOLATED SYSTEM] Waiting 3 seconds for popups...`);
+        await updateStatus(`[INCOGNITO SYSTEM] Waiting 3 seconds for popups...`);
         await new Promise(r => setTimeout(r, 3000));
 
-        await updateStatus(`[ISOLATED SYSTEM] Capturing pre-strike screenshots...`);
+        await updateStatus(`[INCOGNITO SYSTEM] Capturing pre-strike screenshots...`);
         for (let idx = 0; idx < pages.length; idx++) {
             if (clickResults[idx]) {
                 try {
@@ -521,11 +523,11 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
             }
         }
 
-        await updateStatus(`[ISOLATED SYSTEM] Waiting 10 seconds to synchronize...`);
+        await updateStatus(`[INCOGNITO SYSTEM] Waiting 10 seconds to synchronize...`);
         await new Promise(r => setTimeout(r, 10000));
 
         // --- 6. SYNCHRONIZED CONFIRM STRIKE ---
-        await updateStatus(`[ISOLATED SYSTEM] Executing synchronized Confirm ghost-clicks...`);
+        await updateStatus(`[INCOGNITO SYSTEM] Executing synchronized Confirm ghost-clicks...`);
         
         await Promise.all(pages.map(async (p, idx) => {
             if (clickResults[idx]) {
@@ -546,11 +548,11 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
             }
         }));
 
-        await updateStatus(`[ISOLATED SYSTEM] Clicks fired! Waiting 15 seconds...`);
+        await updateStatus(`[INCOGNITO SYSTEM] Clicks fired! Waiting 15 seconds...`);
         await new Promise(r => setTimeout(r, 15000));
 
         // --- 7. FETCH BALANCE & FINISH ---
-        await updateStatus(`[ISOLATED SYSTEM] Fetching final state...`);
+        await updateStatus(`[INCOGNITO SYSTEM] Fetching final state...`);
         const screenshotBuffer = await pages[0].screenshot({ type: 'png' });
 
         let currentBalance = "Unknown";
@@ -565,7 +567,7 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
             });
         } catch (e) {}
 
-        await updateStatus(`[SUCCESS] TT sequence completed! Shutting down isolated browser instance...`);
+        await updateStatus(`[SUCCESS] TT sequence completed! Shutting down isolated context...`);
         await bot.sendPhoto(chatId, screenshotBuffer, { 
             caption: `[SUCCESS] Snapshot from Isolated Tab after ${targetCount} clicks.\n\n💰 *Current Balance:* \`${currentBalance}\``,
             parse_mode: 'Markdown'
@@ -581,13 +583,13 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
         }
     } finally {
         // --- 8. THE KILL SWITCH ---
-        if (ttBrowser) {
-            await updateStatus(`[ISOLATED SYSTEM] Destroying temporary browser instance...`);
-            await ttBrowser.close().catch(() => {});
+        if (ttContext) {
+            await updateStatus(`[INCOGNITO SYSTEM] Destroying temporary browser context...`);
+            await ttContext.close().catch(() => {});
         }
     }
 });
-
+   
 
 
 // Usage: /checknum 2348000000000
