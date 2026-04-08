@@ -1011,7 +1011,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             return didSweep;
         };
 
-        // --- STEP 1: INITIALIZE MASTER TAB & INJECT DB DATA ---
+                // --- STEP 1: INITIALIZE MASTER TAB & INJECT DB DATA ---
         await updateStatus('[SYSTEM] Opening Master Tab & loading DB credentials...');
         const page1 = await browser.newPage();
         pages.push(page1);
@@ -1028,7 +1028,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         const requiresLogin = await page1.$('input[type="password"]') !== null;
 
         if (requiresLogin) {
-            await updateStatus('[SYSTEM] DB Session missing/expired. Performing Physical Login...');
+            await updateStatus('[SYSTEM] DB Session missing/expired. Performing Physical Login with Account 1...');
             const allInputs = await page1.$$('input');
             const visibleInputs = [];
             for (let input of allInputs) {
@@ -1039,11 +1039,11 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             if (visibleInputs.length >= 2) {
                 await visibleInputs[0].evaluate(el => el.value = '');
                 await visibleInputs[0].click();
-                await visibleInputs[0].type('09163916311', { delay: 50 });
+                await visibleInputs[0].type(process.env.USERNAME, { delay: 50 });
                 
                 await visibleInputs[1].evaluate(el => el.value = '');
                 await visibleInputs[1].click();
-                await visibleInputs[1].type('Emmamama', { delay: 50 });
+                await visibleInputs[1].type(process.env.PASS, { delay: 50 });
                 
                 await new Promise(r => setTimeout(r, 1000));
                 
@@ -1062,6 +1062,73 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             
             await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
             await new Promise(r => setTimeout(r, 4000));
+        }
+
+        // --- NEW: TOTAL SEND LIMITER & ACCOUNT SWITCHER ---
+        await updateStatus('[SYSTEM] Scanning "Total Send" count...');
+        
+        const totalSendCount = await page1.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('*'));
+            for (let el of elements) {
+                // Find the text "Total Send" and look at its parent container for the big number
+                if (el.innerText && el.innerText.trim() === 'Total Send' && el.parentElement) {
+                    const match = el.parentElement.innerText.match(/(\d+)/);
+                    if (match) return parseInt(match[1]);
+                }
+            }
+            return 0; // Default to 0 if it can't find it
+        });
+
+        await updateStatus(`[SYSTEM] Current Total Send: ${totalSendCount}`);
+
+        if (totalSendCount >= 300) {
+            await updateStatus('[SYSTEM] Total Send limit reached! Wiping session and switching to Account 2...');
+            
+            // 1. Destroy the current session (Cookies + LocalStorage)
+            await page1.evaluate(() => window.localStorage.clear());
+            const cookies = await page1.cookies();
+            await page1.deleteCookie(...cookies);
+            
+            // 2. Refresh to trigger the login screen
+            await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
+            await new Promise(r => setTimeout(r, 4000));
+            
+            // 3. Log in with Account 2 from your .env file
+            const allInputs2 = await page1.$$('input');
+            const visibleInputs2 = [];
+            for (let input of allInputs2) {
+                const isVis = await page1.evaluate(el => el.offsetParent !== null && window.getComputedStyle(el).display !== 'none', input);
+                if (isVis) visibleInputs2.push(input);
+            }
+
+            if (visibleInputs2.length >= 2) {
+                await visibleInputs2[0].evaluate(el => el.value = '');
+                await visibleInputs2[0].click();
+                await visibleInputs2[0].type(process.env.USERNAME2, { delay: 50 });
+                
+                await visibleInputs2[1].evaluate(el => el.value = '');
+                await visibleInputs2[1].click();
+                await visibleInputs2[1].type(process.env.PASS2, { delay: 50 });
+                
+                await new Promise(r => setTimeout(r, 1000));
+                
+                await page1.evaluate(() => {
+                    const elements = Array.from(document.querySelectorAll('*'));
+                    for (let el of elements) {
+                        if (el.innerText && el.innerText.trim() === 'Login' && el.offsetParent !== null) el.click();
+                    }
+                });
+            }
+            
+            await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+            await new Promise(r => setTimeout(r, 4000)); 
+            
+            await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
+            await new Promise(r => setTimeout(r, 4000));
+            
+            // Save the new Account 2 session to the database so clones use it!
+            await saveSessionToDB('wsjobs_task', page1);
+            await updateStatus('[SYSTEM] Successfully switched to Account 2.');
         }
 
         // --- STEP 2: SWEEP MASTER TAB & SAVE PERMANENT CACHE ---
