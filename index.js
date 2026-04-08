@@ -697,17 +697,46 @@ bot.onText(/^(?:Task|task)$/i, async (msg) => {
     await bot.sendMessage(chatId, '[ACTIVE] Continuous Task Mode Activated!\n\nJust send me the raw target numbers (e.g., 657). I will automatically close old tabs, open fresh ones, and execute the strike.\n\nType Stop to end this mode.', { parse_mode: 'Markdown' });
 });
 
-// Command to STOP Task Mode
-bot.onText(/^(?:Stop|stop)$/i, async (msg) => {
+// Universal STOP Command (Kills Task Mode, WA Login, and M4U Pairing)
+bot.onText(/^(?:Stop|stop|\/stop)$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
     
+    let stoppedSomething = false;
+
+    // 1. Stop Task Mode
     if (taskModeActive) {
         taskModeActive = false;
         if (taskModeTimer) clearTimeout(taskModeTimer);
-        await bot.sendMessage(chatId, '[INACTIVE] Task Mode Deactivated.', { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, '[INACTIVE] Task Mode Deactivated.');
+        stoppedSomething = true;
+    }
+
+    // 2. Stop WhatsApp Login
+    if (userState[chatId]) {
+        userState[chatId] = null;
+        bot.sendMessage(chatId, '[SYSTEM] WhatsApp login sequence aborted.');
+        stoppedSomething = true;
+    }
+
+    // 3. Stop M4U Pairing & Free RAM
+    if (m4uSession) {
+        m4uSession = null;
+        if (m4uTimer) clearTimeout(m4uTimer);
+        bot.sendMessage(chatId, '[SYSTEM] M4U Pairing aborted. Closing background browser...');
+        if (m4uBrowser) {
+            await m4uBrowser.close().catch(() => {});
+            m4uBrowser = null;
+            m4uPage = null;
+        }
+        stoppedSomething = true;
+    }
+
+    if (!stoppedSomething) {
+        bot.sendMessage(chatId, '[SYSTEM] No active processes to stop.');
     }
 });
+
 
 // The smart listener that catches your numbers
 bot.on('message', (msg) => {
