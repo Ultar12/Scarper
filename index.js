@@ -612,6 +612,213 @@ bot.onText(/\/pair\s+m4u/i, async (msg) => {
 });
 
 
+// --- TIMESMS.ORG AUTO-DOWNLOADER ---
+// Usage: /getfile
+bot.onText(/^\/getfile$/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Booting TimeSMS Scraper Protocol...');
+    const updateStatus = async (text) => {
+        await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+    };
+
+    let browser = null;
+    let page = null;
+    
+    // Create a unique temporary download directory to intercept the file
+    const downloadDir = path.resolve(__dirname, `timesms_dl_${Date.now()}`);
+    if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir, { recursive: true });
+
+    try {
+        await updateStatus('[SYSTEM] Launching headless browser for TimeSMS...');
+        browser = await puppeteer.launch({
+            headless: true,
+            executablePath: getChromePath(),
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        });
+
+        page = await browser.newPage();
+        await page.setViewport({ width: 1280, height: 800 }); // Use desktop view for easier table scraping
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+        // Force Chrome to quietly download files to our temporary folder instead of asking
+        const client = await page.target().createCDPSession();
+        await client.send('Page.setDownloadBehavior', {
+            behavior: 'allow',
+            downloadPath: downloadDir
+        });
+
+        // --- 1. LOGIN & CAPTCHA SOLVER ---
+        await updateStatus('[SYSTEM] Navigating to login page...');
+        await page.goto('https://timesms.org/login', { waitUntil: 'networkidle2' });
+
+        await updateStatus('[SYSTEM] Extracting and solving math Captcha...');
+        
+        // Advanced Math Extractor
+        const captchaAnswer = await page.evaluate(() => {
+            const bodyText = document.body.innerText || '';
+            // Looks for "What is 8 + 1 = ?" or similar variations
+            const match = bodyText.match(/What is\s*(\d+)\s*([\+\-\*])\s*(\d+)/i);
+            
+            if (match) {
+                const num1 = parseInt(match[1]);
+                const op = match[2];
+                const num2 = parseInt(match[3]);
+                
+                if (op === '+') return (num1 + num2).toString();
+                if (op === '-') return (num1 - num2).toString();
+                if (op === '*') return (num1 * num2).toString();
+            }
+            return null;
+        });
+
+        if (!captchaAnswer) {
+            throw new Error("Could not detect or solve the Math Captcha on the login page.");
+        }
+
+        await updateStatus(`[SYSTEM] Captcha solved: ${captchaAnswer}. Injecting credentials...`);
+
+        // Safely type credentials and the solved captcha
+        const inputs = await page.$$('input');
+        
+        for (let input of inputs) {
+            const type = await page.evaluate(el => el.type, input);
+            const placeholder = await page.evaluate(el => (el.placeholder || '').toLowerCase(), input);
+            
+            if (type === 'text' && placeholder.includes('username')) {
+                await input.type('Ultarscny', { delay: 50 });
+            } else if (type === 'password' || placeholder.includes('password')) {
+                await input.type('Ultarscny', { delay: 50 });
+            } else if (placeholder.includes('answer')) {
+                await input.type(captchaAnswer, { delay: 50 });
+            }
+        }
+
+        await new Promise(r => setTimeout(r, 1000));
+
+        // Click Login
+        await page.evaluate(() => {
+            const btns = Array.from(document.querySelectorAll('button'));
+            for (let btn of btns) {
+                if ((btn.innerText || '').trim().toLowerCase() === 'login') {
+                    btn.click();
+                    return;
+                }
+            }
+        });
+
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+        
+        // Validate login success by checking URL
+        if (page.url().includes('login')) {
+            throw new Error("Login failed. Check credentials or captcha logic.");
+        }
+
+        // --- 2. NAVIGATE TO 'MY NUMBERS' ---
+        await updateStatus('[SYSTEM] Login successful! Teleporting to My SMS Numbers...');
+        await page.goto('https://timesms.org/client/MySMSNumbers', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 3000));
+
+        // --- 3. FORCE DROPDOWN TO "ALL" ---
+        await updateStatus('[SYSTEM] Modifying table parameters to "All"...');
+        const changedToAll = await page.evaluate(() => {
+            const selects = Array.from(document.querySelectorAll('select'));
+            for (let select of selects) {
+                // Find the dropdown that controls the records per page
+                const options = Array.from(select.options);
+                const allOpt = options.find(opt => opt.text.trim().toLowerCase() === 'all');
+                
+                if (allOpt) {
+                    select.value = allOpt.value;
+                    // Trigger the event so the website updates the table
+                    select.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                }
+            }
+            return false;
+        });
+
+        if (!changedToAll) {
+            await updateStatus('[WARNING] Could not find "All" in the dropdown. Proceeding with default view...');
+        } else {
+            await updateStatus('[SYSTEM] Table updated. Waiting for data to sync...');
+            await new Promise(r => setTimeout(r, 5000)); // Wait for the giant list to load
+        }
+
+        // --- 4. TRIGGER EXCEL DOWNLOAD ---
+        await updateStatus('[SYSTEM] Extracting Excel file from server...');
+        
+        await page.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('a, button, span'));
+            for (let el of elements) {
+                if ((el.innerText || '').trim() === 'Excel') {
+                    // Force synthetic click to bypass traps
+                    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                    el.click();
+                    if (el.parentElement) el.parentElement.click();
+                    return;
+                }
+            }
+        });
+
+        // --- 5. INTERCEPT AND SEND THE FILE ---
+        await updateStatus('[SYSTEM] Waiting for file to finish downloading...');
+        
+        let downloadedFilePath = null;
+        
+        // Poll the directory for up to 30 seconds waiting for the .xlsx file
+        for (let i = 0; i < 30; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            
+            const files = fs.readdirSync(downloadDir);
+            // Look for the file, ignoring Chrome's temporary .crdownload files
+            const excelFile = files.find(f => f.endsWith('.xlsx') || f.endsWith('.xls') || f.endsWith('.csv'));
+            const isDownloading = files.some(f => f.endsWith('.crdownload'));
+            
+            if (excelFile && !isDownloading) {
+                downloadedFilePath = path.join(downloadDir, excelFile);
+                break;
+            }
+        }
+
+        if (!downloadedFilePath) {
+            throw new Error("Download timed out or failed to trigger.");
+        }
+
+        await updateStatus('[SUCCESS] File acquired! Uploading to Telegram...');
+        
+        await bot.sendDocument(chatId, downloadedFilePath, {
+            caption: '[SUCCESS] Here is your requested Excel file from TimeSMS.'
+        });
+
+        bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+
+    } catch (err) {
+        await updateStatus(`[ERROR] Sequence failed: ${err.message}`);
+        if (page) {
+            try {
+                const errSnap = await page.screenshot({ type: 'png' });
+                await bot.sendPhoto(chatId, errSnap, { caption: '[DIAGNOSTIC] State at crash.' });
+            } catch (e) {}
+        }
+    } finally {
+        // --- 6. THE KILL SWITCH & CLEANUP ---
+        if (browser) await browser.close().catch(() => {});
+        
+        // Delete the temporary file and folder so Heroku's storage doesn't get bloated
+        try {
+            if (fs.existsSync(downloadDir)) {
+                fs.rmSync(downloadDir, { recursive: true, force: true });
+            }
+        } catch (cleanupErr) {
+            console.log(`[WARNING] Failed to clean up temp dir: ${cleanupErr}`);
+        }
+    }
+});
+
+
+
 
 // --- WSJOBS SMART WITHDRAWAL ---
 // Usage: /withdraw task
