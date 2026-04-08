@@ -305,95 +305,48 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
 });
 
 
-
-            
         
-    // Usage: /tt 127
+ // Usage: /tt 127
 bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
     const targetSuffix = match[1]; 
 
-    let statusMsg = await bot.sendMessage(chatId, `[INCOGNITO SYSTEM] Booting standalone /tt sequence for: ${targetSuffix}...`);
+    let statusMsg = await bot.sendMessage(chatId, `[ISOLATED SYSTEM] Booting standalone /tt sequence for suffix: ${targetSuffix}...`);
     const msgId = statusMsg.message_id;
 
     const updateStatus = async (text) => {
         await bot.editMessageText(text, { chat_id: chatId, message_id: msgId }).catch(() => {});
     };
 
-    let ttContext = null;
+    let ttBrowser = null;
     let pages = []; 
 
     try {
-        // --- 1. USE GLOBAL BROWSER (INCOGNITO MODE) ---
-        await updateStatus('[INCOGNITO SYSTEM] Connecting to Global Engine...');
-        if (typeof globalTaskBrowser === 'undefined' || !globalTaskBrowser || !globalTaskBrowser.isConnected()) {
-            await updateStatus('[INCOGNITO SYSTEM] Global Engine offline. Cold Booting...');
-            globalTaskBrowser = await puppeteer.launch({
-                headless: true,
-                executablePath: getChromePath(),
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-            });
-        }
-        
-        // This creates a completely isolated session that shares RAM with the main engine
-        ttContext = await globalTaskBrowser.createBrowserContext();
+        // --- 1. LAUNCH ISOLATED BROWSER (100% CLEAN SLATE, NO DB) ---
+        await updateStatus('[ISOLATED SYSTEM] Launching completely separate, clean Chrome instance...');
+        ttBrowser = await puppeteer.launch({
+            headless: true,
+            executablePath: getChromePath(),
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        });
 
-        // --- LOCAL TUTORIAL SWEEPER ---
-        const sweepTutorial = async (targetPage) => {
-            await new Promise(r => setTimeout(r, 2500)); 
-            let clickCount = 0;
-            let emptyChecks = 0;
-            
-            for (let i = 0; i < 20; i++) {
-                if (emptyChecks >= 3) break; 
-                
-                const clicked = await targetPage.evaluate(() => {
-                    const elements = Array.from(document.querySelectorAll('*'));
-                    for (let el of elements.reverse()) { 
-                        if (el.offsetParent === null) continue;
-                        
-                        const txt = (el.innerText || '').trim().toLowerCase();
-                        if (txt === 'next' || txt === 'next →' || txt === 'done') {
-                            el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                            el.click();
-                            if (el.parentElement) {
-                                el.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                                el.parentElement.click();
-                            }
-                            return true;
-                        }
-                    }
-                    return false;
-                });
-
-                if (clicked) {
-                    clickCount++;
-                    emptyChecks = 0; 
-                    await new Promise(r => setTimeout(r, 1200)); 
-                } else {
-                    emptyChecks++; 
-                    await new Promise(r => setTimeout(r, 500)); 
-                }
-            }
-            return clickCount > 0;
-        };
-
-        // --- 2. INITIALIZE MASTER TAB (NO DATABASE LOADING) ---
-        await updateStatus('[INCOGNITO SYSTEM] Opening TT Master Tab...');
-        const page1 = await ttContext.newPage();
+        // --- 2. INITIALIZE MASTER TAB & FORCE FRESH LOGIN ---
+        await updateStatus('[ISOLATED SYSTEM] Opening Master Tab & hitting the login wall...');
+        const page1 = await ttBrowser.newPage();
         pages.push(page1);
         await page1.setViewport({ width: 412, height: 915 }); 
         await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
+        // Go straight to task page. NO database loaded.
         await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000)); 
 
         const requiresLogin = await page1.$('input[type="password"]') !== null;
 
         if (requiresLogin) {
-            await updateStatus('[INCOGNITO SYSTEM] Performing Fresh Login with Main Account...');
+            await updateStatus('[ISOLATED SYSTEM] Login required. Physically typing hardcoded credentials...');
             const allInputs = await page1.$$('input');
             const visibleInputs = [];
             for (let input of allInputs) {
@@ -404,11 +357,11 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
             if (visibleInputs.length >= 2) {
                 await visibleInputs[0].evaluate(el => el.value = '');
                 await visibleInputs[0].click();
-                await visibleInputs[0].type('09163916311', { delay: 50 });
+                await visibleInputs[0].type('09163916311', { delay: 50 }); // HARDCODED MAIN
                 
                 await visibleInputs[1].evaluate(el => el.value = '');
                 await visibleInputs[1].click();
-                await visibleInputs[1].type('Emmamama', { delay: 50 });
+                await visibleInputs[1].type('Emmamama', { delay: 50 }); // HARDCODED PASS
                 
                 await new Promise(r => setTimeout(r, 1000));
                 
@@ -429,45 +382,58 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
             await new Promise(r => setTimeout(r, 4000));
         }
 
-        // --- 3. SWEEP MASTER TAB ---
-        await updateStatus('[INCOGNITO SYSTEM] Checking tutorials...');
-        await sweepTutorial(page1);
+        // --- 3. SWEEP MASTER TAB USING GLOBAL /POP FUNCTION ---
+        await updateStatus('[ISOLATED SYSTEM] Connecting to global popup sweeper...');
+        await clearOnboardingPopups(page1, updateStatus);
 
-        // Wait up to 10 seconds for the website to actually load the tasks onto the screen
-        await updateStatus(`[INCOGNITO SYSTEM] Waiting for tasks to populate on screen...`);
-        for (let i = 0; i < 10; i++) {
-            const tasksExist = await page1.evaluate(() => {
-                return Array.from(document.querySelectorAll('*')).some(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
-            });
-            if (tasksExist) break;
-            await new Promise(r => setTimeout(r, 1000));
-        }
-
-        // --- 4. EXACT /TASK TARGET SCANNER (NO FALLBACK) ---
-        await updateStatus(`[INCOGNITO SYSTEM] Target acquisition phase for: ${targetSuffix}...`);
+        // --- 4. TARGET SCANNER WITH HARD-REFRESH RETRY ---
+        await updateStatus(`[ISOLATED SYSTEM] Target acquisition phase for: ${targetSuffix}...`);
         
-        const targetCount = await page1.evaluate((suffixStr) => {
-            const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
-            let count = 0;
-            for (let btn of sendBtns) {
-                let containerText = '';
-                if (btn.parentElement && btn.parentElement.parentElement) {
-                    containerText = btn.parentElement.parentElement.innerText || '';
-                }
-                if (containerText.includes(suffixStr)) count++;
+        let targetCount = 0;
+
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            await updateStatus(`[ISOLATED SYSTEM] Waiting for tasks to populate (Attempt ${attempt}/2)...`);
+            
+            for (let i = 0; i < 10; i++) {
+                const tasksExist = await page1.evaluate(() => {
+                    return Array.from(document.querySelectorAll('*')).some(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
+                });
+                if (tasksExist) break;
+                await new Promise(r => setTimeout(r, 1000));
             }
-            return count > 4 ? 4 : count; 
-        }, targetSuffix);
+
+            targetCount = await page1.evaluate((suffixStr) => {
+                const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
+                let count = 0;
+                for (let btn of sendBtns) {
+                    let containerText = '';
+                    if (btn.parentElement && btn.parentElement.parentElement) {
+                        containerText = btn.parentElement.parentElement.innerText || '';
+                    }
+                    if (containerText.includes(suffixStr)) count++;
+                }
+                return count > 4 ? 4 : count; 
+            }, targetSuffix);
+
+            if (targetCount > 0) {
+                break; 
+            } else if (attempt === 1) {
+                await updateStatus(`[ISOLATED SYSTEM] 0 targets found! Wsjobs is lagging. Hard-refreshing...`);
+                await page1.reload({ waitUntil: 'networkidle2' });
+                await new Promise(r => setTimeout(r, 5000)); 
+                await clearOnboardingPopups(page1, updateStatus); // Call global sweeper again after refresh!
+            }
+        }
 
         if (targetCount === 0) {
-            throw new Error(`Found 0 numbers ending with ${targetSuffix} on Main Account.`);
+            throw new Error(`Found 0 numbers ending with ${targetSuffix} on Main Account even after refresh.`);
         }
 
-        await updateStatus(`[INCOGNITO SYSTEM] Found ${targetCount} matching numbers. Spawning clones...`);
+        await updateStatus(`[ISOLATED SYSTEM] Found ${targetCount} matching numbers. Spawning clones...`);
 
         // Spawn Clones
         for (let i = 1; i < targetCount; i++) {
-            const newPage = await ttContext.newPage();
+            const newPage = await ttBrowser.newPage();
             pages.push(newPage);
             await newPage.setViewport({ width: 412, height: 915 }); 
             await newPage.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
@@ -477,10 +443,12 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
             await Promise.all(pages.slice(1).map(p => p.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' })));
             await new Promise(r => setTimeout(r, 3000));
         }
-        await Promise.all(pages.slice(1).map(p => sweepTutorial(p)));
+        
+        // Sweep clones silently using the global function (passing null prevents it from spamming Telegram statuses)
+        await Promise.all(pages.slice(1).map(p => clearOnboardingPopups(p, null)));
 
         // --- 5. EXACT /TASK GHOST CLICKS ---
-        await updateStatus(`[INCOGNITO SYSTEM] Tabs clear. Ghost-clicking "Send"...`);
+        await updateStatus(`[ISOLATED SYSTEM] Tabs clear. Ghost-clicking "Send"...`);
         
         const clickResults = await Promise.all(pages.map((p, index) => {
             return p.evaluate((suffixStr, tabIndex) => {
@@ -510,10 +478,10 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
             }, targetSuffix, index);
         }));
 
-        await updateStatus(`[INCOGNITO SYSTEM] Waiting 3 seconds for popups...`);
+        await updateStatus(`[ISOLATED SYSTEM] Waiting 3 seconds for popups...`);
         await new Promise(r => setTimeout(r, 3000));
 
-        await updateStatus(`[INCOGNITO SYSTEM] Capturing pre-strike screenshots...`);
+        await updateStatus(`[ISOLATED SYSTEM] Capturing pre-strike screenshots...`);
         for (let idx = 0; idx < pages.length; idx++) {
             if (clickResults[idx]) {
                 try {
@@ -523,11 +491,11 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
             }
         }
 
-        await updateStatus(`[INCOGNITO SYSTEM] Waiting 10 seconds to synchronize...`);
+        await updateStatus(`[ISOLATED SYSTEM] Waiting 10 seconds to synchronize...`);
         await new Promise(r => setTimeout(r, 10000));
 
         // --- 6. SYNCHRONIZED CONFIRM STRIKE ---
-        await updateStatus(`[INCOGNITO SYSTEM] Executing synchronized Confirm ghost-clicks...`);
+        await updateStatus(`[ISOLATED SYSTEM] Executing synchronized Confirm ghost-clicks...`);
         
         await Promise.all(pages.map(async (p, idx) => {
             if (clickResults[idx]) {
@@ -548,11 +516,11 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
             }
         }));
 
-        await updateStatus(`[INCOGNITO SYSTEM] Clicks fired! Waiting 15 seconds...`);
+        await updateStatus(`[ISOLATED SYSTEM] Clicks fired! Waiting 15 seconds...`);
         await new Promise(r => setTimeout(r, 15000));
 
         // --- 7. FETCH BALANCE & FINISH ---
-        await updateStatus(`[INCOGNITO SYSTEM] Fetching final state...`);
+        await updateStatus(`[ISOLATED SYSTEM] Fetching final state...`);
         const screenshotBuffer = await pages[0].screenshot({ type: 'png' });
 
         let currentBalance = "Unknown";
@@ -567,7 +535,7 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
             });
         } catch (e) {}
 
-        await updateStatus(`[SUCCESS] TT sequence completed! Shutting down isolated context...`);
+        await updateStatus(`[SUCCESS] TT sequence completed! Shutting down isolated browser...`);
         await bot.sendPhoto(chatId, screenshotBuffer, { 
             caption: `[SUCCESS] Snapshot from Isolated Tab after ${targetCount} clicks.\n\n💰 *Current Balance:* \`${currentBalance}\``,
             parse_mode: 'Markdown'
@@ -583,13 +551,15 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
         }
     } finally {
         // --- 8. THE KILL SWITCH ---
-        if (ttContext) {
-            await updateStatus(`[INCOGNITO SYSTEM] Destroying temporary browser context...`);
-            await ttContext.close().catch(() => {});
+        if (ttBrowser) {
+            await updateStatus(`[ISOLATED SYSTEM] Destroying temporary browser instance...`);
+            await ttBrowser.close().catch(() => {});
         }
     }
 });
-   
+           
+
+        
 
 
 // Usage: /checknum 2348000000000
