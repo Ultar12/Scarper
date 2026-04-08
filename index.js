@@ -304,6 +304,7 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
     }
 });
 
+
 // Usage: /tt 127
 bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
@@ -330,24 +331,22 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
             args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
         });
 
-        // --- LOCAL TUTORIAL SWEEPER (UPGRADED WITH /POP LOGIC) ---
+        // --- LOCAL TUTORIAL SWEEPER (USING EXACT /POP LOGIC) ---
         const sweepTutorial = async (targetPage) => {
             await new Promise(r => setTimeout(r, 2500)); // Wait for initial render
             let clickCount = 0;
             let emptyChecks = 0;
             
             for (let i = 0; i < 20; i++) {
-                if (emptyChecks >= 3) break; // Break early if we scan an empty screen 3 times in a row
+                if (emptyChecks >= 3) break; 
                 
                 const clicked = await targetPage.evaluate(() => {
                     const elements = Array.from(document.querySelectorAll('*'));
-                    // Reverse read to hit the top overlay layer first
                     for (let el of elements.reverse()) { 
                         if (el.offsetParent === null) continue;
                         
                         const txt = (el.innerText || '').trim().toLowerCase();
                         if (txt === 'next' || txt === 'next →' || txt === 'done') {
-                            // Aggressive synthetic click bypass
                             el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
                             el.click();
                             if (el.parentElement) {
@@ -362,7 +361,7 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
 
                 if (clicked) {
                     clickCount++;
-                    emptyChecks = 0; // Reset checks because we found something
+                    emptyChecks = 0; 
                     await new Promise(r => setTimeout(r, 1200)); 
                 } else {
                     emptyChecks++; 
@@ -370,35 +369,6 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
                 }
             }
             return clickCount > 0;
-        };
-
-        // --- LOCAL TARGET SCANNER (WITH 9-SEC RETRY LOGIC) ---
-        const scanForTargets = async (targetPage, suffix) => {
-            for (let attempt = 0; attempt < 3; attempt++) {
-                let count = await targetPage.evaluate((suffixStr) => {
-                    const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
-                    let matches = 0;
-                    for (let btn of sendBtns) {
-                        let currentEl = btn;
-                        let found = false;
-                        for (let i = 0; i < 5; i++) { 
-                            if (currentEl.parentElement) {
-                                currentEl = currentEl.parentElement;
-                                if ((currentEl.innerText || '').includes(suffixStr)) {
-                                    found = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if (found) matches++;
-                    }
-                    return matches > 4 ? 4 : matches; 
-                }, suffix);
-                
-                if (count > 0) return count;
-                await new Promise(r => setTimeout(r, 3000));
-            }
-            return 0; 
         };
 
         // --- 2. INITIALIZE MASTER TAB (NO DATABASE LOADING) ---
@@ -411,11 +381,10 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
         await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000)); 
 
-        // Always assumes login is required since memory is completely wiped
         const requiresLogin = await page1.$('input[type="password"]') !== null;
 
         if (requiresLogin) {
-            await updateStatus('[ISOLATED SYSTEM] Performing Fresh Login with Account 1...');
+            await updateStatus('[ISOLATED SYSTEM] Performing Fresh Login with Main Account...');
             const allInputs = await page1.$$('input');
             const visibleInputs = [];
             for (let input of allInputs) {
@@ -427,7 +396,7 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
                 await visibleInputs[0].evaluate(el => el.value = '');
                 await visibleInputs[0].click();
                 
-                // HARDCODED PRIMARY ACCOUNT
+                // HARDCODED MAIN ACCOUNT
                 await visibleInputs[0].type('09163916311', { delay: 50 });
                 
                 await visibleInputs[1].evaluate(el => el.value = '');
@@ -455,71 +424,34 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
             await new Promise(r => setTimeout(r, 4000));
         }
 
-        // --- 3. SWEEP MASTER TAB (NO DB SAVING) ---
+        // --- 3. SWEEP MASTER TAB ---
         await updateStatus('[ISOLATED SYSTEM] Checking tutorials on TT Master Tab...');
         await sweepTutorial(page1);
 
-        // --- 4. COUNT TARGETS & SMART FALLBACK ---
+        // --- 4. EXACT /TASK TARGET SCANNER (NO FALLBACK) ---
         await updateStatus(`[ISOLATED SYSTEM] Target acquisition phase for: ${targetSuffix}...`);
         
-        let targetCount = await scanForTargets(page1, targetSuffix);
+        const targetCount = await page1.evaluate((suffixStr) => {
+            const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
+            let count = 0;
+            for (let btn of sendBtns) {
+                let containerText = '';
+                if (btn.parentElement && btn.parentElement.parentElement) {
+                    containerText = btn.parentElement.parentElement.innerText || '';
+                }
+                if (containerText.includes(suffixStr)) count++;
+            }
+            return count > 4 ? 4 : count; 
+        }, targetSuffix);
 
+        // IF 0 TARGETS, CRASH IMMEDIATELY (NO ACCOUNT 2 LOGIC)
         if (targetCount === 0) {
-            await updateStatus(`[ISOLATED SYSTEM] 0 targets found in Account 1. Switching to Account 2...`);
-            
-            await page1.evaluate(() => window.localStorage.clear());
-            const cookies = await page1.cookies();
-            await page1.deleteCookie(...cookies);
-            
-            await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
-            await new Promise(r => setTimeout(r, 4000));
-            
-            const allInputs2 = await page1.$$('input');
-            const visInputs2 = [];
-            for (let i of allInputs2) {
-                if (await i.evaluate(el => el.offsetParent !== null && window.getComputedStyle(el).display !== 'none')) visInputs2.push(i);
-            }
-
-            if (visInputs2.length >= 2) {
-                await visInputs2[0].evaluate(el => el.value = '');
-                await visInputs2[0].click();
-                
-                // HARDCODED SECONDARY ACCOUNT
-                await visInputs2[0].type('09163916500', { delay: 50 });
-                
-                await visInputs2[1].evaluate(el => el.value = '');
-                await visInputs2[1].click();
-                
-                // HARDCODED PASSWORD
-                await visInputs2[1].type('Emmamama', { delay: 50 });
-                
-                await new Promise(r => setTimeout(r, 1000));
-                await page1.evaluate(() => {
-                    Array.from(document.querySelectorAll('*')).forEach(el => {
-                        if (el.innerText && el.innerText.trim() === 'Login' && el.offsetParent !== null) el.click();
-                    });
-                });
-            }
-            
-            await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-            await new Promise(r => setTimeout(r, 4000));
-            await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
-            await new Promise(r => setTimeout(r, 4000));
-            
-            await sweepTutorial(page1);
-
-            await updateStatus(`[ISOLATED SYSTEM] Scanning Account 2 for ${targetSuffix}...`);
-            targetCount = await scanForTargets(page1, targetSuffix);
-
-            if (targetCount === 0) {
-                const errSnap = await page1.screenshot({ type: 'png' });
-                await bot.sendPhoto(chatId, errSnap, { caption: `[DIAGNOSTIC] TT Bot claims 0 targets found in BOTH accounts. Screen:` });
-                throw new Error(`Found 0 targets ending with ${targetSuffix} in BOTH Account 1 and Account 2.`);
-            }
+            throw new Error(`Found 0 numbers ending with ${targetSuffix} on Main Account.`);
         }
 
-        await updateStatus(`[ISOLATED SYSTEM] Found ${targetCount} matches. Spawning clones...`);
+        await updateStatus(`[ISOLATED SYSTEM] Found ${targetCount} matching numbers. Spawning ${targetCount - 1} clone tabs...`);
 
+        // Spawn Clones
         for (let i = 1; i < targetCount; i++) {
             const newPage = await ttBrowser.newPage();
             pages.push(newPage);
@@ -533,7 +465,7 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
         }
         await Promise.all(pages.slice(1).map(p => sweepTutorial(p)));
 
-        // --- 5. TARGET ACQUISITION (GHOST CLICKS) ---
+        // --- 5. EXACT /TASK GHOST CLICKS ---
         await updateStatus(`[ISOLATED SYSTEM] Tabs clear. Ghost-clicking "Send"...`);
         
         const clickResults = await Promise.all(pages.map((p, index) => {
