@@ -338,7 +338,7 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
         }
         
         // This creates a completely isolated session that shares RAM with the main engine
-        ttContext = await globalTaskBrowser.createIncognitoBrowserContext();
+        ttContext = await globalTaskBrowser.createBrowserContext();
 
         // --- LOCAL TUTORIAL SWEEPER ---
         const sweepTutorial = async (targetPage) => {
