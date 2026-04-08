@@ -1675,22 +1675,16 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await updateStatus(`[SYSTEM] Waiting 3 seconds for popups to initialize...`);
         await new Promise(r => setTimeout(r, 3000));
 
-        // --- STEP 5: PRE-STRIKE SCREENSHOTS ---
-        await updateStatus(`[SYSTEM] Capturing pre-strike screenshots...`);
-        for (let idx = 0; idx < pages.length; idx++) {
-            if (clickResults[idx]) {
-                try {
-                    const preSnap = await pages[idx].screenshot({ type: 'png' });
-                    await bot.sendPhoto(chatId, preSnap, { caption: `[DIAGNOSTIC] Tab ${idx + 1} State right before Confirm.` });
-                } catch (e) {}
-            }
-        }
+                // --- STEP 5: INITIALIZE STRIKE SYNC ---
+        await updateStatus(`[SYSTEM] Syncing all tabs for final strike...`);
+        // Diagnostic screenshots removed to increase execution speed
+
 
         // --- NEW: 10 SECOND WAIT ---
         await updateStatus(`[SYSTEM] Screenshots complete. Waiting 10 seconds for all tabs to fully synchronize...`);
         await new Promise(r => setTimeout(r, 10000));
 
-               // --- STEP 6: SYNCHRONIZED CONFIRM STRIKE ---
+                       // --- STEP 6: SYNCHRONIZED CONFIRM STRIKE ---
         await updateStatus(`[SYSTEM] Executing INSTANT synchronized Confirm ghost-clicks...`);
         
         await Promise.all(pages.map(async (p, idx) => {
@@ -1712,17 +1706,22 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         }));
 
-        // --- NEW: 15 SECOND WAIT ---
-        await updateStatus(`[SYSTEM] Clicks fired! Waiting 15 seconds for the server to process all tabs...`);
+        // 15-second cooldown for server processing
         await new Promise(r => setTimeout(r, 15000));
 
-                        // --- STEP 7: FETCH FINAL BALANCE & CALCULATE PROFIT ---
-        await updateStatus(`[SYSTEM] Fetching final state and calculating profit...`);
+
+
+                                // --- STEP 7: FETCH PROFIT & EDIT STATUS ---
+        await updateStatus(`[SYSTEM] Strike complete. Calculating final profit...`);
         
+        // 1. Capture the Task Page (proving buttons are gone)
+        const finalTaskSnap = await pages[0].screenshot({ type: 'png' });
+
         let currentBalanceText = "Unknown";
         let earnedDisplay = "Unknown";
         
         try {
+            // 2. Peek at User page in background for the math
             await pages[0].goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
             await new Promise(r => setTimeout(r, 3000)); 
             
@@ -1733,21 +1732,25 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                 return 'Unknown';
             });
             
-            // Calculate the math
             let finalBalanceNum = parseFloat(currentBalanceText.replace(/,/g, ''));
             if (!isNaN(initialBalanceNum) && !isNaN(finalBalanceNum)) {
                 earnedDisplay = `+${(finalBalanceNum - initialBalanceNum).toFixed(2)}`;
             }
-        } catch (e) {
-            console.error("Balance fetch error:", e);
-        }
+            
+            // 3. Return to Task page for next cycle
+            await pages[0].goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
+        } catch (e) {}
 
-        // NOW we define the buffer right before sending
-        const finalSnap = await pages[0].screenshot({ type: 'png' });
+        // 4. Update the existing status message with the final result
+        await bot.editMessageText(`<b>[SUCCESS] Strike sequence fully completed!</b>\n\n<b>Profit:</b> <code>${earnedDisplay}</code>`, { 
+            chat_id: chatId, 
+            message_id: msgId,
+            parse_mode: 'HTML' 
+        });
 
-        await updateStatus(`[SUCCESS] Strike sequence fully completed!`);
-        await bot.sendPhoto(chatId, finalSnap, { 
-            caption: `[SUCCESS] Snapshot from Master Tab after executing ${targetCount} synchronized clicks.\n\n<b>Profit:</b> <code>${earnedDisplay}</code>`,
+        // 5. Send the photo of the Task Page
+        await bot.sendPhoto(chatId, finalTaskSnap, { 
+            caption: `[RESULT] Task Page State after ${targetCount} synchronized clicks.`,
             parse_mode: 'HTML'
         });
 
