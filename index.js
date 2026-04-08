@@ -429,7 +429,19 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
         await sweepTutorial(page1);
 
         // --- 4. EXACT /TASK TARGET SCANNER (NO FALLBACK) ---
+                // --- 4. EXACT /TASK TARGET SCANNER (NO FALLBACK) ---
         await updateStatus(`[ISOLATED SYSTEM] Target acquisition phase for: ${targetSuffix}...`);
+        
+        // Wait up to 10 seconds for the website to actually load the tasks onto the screen
+        await updateStatus(`[ISOLATED SYSTEM] Waiting for tasks to populate on screen...`);
+        for (let i = 0; i < 10; i++) {
+            const tasksExist = await page1.evaluate(() => {
+                return Array.from(document.querySelectorAll('*')).some(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
+            });
+            if (tasksExist) break;
+            await new Promise(r => setTimeout(r, 1000));
+        }
+
         
         const targetCount = await page1.evaluate((suffixStr) => {
             const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
