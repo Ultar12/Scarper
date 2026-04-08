@@ -1720,6 +1720,37 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             parse_mode: 'Markdown'
         });
 
+                // --- STEP 7: FETCH FINAL BALANCE & CALCULATE PROFIT ---
+        await updateStatus(`[SYSTEM] Fetching final state and calculating profit...`);
+        
+        const screenshotBuffer = await pages[0].screenshot({ type: 'png' });
+
+        let currentBalanceText = "Unknown";
+        let earnedDisplay = "Unknown";
+        try {
+            await pages[0].goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
+            await new Promise(r => setTimeout(r, 3000)); 
+            currentBalanceText = await pages[0].evaluate(() => {
+                const rawText = document.body.textContent || '';
+                const match = rawText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
+                if (match) return match[1];
+                return 'Unknown';
+            });
+            
+            // Calculate the math!
+            let finalBalanceNum = parseFloat(currentBalanceText.replace(/,/g, ''));
+            if (!isNaN(initialBalanceNum) && !isNaN(finalBalanceNum)) {
+                earnedDisplay = `+${(finalBalanceNum - initialBalanceNum).toFixed(2)}`;
+            }
+        } catch (e) {}
+
+        await updateStatus(`[SUCCESS] Strike sequence fully completed!`);
+        await bot.sendPhoto(chatId, screenshotBuffer, { 
+            caption: `[SUCCESS] Snapshot from Master Tab after executing ${targetCount} synchronized clicks.\n\n*Profit:* \`${earnedDisplay}\``,
+            parse_mode: 'Markdown'
+        });
+
+
 
         // --- STEP 8: KEEP TABS OPEN & ARM IDLE TIMER ---
         activeTaskPages = pages; 
