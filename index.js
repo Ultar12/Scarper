@@ -763,7 +763,7 @@ bot.onText(/^\/getfile$/i, async (msg) => {
             }
         });
 
-        // --- 5. INTERCEPT AND SEND THE FILE ---
+                // --- 5. INTERCEPT AND SEND THE FILE VIA SECONDARY BOT ---
         await updateStatus('[SYSTEM] Waiting for file to finish downloading...');
         
         let downloadedFilePath = null;
@@ -772,14 +772,17 @@ bot.onText(/^\/getfile$/i, async (msg) => {
         for (let i = 0; i < 30; i++) {
             await new Promise(r => setTimeout(r, 1000));
             
-            const files = fs.readdirSync(downloadDir);
-            // Look for the file, ignoring Chrome's temporary .crdownload files
-            const excelFile = files.find(f => f.endsWith('.xlsx') || f.endsWith('.xls') || f.endsWith('.csv'));
-            const isDownloading = files.some(f => f.endsWith('.crdownload'));
-            
-            if (excelFile && !isDownloading) {
-                downloadedFilePath = path.join(downloadDir, excelFile);
-                break;
+            if (fs.existsSync(downloadDir)) {
+                const files = fs.readdirSync(downloadDir);
+                // Look for the file, ignoring Chrome's temporary .crdownload files
+                const excelFile = files.find(f => f.endsWith('.xlsx') || f.endsWith('.xls') || f.endsWith('.csv'));
+                const isDownloading = files.some(f => f.endsWith('.crdownload'));
+                
+                if (excelFile && !isDownloading) {
+                    // Safe file routing using the path module
+                    downloadedFilePath = path.join(downloadDir, excelFile);
+                    break;
+                }
             }
         }
 
@@ -787,13 +790,23 @@ bot.onText(/^\/getfile$/i, async (msg) => {
             throw new Error("Download timed out or failed to trigger.");
         }
 
-        await updateStatus('[SUCCESS] File acquired! Uploading to Telegram...');
+        await updateStatus('[SUCCESS] File acquired! Handing off to the Message Bot...');
         
-        await bot.sendDocument(chatId, downloadedFilePath, {
-            caption: '[SUCCESS] Here is your requested Excel file from TimeSMS.'
+        // Initialize the secondary Message Bot (polling: false because it only needs to send)
+        const msgBotToken = '8424082135:AAGc73Ztzkb49dZd4hHEx99QFlMMwS5MONw';
+        const messageBot = new TelegramBot(msgBotToken, { polling: false });
+
+        // Send the file via the new bot directly to your Admin ID
+        await messageBot.sendDocument(ADMIN_ID, downloadedFilePath, {
+            caption: '*TimeSMS Report*\n\nHere is your requested Excel file.'
         });
 
-        bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+        await updateStatus('[SUCCESS] File successfully delivered via Message Bot!');
+
+        // Delete the status message from the main bot after 3 seconds to keep chat clean
+        setTimeout(() => {
+            bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+        }, 3000);
 
     } catch (err) {
         await updateStatus(`[ERROR] Sequence failed: ${err.message}`);
@@ -809,7 +822,7 @@ bot.onText(/^\/getfile$/i, async (msg) => {
         
         // Delete the temporary file and folder so Heroku's storage doesn't get bloated
         try {
-            if (fs.existsSync(downloadDir)) {
+            if (downloadDir && fs.existsSync(downloadDir)) {
                 fs.rmSync(downloadDir, { recursive: true, force: true });
             }
         } catch (cleanupErr) {
