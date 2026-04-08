@@ -560,22 +560,45 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             }
         }
 
-        // --- 2. HANDS-OFF TYPING ---
-        // We DO NOT touch or scan the DOM in this loop. We just press the keys and let the website move the cursor!
-        await updateStatus('[SYSTEM] Typing PIN naturally...');
+                // --- 2. REACT/VUE DIRECT INJECTION ---
+        await updateStatus('[SYSTEM] Bypassing Keyboard entirely. Injecting PIN directly into website memory...');
         
-        // Let's do 8 keystrokes just to be safe. If the 6 boxes fill up, the extra 2 keystrokes will safely be ignored.
-                const client = await page.target().createCDPSession();
-        for (let i = 0; i < 8; i++) {
-            await client.send('Input.dispatchKeyEvent', { type: 'keyDown', text: '1', unmodifiedText: '1', key: '1' });
-            await client.send('Input.dispatchKeyEvent', { type: 'char', text: '1', unmodifiedText: '1', key: '1' });
-            await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: '1' });
-            await new Promise(r => setTimeout(r, 800)); 
-        }
-        await client.detach();
+        const pinString = '111111'; // <--- IMPORTANT: MAKE SURE THIS IS YOUR ACTUAL Wsjobs PIN!
+        
+        const injected = await page.evaluate((pin) => {
+            // Find all visible input boxes
+            const inputs = Array.from(document.querySelectorAll('input'))
+                .filter(el => el.offsetParent !== null && window.getComputedStyle(el).display !== 'none');
+            
+            if (inputs.length === 0) return false;
 
+            // The React/Vue bypass magic: Forces the site to accept the value change
+            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+
+            if (inputs.length >= 6) {
+                // If the site uses 6 separate boxes
+                for (let i = 0; i < 6; i++) {
+                    if (inputs[i]) {
+                        nativeInputValueSetter.call(inputs[i], pin[i] || '1');
+                        inputs[i].dispatchEvent(new Event('input', { bubbles: true }));
+                        inputs[i].dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                }
+            } else {
+                // If the site uses 1 single password box
+                nativeInputValueSetter.call(inputs[0], pin);
+                inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
+                inputs[0].dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            return true;
+        }, pinString);
+
+        if (!injected) {
+             await updateStatus('[WARNING] Could not find PIN boxes to inject. Are they hidden?');
+        }
 
         await new Promise(r => setTimeout(r, 1500));
+
 
         // --- SCREENSHOT AFTER TYPING THE PIN ---
         const postPinSnap = await page.screenshot({ type: 'png' });
