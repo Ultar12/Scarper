@@ -1716,14 +1716,16 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await updateStatus(`[SYSTEM] Clicks fired! Waiting 15 seconds for the server to process all tabs...`);
         await new Promise(r => setTimeout(r, 15000));
 
-                // --- STEP 7: FETCH FINAL BALANCE & CALCULATE PROFIT ---
+                        // --- STEP 7: FETCH FINAL BALANCE & CALCULATE PROFIT ---
         await updateStatus(`[SYSTEM] Fetching final state and calculating profit...`);
         
-        
+        let currentBalanceText = "Unknown";
+        let earnedDisplay = "Unknown";
         
         try {
             await pages[0].goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
             await new Promise(r => setTimeout(r, 3000)); 
+            
             currentBalanceText = await pages[0].evaluate(() => {
                 const rawText = document.body.textContent || '';
                 const match = rawText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
@@ -1731,18 +1733,24 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                 return 'Unknown';
             });
             
-            // Calculate the math!
+            // Calculate the math
             let finalBalanceNum = parseFloat(currentBalanceText.replace(/,/g, ''));
             if (!isNaN(initialBalanceNum) && !isNaN(finalBalanceNum)) {
                 earnedDisplay = `+${(finalBalanceNum - initialBalanceNum).toFixed(2)}`;
             }
-        } catch (e) {}
+        } catch (e) {
+            console.error("Balance fetch error:", e);
+        }
+
+        // NOW we define the buffer right before sending
+        const finalSnap = await pages[0].screenshot({ type: 'png' });
 
         await updateStatus(`[SUCCESS] Strike sequence fully completed!`);
-        await bot.sendPhoto(chatId, screenshotBuffer, { 
+        await bot.sendPhoto(chatId, finalSnap, { 
             caption: `[SUCCESS] Snapshot from Master Tab after executing ${targetCount} synchronized clicks.\n\n<b>Profit:</b> <code>${earnedDisplay}</code>`,
             parse_mode: 'HTML'
         });
+
 
 
         // --- STEP 8: KEEP TABS OPEN & ARM IDLE TIMER ---
