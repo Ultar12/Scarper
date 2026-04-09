@@ -301,41 +301,48 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
         });
 
         const page = await tempBrowser.newPage();
-        await page.setViewport({ width: 1280, height: 800 });
+        const viewWidth = 1280;
+        const viewHeight = 800;
+        await page.setViewport({ width: viewWidth, height: viewHeight });
         
         await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
-        // SILENT AUTO-SCROLL
-        await page.evaluate(async () => {
-            await new Promise((resolve) => {
-                let totalHeight = 0;
-                let distance = 200;
-                let timer = setInterval(() => {
-                    let scrollHeight = document.body.scrollHeight;
-                    window.scrollBy(0, distance);
-                    totalHeight += distance;
-                    if (totalHeight >= scrollHeight || totalHeight > 15000) { // Safety cap at 15k pixels
-                        clearInterval(timer);
-                        resolve();
-                    }
-                }, 100);
-            });
-        });
+        // Get total height of the page
+        const fullHeight = await page.evaluate(() => document.body.scrollHeight);
 
-        const screenshotBuffer = await page.screenshot({ fullPage: true });
-
-        // --- ASPECT RATIO BYPASS ---
-        // If it fails as a photo due to dimensions, it sends as a file
-        try {
+        // If the page is standard size (less than 2.5x the screen height), send one shot
+        if (fullHeight < 2000) {
+            const screenshotBuffer = await page.screenshot({ fullPage: true });
             await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Captured: ${targetUrl}` });
-        } catch (photoErr) {
-            if (photoErr.message.includes('PHOTO_INVALID_DIMENSIONS')) {
-                await bot.sendDocument(chatId, screenshotBuffer, { 
-                    caption: `[NOTICE] Page was too long for a photo. Sent as a file instead.\nURL: ${targetUrl}` 
-                }, { filename: 'screenshot.png' });
-            } else {
-                throw photoErr;
+        } else {
+            // If the page is long, slice it into chunks of 1000px
+            await bot.editMessageText('[SYSTEM] Page is long. Slicing into readable chunks...', {
+                chat_id: chatId,
+                message_id: statusMsg.message_id
+            });
+
+            const sliceHeight = 1000;
+            const mediaGroup = [];
+            
+            for (let y = 0; y < fullHeight; y += sliceHeight) {
+                // Ensure we don't go past the bottom
+                const currentHeight = Math.min(sliceHeight, fullHeight - y);
+                
+                const partBuffer = await page.screenshot({
+                    clip: { x: 0, y: y, width: viewWidth, height: currentHeight }
+                });
+
+                mediaGroup.push({
+                    type: 'photo',
+                    media: partBuffer,
+                    caption: y === 0 ? `[SUCCESS] Full page slices for: ${targetUrl}` : ''
+                });
+
+                // Telegram limits albums to 10 images at a time
+                if (mediaGroup.length === 10) break; 
             }
+
+            await bot.sendMediaGroup(chatId, mediaGroup);
         }
 
         await bot.editMessageText(`[SUCCESS] Snapshot delivered for: ${targetUrl}`, {
