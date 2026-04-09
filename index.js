@@ -9,6 +9,9 @@ const path = require('path');
 const puppeteer = require('puppeteer'); 
 const QRCode = require('qrcode');
 
+const { PuppeteerScreenRecorder } = require('puppeteer-screen-recorder');
+
+
 
 
 // --- BULLETPROOF CHROME LOCATOR ---
@@ -310,6 +313,66 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
         if (tempBrowser) await tempBrowser.close();
     }
 });
+
+
+// Usage: /record
+bot.onText(/\/record/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Booting video recorder...');
+    let browser = null;
+
+    try {
+        browser = await puppeteer.launch({
+            headless: true,
+            executablePath: getChromePath(),
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        });
+
+        const page = await browser.newPage();
+        await page.setViewport({ width: 412, height: 915 });
+
+        // 1. INITIALIZE THE RECORDER
+        const recorder = new PuppeteerScreenRecorder(page, {
+            fps: 30,
+            videoFrame: { width: 412, height: 915 },
+            aspectRatio: '9:16' // Mobile format
+        });
+
+        // 2. START RECORDING
+        const videoPath = path.join(__dirname, `bot_recording_${Date.now()}.mp4`);
+        await recorder.start(videoPath);
+        await bot.editMessageText('[SYSTEM] 🔴 Recording started...', { chat_id: chatId, message_id: statusMsg.message_id });
+
+        // --- DO YOUR PUPPETEER STUFF HERE ---
+        await page.goto('https://www.wsjobs-ng.com/', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 3000));
+        
+        // Let's pretend we click a button or type something so the video captures movement
+        await page.evaluate(() => window.scrollBy(0, 500)); 
+        await new Promise(r => setTimeout(r, 2000));
+        await page.evaluate(() => window.scrollBy(0, -500));
+        await new Promise(r => setTimeout(r, 2000));
+        // ------------------------------------
+
+        // 3. STOP RECORDING
+        await recorder.stop();
+        await bot.editMessageText('[SYSTEM] Recording saved! Uploading to Telegram...', { chat_id: chatId, message_id: statusMsg.message_id });
+
+        // 4. SEND THE VIDEO TO TELEGRAM
+        await bot.sendVideo(chatId, videoPath, { caption: '[DIAGNOSTIC] Session Video' });
+
+        // 5. CLEAN UP HEROKU STORAGE
+        fs.unlinkSync(videoPath);
+
+    } catch (err) {
+        bot.sendMessage(chatId, `[ERROR] Video capture failed: ${err.message}`);
+    } finally {
+        if (browser) await browser.close().catch(()=>{});
+    }
+});
+
 
 
 // --- UPGRADED ISOLATED TT COMMAND ---
