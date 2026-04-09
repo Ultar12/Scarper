@@ -867,6 +867,9 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
     let browser = null;
     let page = null;
+    let recorder = null;
+    const videoPath = path.join(__dirname, `withdraw_debug_${Date.now()}.mp4`);
+
     
     try {
         // Use the global browser engine to save RAM, just like /task
@@ -883,6 +886,16 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         page = await browser.newPage();
         await page.setViewport({ width: 412, height: 915 });
         await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+
+                // --- START VIDEO RECORDING ---
+        await updateStatus('[SYSTEM] Starting screen recorder...');
+        recorder = new PuppeteerScreenRecorder(page, {
+            fps: 30,
+            videoFrame: { width: 412, height: 915 },
+            aspectRatio: '9:16'
+        });
+        await recorder.start(videoPath);
+
 
         // Step 1: Inject DB Session (Shares exact memory with /task)
         await updateStatus('[SYSTEM] Loading permanent session from Database...');
@@ -1196,10 +1209,24 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
     } catch (err) {
         await updateStatus(`[ERROR] Sequence failed: ${err.message}`);
-    } finally {
+        } finally {
+        // --- STOP RECORDING AND SEND VIDEO ---
+        if (recorder) {
+            await updateStatus('[SYSTEM] Stopping video recording and uploading...');
+            await recorder.stop().catch(() => {});
+            
+            try {
+                await bot.sendVideo(chatId, videoPath, { caption: '[DEBUG] Full Withdrawal Screen Recording' });
+            } catch (videoErr) {}
+            
+            // Clean up the MP4 from Heroku storage
+            try { if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath); } catch (e) {}
+        }
+
         if (page) await page.close().catch(() => {});
     }
 });
+
 
 // --- CONTINUOUS TASK MODE ---
 let taskModeActive = false;
@@ -2336,11 +2363,14 @@ bot.on('message', async (msg) => {
                     earnedDisplay = `+${(finalNum - initialBalanceNum).toFixed(2)}`;
                 } catch (e) {}
 
-                await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+                  await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+                
+                
                 await bot.sendPhoto(chatId, finalTaskSnap, { 
-                    caption: `[WT BURNER COMPLETE]\nProfit: <code>${earnedDisplay}</code>\nBalance: <code>${currentBalanceText}</code>\n\n_Browser open. Send another number, or /wtclose_`,
+                    caption: `Complete\nProfit: <code>${earnedDisplay}</code>\nBalance: <code>${currentBalanceText}</code>`,
                     parse_mode: 'HTML'
                 });
+
 
             } catch (err) {
                 await updateStatus(`[ERROR] WT Sequence failed: ${err.message}`);
