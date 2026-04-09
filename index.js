@@ -290,7 +290,6 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
         targetUrl = 'https://' + targetUrl;
     }
 
-    // Send the initial message and store its ID for editing
     const statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Processing...');
 
     let tempBrowser = null;
@@ -302,22 +301,20 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
         });
 
         const page = await tempBrowser.newPage();
-        
-        // Desktop Viewport
         await page.setViewport({ width: 1280, height: 800 });
         
         await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
-        // SILENT AUTO-SCROLL: Triggers lazy-loading for full page height
+        // SILENT AUTO-SCROLL
         await page.evaluate(async () => {
             await new Promise((resolve) => {
                 let totalHeight = 0;
-                let distance = 100;
+                let distance = 200;
                 let timer = setInterval(() => {
                     let scrollHeight = document.body.scrollHeight;
                     window.scrollBy(0, distance);
                     totalHeight += distance;
-                    if (totalHeight >= scrollHeight) {
+                    if (totalHeight >= scrollHeight || totalHeight > 15000) { // Safety cap at 15k pixels
                         clearInterval(timer);
                         resolve();
                     }
@@ -325,13 +322,22 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
             });
         });
 
-        // Capture the full length buffer
         const screenshotBuffer = await page.screenshot({ fullPage: true });
 
-        // Send the photo
-        await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Captured: ${targetUrl}` });
+        // --- ASPECT RATIO BYPASS ---
+        // If it fails as a photo due to dimensions, it sends as a file
+        try {
+            await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Captured: ${targetUrl}` });
+        } catch (photoErr) {
+            if (photoErr.message.includes('PHOTO_INVALID_DIMENSIONS')) {
+                await bot.sendDocument(chatId, screenshotBuffer, { 
+                    caption: `[NOTICE] Page was too long for a photo. Sent as a file instead.\nURL: ${targetUrl}` 
+                }, { filename: 'screenshot.png' });
+            } else {
+                throw photoErr;
+            }
+        }
 
-        // Edit the status message to show completion
         await bot.editMessageText(`[SUCCESS] Snapshot delivered for: ${targetUrl}`, {
             chat_id: chatId,
             message_id: statusMsg.message_id
