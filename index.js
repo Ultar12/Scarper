@@ -279,6 +279,7 @@ bot.on('message', async (msg) => {
     }
 });
 
+
 // Usage: /screenshot https://google.com
 bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
@@ -286,10 +287,11 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
 
     let targetUrl = match[1].trim();
     if (!targetUrl.startsWith('http')) {
-        targetUrl = 'https://' + targetUrl; // Auto-fix URLs missing the https prefix
+        targetUrl = 'https://' + targetUrl;
     }
 
-    bot.sendMessage(chatId, `[SYSTEM] Booting camera for: ${targetUrl}`);
+    // Send the initial message and store its ID for editing
+    const statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Processing...');
 
     let tempBrowser = null;
     try {
@@ -301,28 +303,50 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
 
         const page = await tempBrowser.newPage();
         
-        // Set the screen size for a clear desktop screenshot
+        // Desktop Viewport
         await page.setViewport({ width: 1280, height: 800 });
         
-        bot.sendMessage(chatId, '[SYSTEM] Rendering webpage...');
-        await page.goto(targetUrl, { waitUntil: 'networkidle2' });
-        
-        // Capture the raw image buffer
-        // This will scroll the entire page and capture everything from top to bottom
-const screenshot = await page.screenshot({ 
-    path: screenshotPath, 
-    fullPage: true 
-});
+        await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
+        // SILENT AUTO-SCROLL: Triggers lazy-loading for full page height
+        await page.evaluate(async () => {
+            await new Promise((resolve) => {
+                let totalHeight = 0;
+                let distance = 100;
+                let timer = setInterval(() => {
+                    let scrollHeight = document.body.scrollHeight;
+                    window.scrollBy(0, distance);
+                    totalHeight += distance;
+                    if (totalHeight >= scrollHeight) {
+                        clearInterval(timer);
+                        resolve();
+                    }
+                }, 100);
+            });
+        });
+
+        // Capture the full length buffer
+        const screenshotBuffer = await page.screenshot({ fullPage: true });
+
+        // Send the photo
         await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Captured: ${targetUrl}` });
 
+        // Edit the status message to show completion
+        await bot.editMessageText(`[SUCCESS] Snapshot delivered for: ${targetUrl}`, {
+            chat_id: chatId,
+            message_id: statusMsg.message_id
+        });
+
     } catch (err) {
-        bot.sendMessage(chatId, `[ERROR] Screenshot failed: ${err.message}`);
+        await bot.editMessageText(`[ERROR] Screenshot failed: ${err.message}`, {
+            chat_id: chatId,
+            message_id: statusMsg.message_id
+        });
     } finally {
-        // ALWAYS destroy the temp browser to prevent Heroku from crashing
         if (tempBrowser) await tempBrowser.close();
     }
 });
+
 
 
 // Usage: /record
