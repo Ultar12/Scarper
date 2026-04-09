@@ -1051,94 +1051,57 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await new Promise(r => setTimeout(r, 3000));
 
 
-          await updateStatus('[SYSTEM] Executing 3-Click bypass and Hands-Off typing...');
-        const pin = '111111111111'; 
-        // --- 1. THE 3-CLICK BYPASS ---
-        const initialInputs = await page.$$('input');
-        for (let input of initialInputs) {
+                await updateStatus('[SYSTEM] Waiting for PIN modal to fully render...');
+        await new Promise(r => setTimeout(r, 2500)); // Let the slide-up animation finish completely
+
+        const pin = '111111'; // <--- MAKE SURE THIS IS YOUR CORRECT 6-DIGIT PIN
+
+        // --- 1. HUMAN TYPING INJECTION ---
+        await updateStatus('[SYSTEM] Clicking input and typing PIN like a human...');
+        let inputFound = false;
+        const passwordInputs = await page.$$('input');
+        
+        for (let input of passwordInputs) {
+            // Find the active box (handles both visible boxes and invisible overlay boxes)
             const isValid = await input.evaluate(el => el.type !== 'hidden' && (el.offsetParent !== null || window.getComputedStyle(el).opacity === '0'));
             if (isValid) {
-                await updateStatus('[SYSTEM] Tapping box 3 times to clear popups and lock cursor...');
+                await input.click({ clickCount: 3 }); // Focus and clear
+                await page.keyboard.press('Backspace');
+                await new Promise(r => setTimeout(r, 500)); 
                 
-                // Tap 1: Triggers the popup
-                await input.click().catch(() => {});
-                await new Promise(r => setTimeout(r, 600)); 
-                
-                // Tap 2: Closes the popup
-                await input.click().catch(() => {});
-                await new Promise(r => setTimeout(r, 600)); 
-                
-                // Tap 3: Officially locks focus & brings up the keyboard
-                await input.click().catch(() => {});
-                await new Promise(r => setTimeout(r, 1200)); // Wait 1.2s for cursor to fully settle
-                break; // Stop after doing this to the first box
+                // Type with a deliberate 200ms delay to trigger the website's auto-advance to the next box
+                await page.keyboard.type(pin, { delay: 200 });
+                inputFound = true;
+                break; 
             }
         }
 
-                // --- 2. REACT/VUE DIRECT INJECTION ---
-        await updateStatus('[SYSTEM] Bypassing Keyboard entirely. Injecting PIN directly into website memory...');
-        
-        const pinString = '111111'; // <--- IMPORTANT: MAKE SURE THIS IS YOUR ACTUAL Wsjobs PIN!
-        
-        const injected = await page.evaluate((pin) => {
-            // Find all visible input boxes
-            const inputs = Array.from(document.querySelectorAll('input'))
-                .filter(el => el.offsetParent !== null && window.getComputedStyle(el).display !== 'none');
-            
-            if (inputs.length === 0) return false;
-
-            // The React/Vue bypass magic: Forces the site to accept the value change
-            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-
-            if (inputs.length >= 6) {
-                // If the site uses 6 separate boxes
-                for (let i = 0; i < 6; i++) {
-                    if (inputs[i]) {
-                        nativeInputValueSetter.call(inputs[i], pin[i] || '1');
-                        inputs[i].dispatchEvent(new Event('input', { bubbles: true }));
-                        inputs[i].dispatchEvent(new Event('change', { bubbles: true }));
-                    }
-                }
-            } else {
-                // If the site uses 1 single password box
-                nativeInputValueSetter.call(inputs[0], pin);
-                inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
-                inputs[0].dispatchEvent(new Event('change', { bubbles: true }));
-            }
-            return true;
-        }, pinString);
-
-        if (!injected) {
-             await updateStatus('[WARNING] Could not find PIN boxes to inject. Are they hidden?');
+        if (!inputFound) {
+            await updateStatus('[WARNING] Could not find the PIN box!');
         }
 
-        await new Promise(r => setTimeout(r, 1500));
+        // Wait to see if typing the 6th digit auto-submits the form (many 6-box sites do this)
+        await updateStatus('[SYSTEM] Waiting for auto-submit or clicking Confirm...');
+        await new Promise(r => setTimeout(r, 3000));
 
-
-        // --- SCREENSHOT AFTER TYPING THE PIN ---
-        const postPinSnap = await page.screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, postPinSnap, { caption: '[DEBUG] State AFTER Hands-Off typing, right before Confirm' });
-
-        // 3. AGGRESSIVE CONFIRM CLICK
-        await updateStatus('[SYSTEM] Submitting final confirmation...');
+        // --- 2. AGGRESSIVE CONFIRM CLICK ---
         await page.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('*'));
             for (let el of elements) {
                 const txt = (el.innerText || el.textContent || '').trim();
                 if (txt === 'Confirm' && el.offsetParent !== null) {
-                    // Force synthetic mouse click to bypass UI traps
                     el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
                     el.click();
                     if (el.parentElement) el.parentElement.click();
-                    return; // Stop searching once we click it
+                    return; 
                 }
             }
         });
 
-                await updateStatus('[SYSTEM] Waiting for server response...');
-        await new Promise(r => setTimeout(r, 4000)); // Wait for initial spinner or error modal
+        await updateStatus('[SYSTEM] Waiting for server verification...');
+        await new Promise(r => setTimeout(r, 4000)); 
 
-        // --- NEW: ERROR DETECTION AND RE-ENTRY LOGIC ---
+        // --- 3. ERROR DETECTION & RETRY LOGIC ---
         const errorModalDetected = await page.evaluate(() => {
             const body = document.body.innerText || '';
             return body.includes('password incorrect') || body.includes('Re-enter');
@@ -1146,44 +1109,32 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
         if (errorModalDetected) {
             await updateStatus('[SYSTEM] Incorrect PIN modal detected. Clicking Re-enter...');
-            
-            // 1. Click Re-enter
             await page.evaluate(() => {
                 const elements = Array.from(document.querySelectorAll('*'));
                 for (let el of elements) {
                     if ((el.innerText || '').trim() === 'Re-enter' && el.offsetParent !== null) {
-                        el.click();
-                        return;
+                        el.click(); return;
                     }
                 }
             });
-            await new Promise(r => setTimeout(r, 2000)); // Wait for modal to close and boxes to clear
-
-            await updateStatus('[SYSTEM] Re-typing withdrawal PIN...');
             
-            // 2. Click the first box again
+            // CRITICAL: Wait 2.5 seconds for the error modal to completely disappear
+            await new Promise(r => setTimeout(r, 2500)); 
+
+            await updateStatus('[SYSTEM] Retrying: Typing PIN like a human again...');
             const retryInputs = await page.$$('input');
             for (let input of retryInputs) {
-                if (await input.evaluate(el => window.getComputedStyle(el).display !== 'none' && el.type !== 'hidden')) {
+                const isValid = await input.evaluate(el => el.type !== 'hidden' && (el.offsetParent !== null || window.getComputedStyle(el).opacity === '0'));
+                if (isValid) {
                     await input.click();
                     await new Promise(r => setTimeout(r, 500));
-                    break; 
+                    await page.keyboard.type(pin, { delay: 200 });
+                    break;
                 }
             }
 
-            // 3. Blind type again
-            for (let i = 0; i < pin.length; i++) {
-                await page.keyboard.press(pin[i]);
-                await new Promise(r => setTimeout(r, 600));
-            }
-            await new Promise(r => setTimeout(r, 1500));
+            await new Promise(r => setTimeout(r, 3000));
 
-            // 4. SCREENSHOT BEFORE CONFIRMING A SECOND TIME
-            const retryPreSnap = await page.screenshot({ type: 'png' });
-            await bot.sendPhoto(chatId, retryPreSnap, { caption: '[DEBUG] State AFTER typing PIN on Re-enter, right before second Confirm' });
-
-            // 5. Click Confirm again
-            await updateStatus('[SYSTEM] Submitting second confirmation...');
             await page.evaluate(() => {
                 const elements = Array.from(document.querySelectorAll('*'));
                 for (let el of elements) {
@@ -1196,12 +1147,12 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                     }
                 }
             });
-            
-            await new Promise(r => setTimeout(r, 6000)); // Wait for the final spinner
+            await new Promise(r => setTimeout(r, 6000)); 
         } else {
-            // Give it 2 more seconds if no error modal popped up, just to be safe
             await new Promise(r => setTimeout(r, 2000)); 
         }
+
+
 
         await updateStatus('[SUCCESS] Auto-withdrawal completed.');
         const screenshotBuffer = await page.screenshot({ type: 'png' });
