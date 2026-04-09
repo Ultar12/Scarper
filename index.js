@@ -8,6 +8,9 @@ const { Pool } = require('pg');
 const path = require('path');
 const puppeteer = require('puppeteer'); 
 const QRCode = require('qrcode');
+const youtubedl = require('yt-dlp-exec');
+const axios = require('axios');
+
 
 const { PuppeteerScreenRecorder } = require('puppeteer-screen-recorder');
 
@@ -555,6 +558,98 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
         if (ttBrowser) await ttBrowser.close().catch(() => {});
     }
 });
+
+
+// Usage: /dl https://www.tiktok.com/@user/video/123456789
+bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    const url = match[1].trim();
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Analyzing link and bypassing security...');
+
+    try {
+        // --- TIKTOK SPECIFIC LOGIC (VIDEOS & IMAGES) ---
+        if (url.includes('tiktok.com')) {
+            await bot.editMessageText('[SYSTEM] TikTok link detected. Fetching unwatermarked HD source...', { chat_id: chatId, message_id: statusMsg.message_id });
+            
+            // Hit the TikWM API (Gets raw unwatermarked HD files directly from TikTok servers)
+            const response = await axios.get(`https://www.tikwm.com/api/?url=${url}&hd=1`);
+            const data = response.data.data;
+
+            if (!data) throw new Error("Could not extract TikTok data. Link might be private or invalid.");
+
+            // 1. IS IT AN IMAGE SLIDESHOW?
+            if (data.images && data.images.length > 0) {
+                await bot.editMessageText(`[SYSTEM] TikTok Image Carousel detected (${data.images.length} images). Sending raw HD photos...`, { chat_id: chatId, message_id: statusMsg.message_id });
+                
+                // Telegram requires media groups for multiple images
+                let mediaGroup = [];
+                for (let i = 0; i < data.images.length; i++) {
+                    mediaGroup.push({
+                        type: 'photo',
+                        media: data.images[i], // We can pass the raw URL directly to Telegram!
+                        caption: i === 0 ? `[SUCCESS] HD TikTok Images Extracted` : '' 
+                    });
+                    
+                    // Telegram allows max 10 media items per group. Send in chunks if necessary.
+                    if (mediaGroup.length === 10 || i === data.images.length - 1) {
+                        await bot.sendMediaGroup(chatId, mediaGroup);
+                        mediaGroup = []; // Reset for next batch
+                    }
+                }
+                
+                await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+                return; // Stop execution here for images
+            }
+
+            // 2. IT IS A VIDEO
+            const videoUrl = data.hdplay || data.play; // Try HD first, fallback to standard if HD isn't available
+            
+            await bot.editMessageText('[SYSTEM] Found raw TikTok video file. Streaming to Telegram...', { chat_id: chatId, message_id: statusMsg.message_id });
+            
+            await bot.sendVideo(chatId, videoUrl, {
+                caption: `[SUCCESS] Max Native Quality (No Watermark)`
+            });
+            
+            await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+            return;
+        }
+
+        // --- FALLBACK FOR IG / YOUTUBE / TWITTER (yt-dlp) ---
+        await bot.editMessageText('[SYSTEM] Standard link detected. Engaging yt-dlp to find maximum native quality...', { chat_id: chatId, message_id: statusMsg.message_id });
+        
+        const videoPath = path.join(__dirname, `dl_${Date.now()}.mp4`);
+
+        // Grab the absolute best video and audio track the server actually holds
+        await youtubedl(url, {
+            output: videoPath,
+            format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            mergeOutputFormat: 'mp4',
+            noWarnings: true
+        });
+
+        // Safety check for Telegram's hard limit
+        const stats = fs.statSync(videoPath);
+        const fileSizeMB = stats.size / (1024 * 1024);
+
+        if (fileSizeMB > 49.5) {
+            await bot.editMessageText(`[ERROR] File is too large (${fileSizeMB.toFixed(1)}MB). Telegram bots can only send up to 50MB.`, { chat_id: chatId, message_id: statusMsg.message_id });
+        } else {
+            await bot.editMessageText('[SYSTEM] Extraction complete. Uploading...', { chat_id: chatId, message_id: statusMsg.message_id });
+            await bot.sendVideo(chatId, videoPath, { 
+                caption: `[SUCCESS] Max Native Quality Downloaded\nSize: ${fileSizeMB.toFixed(2)}MB` 
+            });
+            await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+        }
+
+        if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
+
+    } catch (err) {
+        bot.editMessageText(`[ERROR] Download failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+    }
+});
+
 
 
 // Initiation Command
