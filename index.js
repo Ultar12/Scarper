@@ -1711,7 +1711,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
 
 
-                                // --- STEP 7: FETCH PROFIT & EDIT STATUS ---
+                                        // --- STEP 7: FETCH PROFIT, BALANCE & FINAL OUTPUT ---
         await updateStatus(`[SYSTEM] Strike complete. Calculating final profit...`);
         
         // 1. Capture the Task Page (proving buttons are gone)
@@ -1721,7 +1721,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         let earnedDisplay = "Unknown";
         
         try {
-            // 2. Peek at User page in background for the math
+            // 2. Peek at User page in background for the math and balance
             await pages[0].goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
             await new Promise(r => setTimeout(r, 3000)); 
             
@@ -1741,18 +1741,15 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             await pages[0].goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
         } catch (e) {}
 
-        // 4. Update the existing status message with the final result
-        await bot.editMessageText(`<b>[SUCCESS] Strike sequence fully completed!</b>\n\n<b>Profit:</b> <code>${earnedDisplay}</code>`, { 
-            chat_id: chatId, 
-            message_id: msgId,
-            parse_mode: 'HTML' 
-        });
+        // 4. Delete the status message to keep the chat clean
+        await bot.deleteMessage(chatId, msgId).catch(() => {});
 
-        // 5. Send the photo of the Task Page
+        // 5. Send the photo with Profit and current Balance
         await bot.sendPhoto(chatId, finalTaskSnap, { 
-            caption: `[RESULT] Task Page State after ${targetCount} synchronized clicks.`,
+            caption: `Profit: <code>${earnedDisplay}</code>\nBalance: <code>${currentBalanceText}</code>`,
             parse_mode: 'HTML'
         });
+
 
 
 
