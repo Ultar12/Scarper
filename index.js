@@ -104,6 +104,10 @@ let taskIdleTimer = null;
 let initialBalanceText = "0";
 let initialBalanceNum = 0;
 
+// --- WT BURNER SESSION TRACKER ---
+const wtSessions = {}; 
+
+
 
 // --- 2. HEROKU WEB SERVER SETUP ---
 const app = express();
@@ -551,6 +555,34 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
         if (ttBrowser) await ttBrowser.close().catch(() => {});
     }
 });
+
+
+// Initiation Command
+bot.onText(/^\/wt$/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    // Initialize the burner state
+    wtSessions[chatId] = { step: 'USERNAME', browser: null, timer: null, username: '', password: '', target: '' };
+    bot.sendMessage(chatId, '[WT BURNER] Sequence Initiated.\n\nPlease send the **Username (Phone Number)** for the account:', { parse_mode: 'Markdown' });
+});
+
+// Manual Kill Command
+bot.onText(/^(?:\/wtclose|close)$/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    if (wtSessions[chatId] && wtSessions[chatId].browser) {
+        bot.sendMessage(chatId, '[WT BURNER] Manually terminating burner browser...');
+        await wtSessions[chatId].browser.close().catch(() => {});
+        clearTimeout(wtSessions[chatId].timer);
+        wtSessions[chatId] = null;
+        bot.sendMessage(chatId, '[SUCCESS] Burner session destroyed and RAM freed.');
+    } else {
+        bot.sendMessage(chatId, '[SYSTEM] No active WT burner session to close.');
+    }
+});
+
         
      
 
@@ -2292,6 +2324,217 @@ bot.on('message', async (msg) => {
             }
             return;
         }
+
+
+            // --- WT BURNER CONVERSATION FLOW ---
+    if (wtSessions[chatId] && wtSessions[chatId].step && !msg.text.startsWith('/')) {
+        const session = wtSessions[chatId];
+
+        if (session.step === 'USERNAME') {
+            session.username = msg.text.trim();
+            session.step = 'PASSWORD';
+            bot.sendMessage(chatId, `[WT BURNER] Username locked: ${session.username}\n\nNow send the **Password**:`, { parse_mode: 'Markdown' });
+            return;
+        }
+
+        if (session.step === 'PASSWORD') {
+            session.password = msg.text.trim();
+            bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+            
+            session.step = 'TARGET_OR_AWAITING';
+            bot.sendMessage(chatId, `[WT BURNER] Password accepted.\n\nSend the **Target Number (Suffix)** you want to strike. You can keep sending new numbers for the next 15 minutes!`, { parse_mode: 'Markdown' });
+            return;
+        }
+
+        if (session.step === 'TARGET_OR_AWAITING') {
+            session.target = msg.text.trim().replace(/[^0-9]/g, '');
+            session.step = 'EXECUTING'; // Lock it so you can't double-fire accidentally
+            
+            // Clear the 15-minute timer if this is a follow-up strike
+            if (session.timer) clearTimeout(session.timer);
+            
+            let statusMsg = await bot.sendMessage(chatId, `[WT BURNER] Locking onto target: ${session.target}...`);
+            const updateStatus = async (text) => bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+            
+            let pages = [];
+            let initialBalanceNum = 0;
+
+            try {
+                // 1. Boot Browser OR Re-use existing one
+                if (!session.browser) {
+                    await updateStatus('[WT BURNER] Launching clean Chrome instance...');
+                    session.browser = await puppeteer.launch({
+                        headless: true,
+                        executablePath: getChromePath(),
+                        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+                    });
+
+                    const page1 = await session.browser.newPage();
+                    pages.push(page1);
+                    session.masterPage = page1; // Save the master tab to the session
+                    await page1.setViewport({ width: 412, height: 915 }); 
+                    await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+
+                    // Dynamic Login
+                    await updateStatus('[WT BURNER] Injecting credentials...');
+                    await page1.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
+                    
+                    const allInputs = await page1.$$('input');
+                    const visibleInputs = [];
+                    for (let input of allInputs) {
+                        if (await input.evaluate(el => el.offsetParent !== null)) visibleInputs.push(input);
+                    }
+
+                    if (visibleInputs.length >= 2) {
+                        await visibleInputs[0].type(session.username, { delay: 50 });
+                        await visibleInputs[1].type(session.password, { delay: 50 });
+                        await page1.evaluate(() => {
+                            const btns = Array.from(document.querySelectorAll('*'));
+                            for (let b of btns) if (b.innerText?.trim() === 'Login') b.click();
+                        });
+                        await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+                    }
+                } else {
+                    await updateStatus('[WT BURNER] Using already logged-in session...');
+                    pages.push(session.masterPage); // Grab the master page from memory
+                }
+
+                const masterTab = pages[0];
+
+                // Initial Balance
+                await masterTab.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
+                await new Promise(r => setTimeout(r, 3000));
+                const initialText = await masterTab.evaluate(() => {
+                    const match = document.body.innerText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
+                    return match ? match[1] : '0';
+                });
+                initialBalanceNum = parseFloat(initialText.replace(/,/g, '')) || 0;
+
+                // 2. Sweep & Target Acquisition
+                await updateStatus('[WT BURNER] Clearing popups and scanning targets...');
+                await masterTab.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
+                await new Promise(r => setTimeout(r, 4000));
+                await clearOnboardingPopups(masterTab, null);
+
+                let targetCount = 0;
+                for (let attempt = 1; attempt <= 2; attempt++) {
+                    for (let i = 0; i < 10; i++) {
+                        const tasksExist = await masterTab.evaluate(() => Array.from(document.querySelectorAll('*')).some(el => el.innerText?.trim() === 'Send' && el.offsetParent !== null));
+                        if (tasksExist) break;
+                        await new Promise(r => setTimeout(r, 1000));
+                    }
+
+                    targetCount = await masterTab.evaluate((suffixStr) => {
+                        const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim() === 'Send' && el.offsetParent !== null);
+                        let count = 0;
+                        for (let b of btns) {
+                            let txt = b.parentElement?.parentElement?.innerText || '';
+                            if (txt.includes(suffixStr)) count++;
+                        }
+                        return count > 4 ? 4 : count;
+                    }, session.target);
+
+                    if (targetCount > 0) break;
+                    if (attempt === 1) {
+                        await masterTab.reload({ waitUntil: 'networkidle2' });
+                        await new Promise(r => setTimeout(r, 5000)); 
+                        await clearOnboardingPopups(masterTab, null);
+                    }
+                }
+
+                if (targetCount === 0) throw new Error(`0 targets found for ${session.target}.`);
+
+                // 3. Clones & Strike
+                await updateStatus(`[WT BURNER] Spawning ${targetCount - 1} clone tabs...`);
+                for (let i = 1; i < targetCount; i++) {
+                    const p = await session.browser.newPage();
+                    pages.push(p);
+                    await p.setViewport({ width: 412, height: 915 });
+                    await p.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
+                }
+                
+                if (pages.length > 1) {
+                    await new Promise(r => setTimeout(r, 3000));
+                    await Promise.all(pages.slice(1).map(p => clearOnboardingPopups(p, null)));
+                }
+
+                await updateStatus(`[WT BURNER] Firing synchronized ghost-clicks...`);
+                const clickResults = await Promise.all(pages.map((p, idx) => {
+                    return p.evaluate((suffixStr, tabIndex) => {
+                        const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim() === 'Send' && el.offsetParent !== null);
+                        let matchCount = 0;
+                        for (let b of btns) {
+                            let txt = b.parentElement?.parentElement?.innerText || '';
+                            if (txt.includes(suffixStr)) {
+                                if (matchCount === tabIndex) {
+                                    b.click(); return true;
+                                }
+                                matchCount++;
+                            }
+                        }
+                        return false;
+                    }, session.target, idx);
+                }));
+
+                await new Promise(r => setTimeout(r, 10000));
+
+                await Promise.all(pages.map(p => p.evaluate(() => {
+                    Array.from(document.querySelectorAll('*')).forEach(el => {
+                        if (el.innerText?.trim() === 'Confirm' && el.offsetParent !== null) el.click();
+                    });
+                })));
+
+                await updateStatus(`[WT BURNER] Clicks fired. Server cooldown (15s)...`);
+                await new Promise(r => setTimeout(r, 15000));
+
+                // 4. Final Calculation
+                const finalTaskSnap = await masterTab.screenshot({ type: 'png' });
+                let currentBalanceText = "Unknown";
+                let earnedDisplay = "Unknown";
+
+                try {
+                    await masterTab.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
+                    await new Promise(r => setTimeout(r, 3000));
+                    currentBalanceText = await masterTab.evaluate(() => {
+                        const match = document.body.innerText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
+                        return match ? match[1] : 'Unknown';
+                    });
+                    let finalNum = parseFloat(currentBalanceText.replace(/,/g, ''));
+                    earnedDisplay = `+${(finalNum - initialBalanceNum).toFixed(2)}`;
+                } catch (e) {}
+
+                await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+                await bot.sendPhoto(chatId, finalTaskSnap, { 
+                    caption: `[WT BURNER COMPLETE]\nProfit: <code>${earnedDisplay}</code>\nBalance: <code>${currentBalanceText}</code>\n\n_Browser open. Send another number, or /wtclose_`,
+                    parse_mode: 'HTML'
+                });
+
+            } catch (err) {
+                await updateStatus(`[ERROR] WT Sequence failed: ${err.message}`);
+            } finally {
+                // 5. CLEAN UP CLONE TABS TO SAVE RAM
+                if (pages.length > 1) {
+                    for (let p of pages.slice(1)) {
+                        await p.close().catch(()=>{});
+                    }
+                }
+                
+                // 6. OPEN IT BACK UP FOR THE NEXT NUMBER
+                session.step = 'TARGET_OR_AWAITING';
+
+                // 7. RESET THE 15 MINUTE TIMEBOMB
+                session.timer = setTimeout(async () => {
+                    if (wtSessions[chatId] && wtSessions[chatId].browser) {
+                        await wtSessions[chatId].browser.close().catch(()=>{});
+                        wtSessions[chatId] = null;
+                        bot.sendMessage(chatId, '[SYSTEM] WT Burner 15-minute auto-timeout reached. Browser destroyed.');
+                    }
+                }, 15 * 60 * 1000);
+            }
+            return;
+        }
+    }
+
 
         // --- PHASE B: NUMBER PROCESSING AND MONITORING ---
         if (m4uSession.state === 'WAITING_NUMBER' || m4uSession.state === 'WAITING_FOR_LINK') {
