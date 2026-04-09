@@ -312,15 +312,14 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
 });
 
 
-        
- // Usage: /tt 127
+// --- UPGRADED ISOLATED TT COMMAND ---
+// Usage: /tt 127
 bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
     const targetSuffix = match[1]; 
-
-    let statusMsg = await bot.sendMessage(chatId, `[ISOLATED SYSTEM] Booting standalone /tt sequence for suffix: ${targetSuffix}...`);
+    let statusMsg = await bot.sendMessage(chatId, `[ISOLATED SYSTEM] Booting sequence for suffix: ${targetSuffix}...`);
     const msgId = statusMsg.message_id;
 
     const updateStatus = async (text) => {
@@ -329,244 +328,137 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
 
     let ttBrowser = null;
     let pages = []; 
+    let initialBalanceNum = 0;
 
     try {
-        // --- 1. LAUNCH ISOLATED BROWSER (100% CLEAN SLATE, NO DB) ---
-        await updateStatus('[ISOLATED SYSTEM] Launching completely separate, clean Chrome instance...');
+        // --- 1. LAUNCH ISOLATED ENGINE ---
+        await updateStatus('[ISOLATED SYSTEM] Launching clean Chrome instance...');
         ttBrowser = await puppeteer.launch({
             headless: true,
             executablePath: getChromePath(),
             args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
         });
 
-        // --- 2. INITIALIZE MASTER TAB & FORCE FRESH LOGIN ---
-        await updateStatus('[ISOLATED SYSTEM] Opening Master Tab & hitting the login wall...');
         const page1 = await ttBrowser.newPage();
         pages.push(page1);
         await page1.setViewport({ width: 412, height: 915 }); 
         await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-        // Go straight to task page. NO database loaded.
-        await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 4000)); 
+        // --- 2. LOGIN & INITIAL STATE ---
+        await updateStatus('[ISOLATED SYSTEM] Performing physical login...');
+        await page1.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
+        
+        const allInputs = await page1.$$('input');
+        const visibleInputs = [];
+        for (let input of allInputs) {
+            if (await input.evaluate(el => el.offsetParent !== null)) visibleInputs.push(input);
+        }
 
-        const requiresLogin = await page1.$('input[type="password"]') !== null;
-
-        if (requiresLogin) {
-            await updateStatus('[ISOLATED SYSTEM] Login required. Physically typing hardcoded credentials...');
-            const allInputs = await page1.$$('input');
-            const visibleInputs = [];
-            for (let input of allInputs) {
-                const isVisible = await input.evaluate(el => el.offsetParent !== null && window.getComputedStyle(el).display !== 'none');
-                if (isVisible) visibleInputs.push(input);
-            }
-
-            if (visibleInputs.length >= 2) {
-                await visibleInputs[0].evaluate(el => el.value = '');
-                await visibleInputs[0].click();
-                await visibleInputs[0].type('09163916311', { delay: 50 }); // HARDCODED MAIN
-                
-                await visibleInputs[1].evaluate(el => el.value = '');
-                await visibleInputs[1].click();
-                await visibleInputs[1].type('Emmamama', { delay: 50 }); // HARDCODED PASS
-                
-                await new Promise(r => setTimeout(r, 1000));
-                
-                await page1.evaluate(() => {
-                    const elements = Array.from(document.querySelectorAll('*'));
-                    for (let el of elements) {
-                        if (el.innerText && el.innerText.trim() === 'Login' && el.offsetParent !== null) {
-                            el.click();
-                        }
-                    }
-                });
-            }
-            
+        if (visibleInputs.length >= 2) {
+            await visibleInputs[0].type('09163916311', { delay: 50 }); // Main account
+            await visibleInputs[1].type('Emmamama', { delay: 50 });
+            await page1.evaluate(() => {
+                const btns = Array.from(document.querySelectorAll('*'));
+                for (let b of btns) if (b.innerText?.trim() === 'Login') b.click();
+            });
             await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-            await new Promise(r => setTimeout(r, 4000)); 
-            
-            await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
-            await new Promise(r => setTimeout(r, 4000));
         }
 
-        // --- 3. SWEEP MASTER TAB USING GLOBAL /POP FUNCTION ---
-        await updateStatus('[ISOLATED SYSTEM] Connecting to global popup sweeper...');
-        await clearOnboardingPopups(page1, updateStatus);
+        // Get Initial Balance for Math
+        const initialText = await page1.evaluate(() => {
+            const match = document.body.innerText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
+            return match ? match[1] : '0';
+        });
+        initialBalanceNum = parseFloat(initialText.replace(/,/g, '')) || 0;
 
-        // --- 4. TARGET SCANNER WITH HARD-REFRESH RETRY ---
-        await updateStatus(`[ISOLATED SYSTEM] Target acquisition phase for: ${targetSuffix}...`);
-        
-        let targetCount = 0;
+        // --- 3. TARGET ACQUISITION & CLONE SPAWNING ---
+        await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 4000));
+        await clearOnboardingPopups(page1, null); // Global sweeper
 
-        for (let attempt = 1; attempt <= 2; attempt++) {
-            await updateStatus(`[ISOLATED SYSTEM] Waiting for tasks to populate (Attempt ${attempt}/2)...`);
-            
-            for (let i = 0; i < 10; i++) {
-                const tasksExist = await page1.evaluate(() => {
-                    return Array.from(document.querySelectorAll('*')).some(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
-                });
-                if (tasksExist) break;
-                await new Promise(r => setTimeout(r, 1000));
+        const targetCount = await page1.evaluate((suffixStr) => {
+            const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim() === 'Send' && el.offsetParent !== null);
+            let count = 0;
+            for (let b of btns) {
+                let txt = b.parentElement?.parentElement?.innerText || '';
+                if (txt.includes(suffixStr)) count++;
             }
+            return count > 4 ? 4 : count;
+        }, targetSuffix);
 
-            targetCount = await page1.evaluate((suffixStr) => {
-                const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
-                let count = 0;
-                for (let btn of sendBtns) {
-                    let containerText = '';
-                    if (btn.parentElement && btn.parentElement.parentElement) {
-                        containerText = btn.parentElement.parentElement.innerText || '';
-                    }
-                    if (containerText.includes(suffixStr)) count++;
-                }
-                return count > 4 ? 4 : count; 
-            }, targetSuffix);
+        if (targetCount === 0) throw new Error(`0 targets found for ${targetSuffix}.`);
 
-            if (targetCount > 0) {
-                break; 
-            } else if (attempt === 1) {
-                await updateStatus(`[ISOLATED SYSTEM] 0 targets found! Wsjobs is lagging. Hard-refreshing...`);
-                await page1.reload({ waitUntil: 'networkidle2' });
-                await new Promise(r => setTimeout(r, 5000)); 
-                await clearOnboardingPopups(page1, updateStatus); // Call global sweeper again after refresh!
-            }
-        }
-
-        if (targetCount === 0) {
-            throw new Error(`Found 0 numbers ending with ${targetSuffix} on Main Account even after refresh.`);
-        }
-
-        await updateStatus(`[ISOLATED SYSTEM] Found ${targetCount} matching numbers. Spawning clones...`);
-
-        // Spawn Clones
+        await updateStatus(`[ISOLATED SYSTEM] Spawning ${targetCount} synchronized tabs...`);
         for (let i = 1; i < targetCount; i++) {
-            const newPage = await ttBrowser.newPage();
-            pages.push(newPage);
-            await newPage.setViewport({ width: 412, height: 915 }); 
-            await newPage.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+            const p = await ttBrowser.newPage();
+            pages.push(p);
+            await p.setViewport({ width: 412, height: 915 });
+            await p.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
         }
-
-        if (pages.length > 1) {
-            await Promise.all(pages.slice(1).map(p => p.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' })));
-            await new Promise(r => setTimeout(r, 3000));
-        }
-        
-        // Sweep clones silently using the global function (passing null prevents it from spamming Telegram statuses)
         await Promise.all(pages.slice(1).map(p => clearOnboardingPopups(p, null)));
 
-        // --- 5. EXACT /TASK GHOST CLICKS ---
-        await updateStatus(`[ISOLATED SYSTEM] Tabs clear. Ghost-clicking "Send"...`);
-        
-        const clickResults = await Promise.all(pages.map((p, index) => {
+        // --- 4. THE STRIKE (GHOST CLICKS) ---
+        await updateStatus(`[ISOLATED SYSTEM] Executing synchronized strikes...`);
+        const clickResults = await Promise.all(pages.map((p, idx) => {
             return p.evaluate((suffixStr, tabIndex) => {
-                const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
+                const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim() === 'Send' && el.offsetParent !== null);
                 let matchCount = 0;
-                for (let btn of sendBtns) {
-                    let containerText = '';
-                    if (btn.parentElement && btn.parentElement.parentElement) {
-                        containerText = btn.parentElement.parentElement.innerText || '';
-                    }
-                    if (containerText.includes(suffixStr)) {
+                for (let b of btns) {
+                    let txt = b.parentElement?.parentElement?.innerText || '';
+                    if (txt.includes(suffixStr)) {
                         if (matchCount === tabIndex) {
-                            btn.scrollIntoView({ block: 'center', behavior: 'instant' });
-                            const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-                            btn.dispatchEvent(clickEvent); 
-                            btn.click(); 
-                            if (btn.parentElement) {
-                                btn.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                                btn.parentElement.click();
-                            }
+                            b.click();
                             return true;
                         }
                         matchCount++;
                     }
                 }
                 return false;
-            }, targetSuffix, index);
+            }, targetSuffix, idx);
         }));
 
-        await updateStatus(`[ISOLATED SYSTEM] Waiting 3 seconds for popups...`);
-        await new Promise(r => setTimeout(r, 3000));
+        await new Promise(r => setTimeout(r, 10000)); // Sync wait
 
-        await updateStatus(`[ISOLATED SYSTEM] Capturing pre-strike screenshots...`);
-        for (let idx = 0; idx < pages.length; idx++) {
-            if (clickResults[idx]) {
-                try {
-                    const preSnap = await pages[idx].screenshot({ type: 'png' });
-                    await bot.sendPhoto(chatId, preSnap, { caption: `[DIAGNOSTIC] TT Tab ${idx + 1} State right before Confirm.` });
-                } catch (e) {}
+        // Synchronized Confirm
+        await Promise.all(pages.map(p => p.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('*'));
+            for (let el of elements) {
+                if (el.innerText?.trim() === 'Confirm' && el.offsetParent !== null) el.click();
             }
-        }
+        })));
 
-        await updateStatus(`[ISOLATED SYSTEM] Waiting 10 seconds to synchronize...`);
-        await new Promise(r => setTimeout(r, 10000));
-
-        // --- 6. SYNCHRONIZED CONFIRM STRIKE ---
-        await updateStatus(`[ISOLATED SYSTEM] Executing synchronized Confirm ghost-clicks...`);
-        
-        await Promise.all(pages.map(async (p, idx) => {
-            if (clickResults[idx]) {
-                await p.evaluate(() => {
-                    const elements = Array.from(document.querySelectorAll('*'));
-                    for (let el of elements) {
-                        if (el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null) {
-                            const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-                            el.dispatchEvent(clickEvent);
-                            el.click();
-                            if (el.parentElement) {
-                                el.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                                el.parentElement.click();
-                            }
-                        }
-                    }
-                });
-            }
-        }));
-
-        await updateStatus(`[ISOLATED SYSTEM] Clicks fired! Waiting 15 seconds...`);
+        await updateStatus(`[ISOLATED SYSTEM] Clicks fired. Cooling down...`);
         await new Promise(r => setTimeout(r, 15000));
 
-        // --- 7. FETCH BALANCE & FINISH ---
-        await updateStatus(`[ISOLATED SYSTEM] Fetching final state...`);
-        const screenshotBuffer = await pages[0].screenshot({ type: 'png' });
+        // --- 5. FINAL RESULTS & CLEANUP ---
+        const finalTaskSnap = await pages[0].screenshot({ type: 'png' });
+        let currentBalanceText = "Unknown";
+        let earnedDisplay = "Unknown";
 
-        
         try {
             await pages[0].goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
-            await new Promise(r => setTimeout(r, 3000)); 
-            currentBalance = await pages[0].evaluate(() => {
-                const rawText = document.body.textContent || '';
-                const match = rawText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
-                if (match) return match[1];
-                return 'Unknown';
+            currentBalanceText = await pages[0].evaluate(() => {
+                const match = document.body.innerText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
+                return match ? match[1] : 'Unknown';
             });
+            let finalNum = parseFloat(currentBalanceText.replace(/,/g, ''));
+            earnedDisplay = `+${(finalNum - initialBalanceNum).toFixed(2)}`;
         } catch (e) {}
 
-        await updateStatus(`[SUCCESS] TT sequence completed! Shutting down isolated browser...`);
-        await bot.sendPhoto(chatId, screenshotBuffer, { 
-            caption: `[SUCCESS] Snapshot from Isolated Tab after ${targetCount} clicks.\n\n💰 *Current Balance:* \`${currentBalance}\``,
-            parse_mode: 'Markdown'
+        await bot.deleteMessage(chatId, msgId).catch(() => {});
+        await bot.sendPhoto(chatId, finalTaskSnap, { 
+            caption: `Profit: <code>${earnedDisplay}</code>\nBalance: <code>${currentBalanceText}</code>`,
+            parse_mode: 'HTML'
         });
 
     } catch (err) {
         await updateStatus(`[ERROR] TT Sequence failed: ${err.message}`);
-        if (pages.length > 0) {
-            try {
-                const errBuffer = await pages[0].screenshot({ type: 'png' });
-                await bot.sendPhoto(chatId, errBuffer, { caption: '[DIAGNOSTIC] State of TT Master Tab at crash.' });
-            } catch (snapErr) {}
-        }
     } finally {
-        // --- 8. THE KILL SWITCH ---
-        if (ttBrowser) {
-            await updateStatus(`[ISOLATED SYSTEM] Destroying temporary browser instance...`);
-            await ttBrowser.close().catch(() => {});
-        }
+        if (ttBrowser) await ttBrowser.close().catch(() => {});
     }
 });
-           
-
         
+     
 
 
 // Usage: /checknum 2348000000000
