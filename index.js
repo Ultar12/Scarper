@@ -1056,32 +1056,45 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
         const pin = '111111'; // <--- MAKE SURE THIS IS YOUR CORRECT 6-DIGIT PIN
 
-        // --- 1. HUMAN TYPING INJECTION ---
-        await updateStatus('[SYSTEM] Clicking input and typing PIN like a human...');
+        
+                await updateStatus('[SYSTEM] Waiting for PIN modal to fully render...');
+        await new Promise(r => setTimeout(r, 2500)); // Let the slide-up animation finish completely
+
+        const pin = '111111'; // <--- MAKE SURE THIS IS YOUR CORRECT 6-DIGIT PIN
+
+        // --- 1. PHYSICAL COORDINATE TAP & TYPING ---
+        await updateStatus('[SYSTEM] Calculating geometric coordinates to force-focus the box...');
         let inputFound = false;
         const passwordInputs = await page.$$('input');
         
         for (let input of passwordInputs) {
-            // Find the active box (handles both visible boxes and invisible overlay boxes)
             const isValid = await input.evaluate(el => el.type !== 'hidden' && (el.offsetParent !== null || window.getComputedStyle(el).opacity === '0'));
             if (isValid) {
-                await input.click({ clickCount: 3 }); // Focus and clear
-                await page.keyboard.press('Backspace');
-                await new Promise(r => setTimeout(r, 500)); 
-                
-                // Type with a deliberate 200ms delay to trigger the website's auto-advance to the next box
-                await page.keyboard.type(pin, { delay: 200 });
-                inputFound = true;
-                break; 
+                // Get the physical screen coordinates of the box
+                const box = await input.boundingBox();
+                if (box) {
+                    await updateStatus('[SYSTEM] Target locked. Executing raw physical mouse click...');
+                    // Tap the exact center of the element
+                    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+                    await new Promise(r => setTimeout(r, 1000)); // Wait for the blinking cursor to actually appear
+                    
+                    await updateStatus('[SYSTEM] Typing PIN...');
+                    // Press keys one by one with a deliberate delay
+                    for (let i = 0; i < pin.length; i++) {
+                        await page.keyboard.press(pin[i]);
+                        await new Promise(r => setTimeout(r, 250));
+                    }
+                    inputFound = true;
+                    break; 
+                }
             }
         }
 
         if (!inputFound) {
-            await updateStatus('[WARNING] Could not find the PIN box!');
+            await updateStatus('[WARNING] Could not find the PIN box coordinates!');
         }
 
-        // Wait to see if typing the 6th digit auto-submits the form (many 6-box sites do this)
-        await updateStatus('[SYSTEM] Waiting for auto-submit or clicking Confirm...');
+        await updateStatus('[SYSTEM] Waiting to see if site auto-submits...');
         await new Promise(r => setTimeout(r, 3000));
 
         // --- 2. AGGRESSIVE CONFIRM CLICK ---
@@ -1118,18 +1131,24 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                 }
             });
             
-            // CRITICAL: Wait 2.5 seconds for the error modal to completely disappear
+            // Wait for modal to clear
             await new Promise(r => setTimeout(r, 2500)); 
 
-            await updateStatus('[SYSTEM] Retrying: Typing PIN like a human again...');
+            await updateStatus('[SYSTEM] Retrying: Executing second coordinate tap...');
             const retryInputs = await page.$$('input');
             for (let input of retryInputs) {
                 const isValid = await input.evaluate(el => el.type !== 'hidden' && (el.offsetParent !== null || window.getComputedStyle(el).opacity === '0'));
                 if (isValid) {
-                    await input.click();
-                    await new Promise(r => setTimeout(r, 500));
-                    await page.keyboard.type(pin, { delay: 200 });
-                    break;
+                    const box = await input.boundingBox();
+                    if (box) {
+                        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+                        await new Promise(r => setTimeout(r, 1000));
+                        for (let i = 0; i < pin.length; i++) {
+                            await page.keyboard.press(pin[i]);
+                            await new Promise(r => setTimeout(r, 250));
+                        }
+                        break;
+                    }
                 }
             }
 
