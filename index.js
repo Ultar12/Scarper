@@ -371,31 +371,62 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
         });
         initialBalanceNum = parseFloat(initialText.replace(/,/g, '')) || 0;
 
-        // --- 3. TARGET ACQUISITION & CLONE SPAWNING ---
+                // --- 3. TARGET ACQUISITION & CLONE SPAWNING ---
         await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
         await clearOnboardingPopups(page1, null); // Global sweeper
 
-        const targetCount = await page1.evaluate((suffixStr) => {
-            const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim() === 'Send' && el.offsetParent !== null);
-            let count = 0;
-            for (let b of btns) {
-                let txt = b.parentElement?.parentElement?.innerText || '';
-                if (txt.includes(suffixStr)) count++;
+        let targetCount = 0;
+
+        // The Safety Net: Loop twice in case the site lags
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            await updateStatus(`[ISOLATED SYSTEM] Scanning for ${targetSuffix} (Attempt ${attempt}/2)...`);
+            
+            // Wait up to 10 seconds for the 'Send' buttons to actually spawn on the page
+            for (let i = 0; i < 10; i++) {
+                const tasksExist = await page1.evaluate(() => {
+                    return Array.from(document.querySelectorAll('*')).some(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
+                });
+                if (tasksExist) break;
+                await new Promise(r => setTimeout(r, 1000));
             }
-            return count > 4 ? 4 : count;
-        }, targetSuffix);
 
-        if (targetCount === 0) throw new Error(`0 targets found for ${targetSuffix}.`);
+            targetCount = await page1.evaluate((suffixStr) => {
+                const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim() === 'Send' && el.offsetParent !== null);
+                let count = 0;
+                for (let b of btns) {
+                    let txt = b.parentElement?.parentElement?.innerText || '';
+                    if (txt.includes(suffixStr)) count++;
+                }
+                return count > 4 ? 4 : count;
+            }, targetSuffix);
 
-        await updateStatus(`[ISOLATED SYSTEM] Spawning ${targetCount} synchronized tabs...`);
+            if (targetCount > 0) {
+                break; // Found them, break out of the retry loop!
+            } else if (attempt === 1) {
+                await updateStatus(`[ISOLATED SYSTEM] 0 targets found! Wsjobs is lagging. Hard-refreshing...`);
+                await page1.reload({ waitUntil: 'networkidle2' });
+                await new Promise(r => setTimeout(r, 5000)); 
+                await clearOnboardingPopups(page1, null); 
+            }
+        }
+
+        if (targetCount === 0) throw new Error(`0 targets found for ${targetSuffix}. Either the site is dead slow, or the numbers aren't there!`);
+
+        await updateStatus(`[ISOLATED SYSTEM] Found ${targetCount} targets. Spawning ${targetCount - 1} synchronized tabs...`);
+        
         for (let i = 1; i < targetCount; i++) {
             const p = await ttBrowser.newPage();
             pages.push(p);
             await p.setViewport({ width: 412, height: 915 });
             await p.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
         }
-        await Promise.all(pages.slice(1).map(p => clearOnboardingPopups(p, null)));
+        
+        if (pages.length > 1) {
+            await new Promise(r => setTimeout(r, 3000));
+            await Promise.all(pages.slice(1).map(p => clearOnboardingPopups(p, null)));
+        }
+
 
         // --- 4. THE STRIKE (GHOST CLICKS) ---
         await updateStatus(`[ISOLATED SYSTEM] Executing synchronized strikes...`);
