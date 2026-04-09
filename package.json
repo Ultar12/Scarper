@@ -15,7 +15,6 @@
     "puppeteer-screen-recorder": "^3.0.3",
     "qrcode": "^1.5.3",
     "whatsapp-web.js": "^1.23.0",
-    "wwebjs-postgres": "^1.0.0",
-    "yt-dlp-exec": "^1.0.2"
+    "wwebjs-postgres": "^1.0.0"
   }
 }
