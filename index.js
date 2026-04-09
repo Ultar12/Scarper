@@ -308,8 +308,12 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
         await page.goto(targetUrl, { waitUntil: 'networkidle2' });
         
         // Capture the raw image buffer
-        const screenshotBuffer = await page.screenshot({ type: 'png' });
-        
+        // This will scroll the entire page and capture everything from top to bottom
+const screenshot = await page.screenshot({ 
+    path: screenshotPath, 
+    fullPage: true 
+});
+
         await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Captured: ${targetUrl}` });
 
     } catch (err) {
