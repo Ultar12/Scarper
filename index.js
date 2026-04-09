@@ -1054,10 +1054,9 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                 await updateStatus('[SYSTEM] Waiting for PIN modal to fully render...');
         await new Promise(r => setTimeout(r, 2500)); // Let the slide-up animation finish completely
 
-        const pin = '111111'; // <--- MAKE SURE THIS IS YOUR CORRECT 6-DIGIT PIN
-
+    
         
-                await updateStatus('[SYSTEM] Waiting for PIN modal to fully render...');
+         await updateStatus('[SYSTEM] Waiting for PIN modal to fully render...');
         await new Promise(r => setTimeout(r, 2500)); // Let the slide-up animation finish completely
 
         const pin = '111111'; // <--- MAKE SURE THIS IS YOUR CORRECT 6-DIGIT PIN
