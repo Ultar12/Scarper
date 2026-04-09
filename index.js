@@ -8,7 +8,6 @@ const { Pool } = require('pg');
 const path = require('path');
 const puppeteer = require('puppeteer'); 
 const QRCode = require('qrcode');
-const youtubedl = require('yt-dlp-exec');
 const axios = require('axios');
 
 
