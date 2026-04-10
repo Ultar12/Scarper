@@ -16,7 +16,7 @@
     "qrcode": "^1.5.3",
     "sharp": "^0.33.3",
     "whatsapp-web.js": "^1.23.0",
-    "wwebjs-postgres": "^1.3.0"
+    "wwebjs-postgres": "^1.0.0"
   },
   "engines": {
     "node": ">=18.0.0"
