@@ -1637,10 +1637,18 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         if (typeof globalTaskBrowser === 'undefined' || !globalTaskBrowser) {
             await updateStatus('[SYSTEM] Cold Boot: Launching background Chrome engine...');
             globalTaskBrowser = await puppeteer.launch({
-                headless: true,
-                executablePath: getChromePath(),
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-            });
+    headless: true, // Keep true for speed, but you have the RAM for it
+    executablePath: getChromePath(),
+    args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--memory-pressure-thresholds=1', // Tell Chrome it has plenty of room
+        '--js-flags="--max-old-space-size=4096"' // Give each tab up to 4GB of JS heap
+    ]
+});
+
         } else {
             await updateStatus('[SYSTEM] Warm Boot: Engine already running.');
         }
