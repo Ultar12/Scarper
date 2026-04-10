@@ -1750,27 +1750,32 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await updateStatus('[SYSTEM] Locking updated cookies/cache into Database...');
         await saveSessionToDB('wsjobs_task', page1);
 
-        // --- STEP 3: COUNT TARGETS & SPAWN CLONES ---
+        // --- STEP 3: DYNAMIC TARGET ACQUISITION (2-TO-1 RATIO) ---
         await updateStatus(`[SYSTEM] Target acquisition phase for: ${targetSuffix}...`);
+        
         const targetCount = await page1.evaluate((suffixStr) => {
-            const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
+            const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => 
+                el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null
+            );
             let count = 0;
             for (let btn of sendBtns) {
-                let containerText = '';
-                if (btn.parentElement && btn.parentElement.parentElement) {
-                    containerText = btn.parentElement.parentElement.innerText || '';
-                }
+                let containerText = btn.parentElement?.parentElement?.innerText || '';
                 if (containerText.includes(suffixStr)) count++;
             }
+            // Limit to 4 unique numbers to stay within RAM limits (8 tabs + Master)
             return count > 4 ? 4 : count; 
         }, targetSuffix);
 
         if (targetCount === 0) throw new Error(`Found 0 numbers ending with ${targetSuffix}.`);
 
-        await updateStatus(`[SYSTEM] Found ${targetCount} matching numbers. Spawning ${targetCount - 1} clone tabs...`);
+        // MULTIPLIER LOGIC: 1->2, 2->4, 3->6, 4->8
+        // We add +1 only if we need to spawn more tabs than the Master (page1) already represents
+        let totalTabsNeeded = targetCount * 2; 
+        let spawnCount = totalTabsNeeded - 1; // Master is already open
 
-        // Spawn Clones (Because they open in the same browser context, they instantly inherit the saved cache!)
-        for (let i = 1; i < targetCount; i++) {
+        await updateStatus(`[SYSTEM] Found ${targetCount} targets. Spawning ${spawnCount} double-strike tabs...`);
+
+        for (let i = 0; i < spawnCount; i++) {
             const newPage = await browser.newPage();
             pages.push(newPage);
             await newPage.setViewport({ width: 412, height: 915 }); 
@@ -1780,84 +1785,65 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         if (pages.length > 1) {
             await Promise.all(pages.slice(1).map(p => p.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' })));
             await new Promise(r => setTimeout(r, 3000));
+            await Promise.all(pages.slice(1).map(p => clearOnboardingPopups(p, null)));
         }
 
-        // Just a final safety check on clones (should instantly pass because of inherited cache)
-        // Sweep clones silently using the global function (passing null prevents it from spamming Telegram statuses)
-    await Promise.all(pages.slice(1).map(p => clearOnboardingPopups(p, null)));
-
-                        // --- STEP 4: TARGET ACQUISITION (GHOST CLICKS) ---
-        await updateStatus(`[SYSTEM] Tabs are clear. Ghost-clicking "Send" on all targets...`);
+        // --- STEP 4: COORDINATED GHOST CLICKS (DOUBLE-TAP MAPPING) ---
+        await updateStatus(`[SYSTEM] Mapping 2 tabs per number for ${targetCount} targets...`);
         
         const clickResults = await Promise.all(pages.map((p, index) => {
-            return p.evaluate((suffixStr, tabIndex) => {
-                const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
+            // This math (0&1 -> Target 0, 2&3 -> Target 1) works for any count
+            const matchToClick = Math.floor(index / 2);
+
+            return p.evaluate((suffixStr, targetIdx) => {
+                const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => 
+                    el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null
+                );
                 let matchCount = 0;
                 for (let btn of sendBtns) {
-                    let containerText = '';
-                    if (btn.parentElement && btn.parentElement.parentElement) {
-                        containerText = btn.parentElement.parentElement.innerText || '';
-                    }
+                    let containerText = btn.parentElement?.parentElement?.innerText || '';
                     if (containerText.includes(suffixStr)) {
-                        if (matchCount === tabIndex) {
+                        if (matchCount === targetIdx) {
                             btn.scrollIntoView({ block: 'center', behavior: 'instant' });
-                            
-                            // Synthetic Overlay-Penetrating Click
-                            const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-                            btn.dispatchEvent(clickEvent); 
+                            const ce = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+                            btn.dispatchEvent(ce); 
                             btn.click(); 
-                            
-                            if (btn.parentElement) {
-                                btn.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                                btn.parentElement.click();
-                            }
+                            if (btn.parentElement) btn.parentElement.click();
                             return true;
                         }
                         matchCount++;
                     }
                 }
                 return false;
-            }, targetSuffix, index);
+            }, targetSuffix, matchToClick);
         }));
 
-        // --- NEW: 3 SECOND WAIT ---
-        await updateStatus(`[SYSTEM] Waiting 3 seconds for popups to initialize...`);
+        await updateStatus(`[SYSTEM] Initializing popups...`);
         await new Promise(r => setTimeout(r, 3000));
 
-                // --- STEP 5: INITIALIZE STRIKE SYNC ---
-        await updateStatus(`[SYSTEM] Syncing all tabs for final strike...`);
-        // Diagnostic screenshots removed to increase execution speed
+        // --- STEP 5: SYNC COOLDOWN ---
+        await new Promise(r => setTimeout(r, 7000)); 
 
-
-        // --- NEW: 10 SECOND WAIT ---
-        await updateStatus(`[SYSTEM] Screenshots complete. Waiting 10 seconds for all tabs to fully synchronize...`);
-        await new Promise(r => setTimeout(r, 10000));
-
-                       // --- STEP 6: SYNCHRONIZED CONFIRM STRIKE ---
-        await updateStatus(`[SYSTEM] Executing INSTANT synchronized Confirm ghost-clicks...`);
+        // --- STEP 6: SYNCHRONIZED FLASH CONFIRM STRIKE ---
+        await updateStatus(`[SYSTEM] ⚡ FLASH STRIKE: ALL TABS ⚡`);
         
         await Promise.all(pages.map(async (p, idx) => {
             if (clickResults[idx]) {
-                await p.evaluate(() => {
-                    const elements = Array.from(document.querySelectorAll('*'));
-                    for (let el of elements) {
-                        if (el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null) {
-                            const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-                            el.dispatchEvent(clickEvent);
-                            el.click();
-                            if (el.parentElement) {
-                                el.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                                el.parentElement.click();
-                            }
-                        }
+                return p.evaluate(() => {
+                    const confirmBtn = Array.from(document.querySelectorAll('*')).find(el => 
+                        el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null
+                    );
+                    if (confirmBtn) {
+                        const ce = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+                        confirmBtn.dispatchEvent(ce);
+                        confirmBtn.click();
+                        if (confirmBtn.parentElement) confirmBtn.parentElement.click();
                     }
                 });
             }
         }));
 
-        // 15-second cooldown for server processing
         await new Promise(r => setTimeout(r, 15000));
-
 
 
                                         // --- STEP 7: FETCH PROFIT, BALANCE & FINAL OUTPUT ---
