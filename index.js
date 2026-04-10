@@ -1191,12 +1191,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
     
         
-         await updateStatus('[SYSTEM] Waiting for PIN modal to fully render...');
-        await new Promise(r => setTimeout(r, 2500)); // Let the slide-up animation finish completely
-
-        const pin = '111111'; // <--- MAKE SURE THIS IS YOUR CORRECT 6-DIGIT PIN
-
-        // --- 1. PHYSICAL COORDINATE TAP & TYPING ---
+                 // --- 1. PHYSICAL COORDINATE TAP & TYPING (UPDATED) ---
         await updateStatus('[SYSTEM] Calculating geometric coordinates to force-focus the box...');
         let inputFound = false;
         const passwordInputs = await page.$$('input');
@@ -1204,18 +1199,24 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         for (let input of passwordInputs) {
             const isValid = await input.evaluate(el => el.type !== 'hidden' && (el.offsetParent !== null || window.getComputedStyle(el).opacity === '0'));
             if (isValid) {
-                // Get the physical screen coordinates of the box
                 const box = await input.boundingBox();
                 if (box) {
                     await updateStatus('[SYSTEM] Target locked. Executing raw physical mouse click...');
-                    // Tap the exact center of the element
                     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-                    await new Promise(r => setTimeout(r, 1000)); // Wait for the blinking cursor to actually appear
+                    await new Promise(r => setTimeout(r, 1000)); 
                     
-                    await updateStatus('[SYSTEM] Typing PIN...');
-                    // Press keys one by one with a deliberate delay
+                    // --- NEW: CLEAR BOX BEFORE TYPING ---
+                    await page.keyboard.down('Control');
+                    await page.keyboard.press('a');
+                    await page.keyboard.up('Control');
+                    await page.keyboard.press('Backspace');
+                    await new Promise(r => setTimeout(r, 500));
+
+                    await updateStatus('[SYSTEM] Typing PIN with sync protection...');
+                    // Press keys one by one with deliberate 250ms delay + 150ms type delay
                     for (let i = 0; i < pin.length; i++) {
-                        await page.keyboard.press(pin[i]);
+                        // Use .type for individual character fidelity
+                        await page.keyboard.type(pin[i], { delay: 150 });
                         await new Promise(r => setTimeout(r, 250));
                     }
                     inputFound = true;
@@ -1228,17 +1229,20 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             await updateStatus('[WARNING] Could not find the PIN box coordinates!');
         }
 
-        await updateStatus('[SYSTEM] Waiting to see if site auto-submits...');
+        await updateStatus('[SYSTEM] Waiting for UI to register input...');
         await new Promise(r => setTimeout(r, 3000));
 
-        // --- 2. AGGRESSIVE CONFIRM CLICK ---
+        // --- 2. AGGRESSIVE CONFIRM CLICK (UPDATED) ---
         await page.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('*'));
             for (let el of elements) {
                 const txt = (el.innerText || el.textContent || '').trim();
                 if (txt === 'Confirm' && el.offsetParent !== null) {
-                    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+                    el.dispatchEvent(clickEvent);
                     el.click();
+                    // DOUBLE STRIKE: Hit it again 500ms later to ensure submission
+                    setTimeout(() => el.click(), 500);
                     if (el.parentElement) el.parentElement.click();
                     return; 
                 }
@@ -1248,7 +1252,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await updateStatus('[SYSTEM] Waiting for server verification...');
         await new Promise(r => setTimeout(r, 4000)); 
 
-        // --- 3. ERROR DETECTION & RETRY LOGIC ---
+        // --- 3. ERROR DETECTION & RETRY LOGIC (UPDATED) ---
         const errorModalDetected = await page.evaluate(() => {
             const body = document.body.innerText || '';
             return body.includes('password incorrect') || body.includes('Re-enter');
@@ -1265,7 +1269,6 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                 }
             });
             
-            // Wait for modal to clear
             await new Promise(r => setTimeout(r, 2500)); 
 
             await updateStatus('[SYSTEM] Retrying: Executing second coordinate tap...');
@@ -1277,8 +1280,15 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                     if (box) {
                         await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
                         await new Promise(r => setTimeout(r, 1000));
+
+                        // Clear again for the retry
+                        await page.keyboard.down('Control');
+                        await page.keyboard.press('a');
+                        await page.keyboard.up('Control');
+                        await page.keyboard.press('Backspace');
+
                         for (let i = 0; i < pin.length; i++) {
-                            await page.keyboard.press(pin[i]);
+                            await page.keyboard.type(pin[i], { delay: 150 });
                             await new Promise(r => setTimeout(r, 250));
                         }
                         break;
@@ -1293,7 +1303,8 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                 for (let el of elements) {
                     const txt = (el.innerText || el.textContent || '').trim();
                     if (txt === 'Confirm' && el.offsetParent !== null) {
-                        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        const ce = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+                        el.dispatchEvent(ce);
                         el.click();
                         if (el.parentElement) el.parentElement.click();
                         return; 
@@ -1304,6 +1315,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         } else {
             await new Promise(r => setTimeout(r, 2000)); 
         }
+
 
 
 
