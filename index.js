@@ -6,6 +6,7 @@ const { Client, RemoteAuth } = require('whatsapp-web.js');
 const { PostgresStore } = require('wwebjs-postgres');
 const { Pool } = require('pg');
 const path = require('path');
+const sharp = require('sharp');
 const puppeteer = require('puppeteer'); 
 const QRCode = require('qrcode');
 const axios = require('axios');
@@ -1605,6 +1606,53 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
     bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
     bot.sendMessage(chatId, `Wsjobs: ${wsjobsBal}\nM4U: ${m4uBal}`);
 });
+
+
+bot.onText(/\/upscale/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    if (!msg.reply_to_message || !msg.reply_to_message.photo) {
+        return bot.sendMessage(chatId, '[ERROR] Reply to an image with /upscale');
+    }
+
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] 32GB RAM Engine: Initializing 4K Upscale...');
+
+    try {
+        const photo = msg.reply_to_message.photo[msg.reply_to_message.photo.length - 1];
+        const fileLink = await bot.getFileLink(photo.file_id);
+
+        // Fetch image into buffer
+        const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
+        const inputBuffer = Buffer.from(response.data, 'binary');
+
+        await bot.editMessageText('[SYSTEM] Processing Lanczos3 Super-Sampling (4K)...', {
+            chat_id: chatId,
+            message_id: statusMsg.message_id
+        });
+
+        // Use Sharp to upscale to 4K (3840px width)
+        const outputBuffer = await sharp(inputBuffer)
+            .resize({ 
+                width: 3840, 
+                kernel: sharp.kernel.lanczos3 // Highest quality downscaling/upscaling algorithm
+            })
+            .sharpen() // Add HD crispness
+            .toFormat('png')
+            .toBuffer();
+
+        await bot.sendDocument(chatId, outputBuffer, {
+            filename: 'upscaled_4k.png',
+            caption: '*Upscale Complete (Local 32GB Engine)*\nResolution: 3840px (4K HD)'
+        });
+
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+
+    } catch (err) {
+        bot.sendMessage(chatId, `[ERROR] Local upscale failed: ${err.message}`);
+    }
+});
+
 
 
 // Usage: /task 127
