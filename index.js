@@ -204,76 +204,85 @@ async function performM4USignIn(chatId) {
         await page.setViewport({ width: 412, height: 915 });
         await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-        // 1. HARD LOGIN SEQUENCE
+        // 1. PHYSICAL LOGIN SEQUENCE
         await page.goto('https://taskm4u.com/#/login', { waitUntil: 'networkidle2' });
         
         const inputs = await page.$$('input');
         if (inputs.length >= 2) {
-            // Clear and type credentials
             await inputs[0].click({ clickCount: 3 });
             await page.keyboard.press('Backspace');
-            await inputs[0].type('Staring', { delay: 100 });
+            await inputs[0].type('Staring', { delay: 50 });
             
             await inputs[1].click({ clickCount: 3 });
             await page.keyboard.press('Backspace');
-            await inputs[1].type('Emmama', { delay: 100 });
+            await inputs[1].type('Emmama', { delay: 50 });
 
             await page.evaluate(() => {
-                const loginBtn = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.trim() === 'Login');
-                if (loginBtn) loginBtn.click();
+                const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim() === 'Login' && el.offsetParent !== null);
+                if (btns.length > 0) btns[0].click();
             });
-
-            // Wait for successful navigation to Dashboard
-            await page.waitForFunction(() => window.location.href.includes('home') || window.location.href.includes('mine'), { timeout: 15000 }).catch(() => {});
+            await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
         }
 
-        // 2. VERIFY HOME PAGE LOAD
-        await new Promise(r => setTimeout(r, 4000));
-        const onHome = await page.evaluate(() => window.location.href.includes('home'));
-
-        if (!onHome) {
-            const errSnap = await page.screenshot({ type: 'png' });
-            return await bot.sendPhoto(chatId, errSnap, { caption: "[ERROR] Bot stuck at login or dashboard failed to load." });
-        }
-
-        // 3. CLEAR POPUPS AND OPEN SIGN-IN
-        await page.evaluate(() => {
-            Array.from(document.querySelectorAll('*')).forEach(el => {
-                const txt = (el.innerText || '').trim();
-                if ((txt === 'Close' || txt === 'Confirm') && el.offsetParent !== null) el.click();
-            });
-        });
-        await new Promise(r => setTimeout(r, 1500));
-
+        // 2. CLEAR POPUPS & CLICK SIGN IN (USING WITHDRAW GHOST-CLICK LOGIC)
+        await new Promise(r => setTimeout(r, 5000));
+        
         const bannerClicked = await page.evaluate(() => {
-            const banner = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.toLowerCase().includes('sign in') && el.offsetParent !== null);
-            if (banner) { banner.click(); return true; }
+            const elements = Array.from(document.querySelectorAll('*'));
+            
+            // First, aggressively close any overlays
+            for (let el of elements) {
+                const txt = (el.innerText || '').trim();
+                if ((txt === 'Close' || txt === 'Confirm' || txt === 'Done') && el.offsetParent !== null) {
+                    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    el.click();
+                }
+            }
+
+            // Next, find and click the 'Sign in' banner using target amount logic
+            for (let el of elements) {
+                const rawText = (el.innerText || el.textContent || '').trim().toLowerCase();
+                if (rawText === 'sign in' && el.offsetParent !== null) {
+                    el.scrollIntoView({ block: 'center' });
+                    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    el.click();
+                    if (el.parentElement) el.parentElement.click();
+                    return true;
+                }
+            }
             return false;
         });
 
         if (!bannerClicked) {
             const errSnap = await page.screenshot({ type: 'png' });
-            return await bot.sendPhoto(chatId, errSnap, { caption: "[ERROR] Sign-in banner not found on Home page." });
+            return await bot.sendPhoto(chatId, errSnap, { caption: "[ERROR] M4U Sign-in banner not located on Home page." });
         }
 
-        await new Promise(r => setTimeout(r, 3000));
+        await new Promise(r => setTimeout(r, 4000));
 
-        // 4. CHECK-IN EXECUTION
+        // 3. CHECK-IN EXECUTION (USING TASK SYNC LOGIC)
         const checkResult = await page.evaluate(() => {
-            const btn = Array.from(document.querySelectorAll('*')).find(el => 
-                (el.innerText?.includes('Check in Now') || el.innerText?.includes('Checked In')) && el.offsetParent !== null
-            );
-            if (!btn) return "BUTTON_NOT_FOUND";
-            if (btn.innerText.trim() === 'Checked In') return "ALREADY_DONE";
-            btn.click();
-            return "CLICKED";
+            const elements = Array.from(document.querySelectorAll('*'));
+            for (let el of elements) {
+                const txt = (el.innerText || '').trim();
+                if ((txt === 'Check in Now' || txt === 'Checked In') && el.offsetParent !== null) {
+                    if (txt === 'Checked In') return "ALREADY_DONE";
+                    
+                    // Synthetic Strike
+                    el.scrollIntoView({ block: 'center' });
+                    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    el.click();
+                    return "CLICKED";
+                }
+            }
+            return "BUTTON_NOT_FOUND";
         });
 
-        // 5. TOAST DETECTION
-        await new Promise(r => setTimeout(r, 2000));
-        const toastMsg = await page.evaluate(() => document.body.innerText);
+        // 4. TOAST/ERROR DETECTION
+        await new Promise(r => setTimeout(r, 3000));
+        const toastMessage = await page.evaluate(() => document.body.innerText);
 
-        if (toastMsg.includes('completing the task')) {
+        if (toastMessage.includes('completing the task')) {
             const errSnap = await page.screenshot({ type: 'png' });
             await bot.sendPhoto(chatId, errSnap, { caption: "[ALERT] M4U: Sign in only after completing the task!" });
         } else if (checkResult === "BUTTON_NOT_FOUND") {
@@ -284,16 +293,13 @@ async function performM4USignIn(chatId) {
     } catch (err) {
         if (page) {
             const crashSnap = await page.screenshot({ type: 'png' }).catch(() => null);
-            if (crashSnap) {
-                await bot.sendPhoto(chatId, crashSnap, { caption: `[CRITICAL] M4U Sequence crashed: ${err.message}` });
-            } else {
-                bot.sendMessage(chatId, `[CRITICAL] M4U Sequence failed: ${err.message}`);
-            }
+            await bot.sendPhoto(chatId, crashSnap || Buffer.alloc(0), { caption: `[CRITICAL] M4U Sequence crashed: ${err.message}` });
         }
     } finally {
         if (page) await page.close().catch(() => {});
     }
 }
+
 
 
 
