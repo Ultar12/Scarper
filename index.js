@@ -9,6 +9,7 @@ const path = require('path');
 const sharp = require('sharp');
 const puppeteer = require('puppeteer'); 
 const QRCode = require('qrcode');
+const { remote } = require('webdriverio');
 const axios = require('axios');
 
 
@@ -52,6 +53,23 @@ const pool = new Pool({
 });
 
 const store = new PostgresStore({ pool: pool });
+
+const capabilities = {
+  platformName: 'Android',
+  'appium:automationName': 'UiAutomator2',
+  'appium:deviceName': 'Android Emulator',
+  'appium:app': 'https://path-to-your-whatsapp.apk', // Link to the APK file
+  'appium:noReset': true,
+  'appium:newCommandTimeout': 3600
+};
+
+const options = {
+  path: '/wd/hub',
+  port: 4723,
+  capabilities
+};
+
+
 
 // --- BROWSER SESSION DATABASE MANAGER ---
 pool.query(`CREATE TABLE IF NOT EXISTS browser_sessions (platform VARCHAR(50) PRIMARY KEY, cookies JSONB);`)
@@ -109,6 +127,14 @@ let initialBalanceNum = 0;
 
 // --- WT BURNER SESSION TRACKER ---
 const wtSessions = {}; 
+
+
+// This makes the 'public' folder accessible via your Heroku URL
+app.use('/public', express.static(path.join(__dirname, 'public')));
+
+// Ensure the directory exists
+if (!fs.existsSync('./public')) fs.mkdirSync('./public');
+
 
 
 
@@ -343,6 +369,38 @@ bot.onText(/\/m4usign/i, (msg) => {
     bot.sendMessage(ADMIN_ID, "[SYSTEM] Manually triggering M4U Sign-in sequence...");
     performM4USignIn(ADMIN_ID);
 });
+
+
+// Usage: /hostapk
+bot.onText(/\/hostapk/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    const sourcePath = path.join(__dirname, 'whatsapp.apk');
+    const destPath = path.join(__dirname, 'public', 'whatsapp.apk');
+
+    if (!fs.existsSync(sourcePath)) {
+        return bot.sendMessage(chatId, "[ERROR] whatsapp.apk not found in main directory. Upload it to GitHub first.");
+    }
+
+    try {
+        // Copy the file to the public folder
+        fs.copyFileSync(sourcePath, destPath);
+
+        // Get your Heroku App URL (Assumes you set APP_URL in config vars)
+        // If not set, it uses your local IP/port
+        const baseUrl = process.env.APP_URL || `https://${process.env.HEROKU_APP_NAME}.herokuapp.com`;
+        const downloadUrl = `${baseUrl}/public/whatsapp.apk`;
+
+        bot.sendMessage(chatId, `*APK Hosting Successful*\n\nYour direct download URL is:\n\`${downloadUrl}\`\n\nYou can now use this link in your Appium capabilities.`, {
+            parse_mode: 'Markdown'
+        });
+
+    } catch (err) {
+        bot.sendMessage(chatId, `[ERROR] Failed to host APK: ${err.message}`);
+    }
+});
+
 
 
 
