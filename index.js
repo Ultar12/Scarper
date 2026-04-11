@@ -191,11 +191,9 @@ async function clearOnboardingPopups(page, updateStatus) {
 
 
 async function performM4USignIn(chatId) {
-    let browser = null;
     let page = null;
 
     try {
-        // Reuse global browser or launch fresh
         if (typeof globalTaskBrowser === 'undefined' || !globalTaskBrowser || !globalTaskBrowser.isConnected()) {
             globalTaskBrowser = await puppeteer.launch({
                 headless: true,
@@ -203,12 +201,11 @@ async function performM4USignIn(chatId) {
                 args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
             });
         }
-        browser = globalTaskBrowser;
-        page = await browser.newPage();
+        page = await globalTaskBrowser.newPage();
         await page.setViewport({ width: 412, height: 915 });
         await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-        // 1. Login Logic
+        // 1. Login
         await page.goto('https://taskm4u.com/#/login', { waitUntil: 'networkidle2' });
         const inputs = await page.$$('input');
         if (inputs.length >= 2) {
@@ -221,51 +218,59 @@ async function performM4USignIn(chatId) {
             await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
         }
 
-        // 2. Clear Announcement & Click 'Sign in' Banner
+        // 2. Clear Popups & Click Sign in
         await new Promise(r => setTimeout(r, 4000));
         await page.evaluate(() => {
-            // Close any initial popups
             Array.from(document.querySelectorAll('*')).forEach(el => {
                 if (el.innerText?.trim() === 'Close' && el.offsetParent !== null) el.click();
             });
-            // Click the Orange/Yellow 'Sign in' banner
-            const signInBanner = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.toLowerCase().includes('sign in'));
-            if (signInBanner) signInBanner.click();
+            const banner = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.toLowerCase().includes('sign in'));
+            if (banner) banner.click();
         });
 
         await new Promise(r => setTimeout(r, 3000));
 
-        // 3. Handle the Check-in Button
+        // 3. Check-in Logic
         const result = await page.evaluate(() => {
             const btn = Array.from(document.querySelectorAll('*')).find(el => 
                 el.innerText?.includes('Check in Now') || el.innerText?.includes('Checked In')
             );
-
             if (!btn) return "BUTTON_NOT_FOUND";
-            
-            const text = btn.innerText.trim();
-            if (text === 'Checked In') return "ALREADY_DONE";
-
-            // Attempt to click 'Check in Now'
+            if (btn.innerText.trim() === 'Checked In') return "ALREADY_DONE";
             btn.click();
             return "CLICKED";
         });
 
-        // 4. Verification & Toast Detection
+        // 4. Toast Detection & Error Reporting
         await new Promise(r => setTimeout(r, 2000));
-        const toastMessage = await page.evaluate(() => {
-            const toast = Array.from(document.querySelectorAll('.van-toast, .toast, [role="alert"]')).map(el => el.innerText).join(' ');
-            return toast.includes('completing the task') ? "TASK_REQUIRED" : "OK";
+        const status = await page.evaluate(() => {
+            const body = document.body.innerText;
+            if (body.includes('completing the task')) return "TASK_REQUIRED";
+            return "OK";
         });
 
-        if (toastMessage === "TASK_REQUIRED") {
-            bot.sendMessage(chatId, "*M4U Alert:* Cannot sign in. You must complete your tasks first!");
+        if (status === "TASK_REQUIRED") {
+            const errBuffer = await page.screenshot({ type: 'png' });
+            await bot.sendPhoto(chatId, errBuffer, { 
+                caption: "*M4U Alert:* Cannot sign in. You must complete your tasks first!",
+                parse_mode: 'Markdown'
+            });
         } else if (result === "BUTTON_NOT_FOUND") {
-            bot.sendMessage(chatId, "[ERROR] M4U Sign-in button could not be located.");
+            const errBuffer = await page.screenshot({ type: 'png' });
+            await bot.sendPhoto(chatId, errBuffer, { 
+                caption: "*[ERROR]* M4U Sign-in button could not be located." 
+            });
         }
 
     } catch (err) {
-        console.error("M4U Auto-Sign-In Error:", err);
+        if (page) {
+            const crashSnap = await page.screenshot({ type: 'png' }).catch(() => null);
+            if (crashSnap) {
+                await bot.sendPhoto(chatId, crashSnap, { caption: `[CRITICAL ERROR] M4U Sequence failed: ${err.message}` });
+            } else {
+                bot.sendMessage(chatId, `[CRITICAL ERROR] M4U Sequence failed: ${err.message}`);
+            }
+        }
     } finally {
         if (page) await page.close().catch(() => {});
     }
