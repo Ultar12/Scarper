@@ -129,18 +129,22 @@ let initialBalanceNum = 0;
 const wtSessions = {}; 
 
 
-// This makes the 'public' folder accessible via your Heroku URL
-app.use('/public', express.static(path.join(__dirname, 'public')));
-
-// Ensure the directory exists
-if (!fs.existsSync('./public')) fs.mkdirSync('./public');
-
+const appiumSessions = {};
 
 
 
 // --- 2. HEROKU WEB SERVER SETUP ---
-const app = express();
+const app = express(); // 1. Create the app first!
 const PORT = process.env.PORT || 3000;
+
+// 2. NOW you can use app.use
+app.use('/public', express.static(path.join(__dirname, 'public')));
+
+// Ensure the directory exists so it doesn't crash later
+if (!fs.existsSync('./public')) {
+    fs.mkdirSync('./public');
+}
+
 app.get('/', (req, res) => res.send('WhatsApp Bot running with Postgres Auth.'));
 app.listen(PORT, () => console.log(`Web server listening on port ${PORT}`));
 
@@ -2516,6 +2520,83 @@ bot.on('message', async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
     if (!msg.text || msg.text.startsWith('/')) return;
+
+
+        // --- STEP 1: TRIGGER LOGIN ---
+    if (text === '/login') {
+        userState[chatId] = 'APPIUM_WAITING_COUNTRY';
+        return bot.sendMessage(chatId, "Please enter the Country Code (e.g., 234):");
+    }
+
+    // --- STEP 2A: HANDLE COUNTRY CODE ---
+    if (userState[chatId] === 'APPIUM_WAITING_COUNTRY') {
+        const country = text.replace(/[^0-9]/g, '');
+        if (country.length === 0 || country.length > 3) {
+            return bot.sendMessage(chatId, "[ERROR] Invalid country code. Please enter 1-3 digits:");
+        }
+        
+        // Save the country code in the user's session temporarily
+        userState[chatId + '_COUNTRY'] = country;
+        userState[chatId] = 'APPIUM_WAITING_LOCAL_NUMBER';
+        
+        return bot.sendMessage(chatId, `Country +${country} locked. Now send the rest of the Phone Number (without the leading 0):`);
+    }
+
+    // --- STEP 2B: HANDLE PHONE NUMBER & START ENGINE ---
+    if (userState[chatId] === 'APPIUM_WAITING_LOCAL_NUMBER') {
+        const localNumber = text.replace(/[^0-9]/g, '');
+        const countryCode = userState[chatId + '_COUNTRY'];
+        
+        userState[chatId] = 'APPIUM_STARTING_ENGINE';
+        await bot.sendMessage(chatId, `[SYSTEM] Booting Engine for +${countryCode} ${localNumber}...`);
+        
+        try {
+            const driver = await remote(wdOpts);
+            appiumSessions[chatId] = { driver };
+
+            // 1. Agree and Continue
+            const agreeBtn = await driver.$('//*[@text="AGREE AND CONTINUE"]');
+            await agreeBtn.waitForDisplayed({ timeout: 45000 });
+            await agreeBtn.click();
+
+            // 2. Identify the two EditText boxes in WhatsApp
+            const inputs = await driver.$$('android.widget.EditText');
+            
+            if (inputs.length >= 2) {
+                // Focus and fill Country Code
+                await inputs[0].click();
+                await inputs[0].setValue(countryCode);
+                
+                // Focus and fill Local Number
+                await inputs[1].click();
+                await inputs[1].setValue(localNumber);
+            } else {
+                // Failsafe: if only one box is found, type the whole thing
+                await inputs[0].setValue(countryCode + localNumber);
+            }
+
+            // 3. Proceed
+            const next = await driver.$('//*[@text="NEXT"]');
+            await next.click();
+
+            // 4. Handle confirmation popup
+            await new Promise(r => setTimeout(r, 2000));
+            const okBtn = await driver.$('//*[@text="OK"]');
+            if (await okBtn.isDisplayed()) await okBtn.click();
+
+            userState[chatId] = 'APPIUM_WAITING_SMS';
+            // Clean up the temp country storage
+            delete userState[chatId + '_COUNTRY'];
+            
+            return bot.sendMessage(chatId, "[SYSTEM] SMS triggered. Enter the 6-digit code:");
+
+        } catch (err) {
+            userState[chatId] = null;
+            delete userState[chatId + '_COUNTRY'];
+            return bot.sendMessage(chatId, `[ERROR] Appium failed: ${err.message}`);
+        }
+    }
+
 
     // --- 1. WHATSAPP CONNECTION FLOW ---
     if (userState[chatId] === 'WAITING_FOR_NUMBER') {
