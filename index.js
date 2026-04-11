@@ -227,11 +227,13 @@ async function performM4USignIn(chatId) {
             }
         }
 
-        // 2. CLEAR POPUPS & CLICK SIGN IN (GHOST-CLICK LOGIC)
+                // 2. CLEAR POPUPS & CLICK 'SIGN IN' LINE (UPDATED)
+        await new Promise(r => setTimeout(r, 5000));
+        
         const bannerClicked = await page.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('*'));
             
-            // Close initial overlays
+            // First, aggressively close any overlays
             for (let el of elements) {
                 const txt = (el.innerText || '').trim();
                 if ((txt === 'Close' || txt === 'Confirm' || txt === 'Done') && el.offsetParent !== null) {
@@ -240,14 +242,23 @@ async function performM4USignIn(chatId) {
                 }
             }
 
-            // Find and click the 'Sign in' banner
+            // Target the 'Sign in' text line specifically
             for (let el of elements) {
                 const rawText = (el.innerText || el.textContent || '').trim().toLowerCase();
+                // We target the specific 'sign in' text to ensure the sub-page loads
                 if (rawText === 'sign in' && el.offsetParent !== null) {
                     el.scrollIntoView({ block: 'center' });
-                    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    
+                    // Direct synthetic strike on the text element itself
+                    const ce = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+                    el.dispatchEvent(ce);
                     el.click();
-                    if (el.parentElement) el.parentElement.click();
+                    
+                    // If it's a nested span/div, click the parent too to be safe
+                    if (el.parentElement) {
+                        el.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        el.parentElement.click();
+                    }
                     return true;
                 }
             }
@@ -256,9 +267,10 @@ async function performM4USignIn(chatId) {
 
         if (!bannerClicked) {
             const errSnap = await page.screenshot({ type: 'png' });
-            return await bot.sendPhoto(chatId, errSnap, { caption: "[ERROR] M4U Sign-in banner not located on Home page." });
+            return await bot.sendPhoto(chatId, errSnap, { caption: "[ERROR] Sign in line not detected on dashboard." });
         }
 
+        // Wait for the Check-in Calendar page to fully slide in
         await new Promise(r => setTimeout(r, 4000));
 
         // 3. CHECK-IN EXECUTION
