@@ -2864,21 +2864,29 @@ bot.on('message', async (msg) => {
                         // Verify state didn't change while we were sleeping
                         if (!m4uSession || m4uSession.state !== 'WAITING_FOR_LINK') return;
 
-                        if (popupClosed) {
-                            m4uSession.linkedCount++; // Increment the counter!
-                            bot.sendMessage(chatId, `[VERIFIED] Number successfully linked!\n\nTotal numbers processed: ${m4uSession.linkedCount}\n\nRe-opening popup for the next number...`);
+                                                if (popupClosed) {
+                            m4uSession.linkedCount++; 
+                            bot.sendMessage(chatId, `[VERIFIED] Number successfully linked!\n\nTotal: ${m4uSession.linkedCount} | Refreshing...`);
                             
-                            // Re-open popup for the next one
-                            await m4uPage.evaluate(() => {
-                                Array.from(document.querySelectorAll('*')).forEach(el => {
-                                    if (el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null) el.click();
-                                });
+                            // 1. FAST RELOAD: Only wait for the initial DOM load
+                            await m4uPage.reload({ waitUntil: 'domcontentloaded' });
+                            
+                            // 2. IMMEDIATE ADD STRIKE: Force click the Add button
+                            await m4uPage.evaluate(async () => {
+                                // Wait briefly for the JS to hydrate the button
+                                await new Promise(r => setTimeout(r, 1000));
+                                const addBtn = Array.from(document.querySelectorAll('*')).find(el => 
+                                    el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null
+                                );
+                                if (addBtn) addBtn.click();
                             });
-                            await new Promise(r => setTimeout(r, 2000));
+                            
+                            await new Promise(r => setTimeout(r, 1000));
                             
                             m4uSession.state = 'WAITING_NUMBER';
-                            bot.sendMessage(chatId, `[SYSTEM] Ready! Send the next number.`);
-                        } else {
+                            bot.sendMessage(chatId, `[SYSTEM] Ready for next number.`);
+                        }
+                           else {
                             // 30 mins timeout reached without linking
                             bot.sendMessage(chatId, `[TIMEOUT] The popup didn't close within 30 minutes. Resetting the popup for a new number...`);
                             
