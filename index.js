@@ -190,10 +190,94 @@ async function clearOnboardingPopups(page, updateStatus) {
 
 
 
+async function performM4USignIn(chatId) {
+    let browser = null;
+    let page = null;
+
+    try {
+        // Reuse global browser or launch fresh
+        if (typeof globalTaskBrowser === 'undefined' || !globalTaskBrowser || !globalTaskBrowser.isConnected()) {
+            globalTaskBrowser = await puppeteer.launch({
+                headless: true,
+                executablePath: getChromePath(),
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+            });
+        }
+        browser = globalTaskBrowser;
+        page = await browser.newPage();
+        await page.setViewport({ width: 412, height: 915 });
+        await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+
+        // 1. Login Logic
+        await page.goto('https://taskm4u.com/#/login', { waitUntil: 'networkidle2' });
+        const inputs = await page.$$('input');
+        if (inputs.length >= 2) {
+            await inputs[0].type('Staring', { delay: 50 });
+            await inputs[1].type('Emmama', { delay: 50 });
+            await page.evaluate(() => {
+                const btn = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.trim() === 'Login');
+                if (btn) btn.click();
+            });
+            await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+        }
+
+        // 2. Clear Announcement & Click 'Sign in' Banner
+        await new Promise(r => setTimeout(r, 4000));
+        await page.evaluate(() => {
+            // Close any initial popups
+            Array.from(document.querySelectorAll('*')).forEach(el => {
+                if (el.innerText?.trim() === 'Close' && el.offsetParent !== null) el.click();
+            });
+            // Click the Orange/Yellow 'Sign in' banner
+            const signInBanner = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.toLowerCase().includes('sign in'));
+            if (signInBanner) signInBanner.click();
+        });
+
+        await new Promise(r => setTimeout(r, 3000));
+
+        // 3. Handle the Check-in Button
+        const result = await page.evaluate(() => {
+            const btn = Array.from(document.querySelectorAll('*')).find(el => 
+                el.innerText?.includes('Check in Now') || el.innerText?.includes('Checked In')
+            );
+
+            if (!btn) return "BUTTON_NOT_FOUND";
+            
+            const text = btn.innerText.trim();
+            if (text === 'Checked In') return "ALREADY_DONE";
+
+            // Attempt to click 'Check in Now'
+            btn.click();
+            return "CLICKED";
+        });
+
+        // 4. Verification & Toast Detection
+        await new Promise(r => setTimeout(r, 2000));
+        const toastMessage = await page.evaluate(() => {
+            const toast = Array.from(document.querySelectorAll('.van-toast, .toast, [role="alert"]')).map(el => el.innerText).join(' ');
+            return toast.includes('completing the task') ? "TASK_REQUIRED" : "OK";
+        });
+
+        if (toastMessage === "TASK_REQUIRED") {
+            bot.sendMessage(chatId, "*M4U Alert:* Cannot sign in. You must complete your tasks first!");
+        } else if (result === "BUTTON_NOT_FOUND") {
+            bot.sendMessage(chatId, "[ERROR] M4U Sign-in button could not be located.");
+        }
+
+    } catch (err) {
+        console.error("M4U Auto-Sign-In Error:", err);
+    } finally {
+        if (page) await page.close().catch(() => {});
+    }
+}
+
+
+
+
 // --- 4. TELEGRAM COMMAND LISTENERS ---
 
 // --- INTERACTIVE CONTROL PANEL ---
-bot// --- INTERACTIVE CONTROL PANEL (REPLACES BOTTOM KEYBOARD) ---
+
 bot.onText(/\/start/i, (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -210,6 +294,14 @@ bot.onText(/\/start/i, (msg) => {
         }
     });
 });
+
+
+bot.onText(/\/m4usign/i, (msg) => {
+    if (msg.chat.id.toString() !== ADMIN_ID) return;
+    bot.sendMessage(ADMIN_ID, "[SYSTEM] Manually triggering M4U Sign-in sequence...");
+    performM4USignIn(ADMIN_ID);
+});
+
 
 
 // --- HANDLE "WITHDRAW" BUTTON TAP ---
@@ -3000,6 +3092,21 @@ async function initializeWhatsApp(chatId, targetPhoneNumber) {
         bot.sendMessage(chatId, `[CRITICAL ERROR] Failed to boot Puppeteer: ${err.message}`);
     }
 }
+
+
+setInterval(() => {
+    const now = new Date();
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+    const seconds = now.getSeconds();
+
+    // Trigger at 4:00 AM (4) and 4:00 PM (16)
+    if ((hours === 4 || hours === 16) && minutes === 0 && seconds === 0) {
+        console.log(`[SCHEDULE] Triggering M4U Auto-Sign-In for ${hours}:00...`);
+        performM4USignIn(ADMIN_ID);
+    }
+}, 1000); 
+
 
 
 console.log('System booting. Waiting for Telegram commands...');
