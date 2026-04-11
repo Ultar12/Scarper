@@ -375,35 +375,52 @@ bot.onText(/\/m4usign/i, (msg) => {
 });
 
 
-// Usage: /hostapk
-bot.onText(/\/hostapk/i, async (msg) => {
+// Usage: /appurl [send apk file after]
+bot.onText(/\/appurl/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    const sourcePath = path.join(__dirname, 'whatsapp.apk');
-    const destPath = path.join(__dirname, 'public', 'whatsapp.apk');
+    userState[chatId] = 'WAITING_FOR_APK';
+    bot.sendMessage(chatId, '[SYSTEM] Uploading mode active. Please send the whatsapp.apk file as a Document.');
+});
 
-    if (!fs.existsSync(sourcePath)) {
-        return bot.sendMessage(chatId, "[ERROR] whatsapp.apk not found in main directory. Upload it to GitHub first.");
+// Listener for the actual file
+bot.on('document', async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID || userState[chatId] !== 'WAITING_FOR_APK') return;
+
+    if (!msg.document.file_name.endsWith('.apk')) {
+        return bot.sendMessage(chatId, '[ERROR] That is not an APK file. Please send the correct file.');
     }
 
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] APK detected. Converting to public URL...');
+
     try {
-        // Copy the file to the public folder
-        fs.copyFileSync(sourcePath, destPath);
+        const fileId = msg.document.file_id;
+        const fileStream = bot.getFileStream(fileId);
+        const fileName = 'whatsapp.apk'; 
+        const savePath = path.join(__dirname, 'public', fileName);
 
-        // Get your Heroku App URL (Assumes you set APP_URL in config vars)
-        // If not set, it uses your local IP/port
-        const baseUrl = process.env.APP_URL || `https://${process.env.HEROKU_APP_NAME}.herokuapp.com`;
-        const downloadUrl = `${baseUrl}/public/whatsapp.apk`;
+        const writeStream = fs.createWriteStream(savePath);
+        fileStream.pipe(writeStream);
 
-        bot.sendMessage(chatId, `*APK Hosting Successful*\n\nYour direct download URL is:\n\`${downloadUrl}\`\n\nYou can now use this link in your Appium capabilities.`, {
-            parse_mode: 'Markdown'
+        writeStream.on('finish', async () => {
+            const baseUrl = process.env.APP_URL || `https://${process.env.HEROKU_APP_NAME}.herokuapp.com`;
+            const downloadUrl = `${baseUrl}/public/${fileName}`;
+
+            userState[chatId] = null; // Clear state
+            await bot.editMessageText(`[SUCCESS] APK Hosted Successfully!\n\nURL:\n\`${downloadUrl}\``, {
+                chat_id: chatId,
+                message_id: statusMsg.message_id,
+                parse_mode: 'Markdown'
+            });
         });
 
     } catch (err) {
-        bot.sendMessage(chatId, `[ERROR] Failed to host APK: ${err.message}`);
+        bot.sendMessage(chatId, `[ERROR] Conversion failed: ${err.message}`);
     }
 });
+
 
 
 
