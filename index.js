@@ -204,33 +204,34 @@ async function performM4USignIn(chatId) {
         await page.setViewport({ width: 412, height: 915 });
         await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-        // 1. PHYSICAL LOGIN SEQUENCE
+        // 1. LOGIN LOGIC (EXACTLY AS IN YOUR BALANCE COMMAND)
         await page.goto('https://taskm4u.com/#/login', { waitUntil: 'networkidle2' });
-        
-        const inputs = await page.$$('input');
-        if (inputs.length >= 2) {
-            await inputs[0].click({ clickCount: 3 });
-            await page.keyboard.press('Backspace');
-            await inputs[0].type('Staring', { delay: 50 });
-            
-            await inputs[1].click({ clickCount: 3 });
-            await page.keyboard.press('Backspace');
-            await inputs[1].type('Emmama', { delay: 50 });
+        await new Promise(r => setTimeout(r, 4000));
 
-            await page.evaluate(() => {
-                const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim() === 'Login' && el.offsetParent !== null);
-                if (btns.length > 0) btns[0].click();
-            });
-            await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+        if (page.url().includes('login')) {
+            const inputs = await page.$$('input');
+            if (inputs.length >= 2) {
+                // Using your balance command logic: direct type with delay
+                await inputs[0].type('Staring', { delay: 50 });
+                await inputs[1].type('Emmama', { delay: 50 });
+                await new Promise(r => setTimeout(r, 1000));
+
+                await page.evaluate(() => {
+                    Array.from(document.querySelectorAll('*')).forEach(el => {
+                        if (el.innerText && el.innerText.trim() === 'Login') el.click();
+                    });
+                });
+
+                await page.waitForNavigation({waitUntil:'networkidle2', timeout:15000}).catch(()=>{});
+                await new Promise(r => setTimeout(r, 4000));
+            }
         }
 
-        // 2. CLEAR POPUPS & CLICK SIGN IN (USING WITHDRAW GHOST-CLICK LOGIC)
-        await new Promise(r => setTimeout(r, 5000));
-        
+        // 2. CLEAR POPUPS & CLICK SIGN IN (GHOST-CLICK LOGIC)
         const bannerClicked = await page.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('*'));
             
-            // First, aggressively close any overlays
+            // Close initial overlays
             for (let el of elements) {
                 const txt = (el.innerText || '').trim();
                 if ((txt === 'Close' || txt === 'Confirm' || txt === 'Done') && el.offsetParent !== null) {
@@ -239,7 +240,7 @@ async function performM4USignIn(chatId) {
                 }
             }
 
-            // Next, find and click the 'Sign in' banner using target amount logic
+            // Find and click the 'Sign in' banner
             for (let el of elements) {
                 const rawText = (el.innerText || el.textContent || '').trim().toLowerCase();
                 if (rawText === 'sign in' && el.offsetParent !== null) {
@@ -260,7 +261,7 @@ async function performM4USignIn(chatId) {
 
         await new Promise(r => setTimeout(r, 4000));
 
-        // 3. CHECK-IN EXECUTION (USING TASK SYNC LOGIC)
+        // 3. CHECK-IN EXECUTION
         const checkResult = await page.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('*'));
             for (let el of elements) {
@@ -268,7 +269,6 @@ async function performM4USignIn(chatId) {
                 if ((txt === 'Check in Now' || txt === 'Checked In') && el.offsetParent !== null) {
                     if (txt === 'Checked In') return "ALREADY_DONE";
                     
-                    // Synthetic Strike
                     el.scrollIntoView({ block: 'center' });
                     el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
                     el.click();
@@ -299,7 +299,6 @@ async function performM4USignIn(chatId) {
         if (page) await page.close().catch(() => {});
     }
 }
-
 
 
 
