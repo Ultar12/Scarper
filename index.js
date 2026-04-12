@@ -298,63 +298,59 @@ async function performM4USignIn(chatId) {
 
 
 
-        // 3. CHECK-IN EXECUTION (PHYSICAL HARDWARE CLICK)
-        await new Promise(r => setTimeout(r, 6000)); // Extra time for the button to become "active"
+                // 3. CHECK-IN EXECUTION (FORCE SCRIPT INJECTION)
+        await new Promise(r => setTimeout(r, 6000)); 
 
         const checkResult = await page.evaluate(async () => {
             const elements = Array.from(document.querySelectorAll('*'));
             
-            // Look for that blue pill button specifically
-            const targetBtn = elements.find(el => {
-                const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
-                const style = window.getComputedStyle(el);
-                const isBlue = style.backgroundColor.includes('0, 204') || style.backgroundColor.includes('51, 213');
-                return (txt.includes('check in now') || isBlue) && el.offsetParent !== null;
+            // 1. Find the button
+            const btn = elements.find(el => {
+                const txt = (el.innerText || '').trim().toLowerCase();
+                return txt.includes('check in now') && el.offsetParent !== null;
             });
 
-            if (targetBtn) {
-                const finalTxt = (targetBtn.innerText || '').trim();
-                if (finalTxt === 'Checked In') return { status: "ALREADY_DONE" };
-                
-                targetBtn.scrollIntoView({ block: 'center' });
-                const rect = targetBtn.getBoundingClientRect();
-                
-                // Return coordinates to the main thread for a physical mouse strike
-                return { 
-                    status: "FOUND", 
-                    x: rect.left + rect.width / 2, 
-                    y: rect.top + rect.height / 2 
-                };
-            }
-            return { status: "NOT_FOUND" };
+            if (!btn) return "NOT_FOUND";
+            if (btn.innerText.includes('Checked In')) return "ALREADY_DONE";
+
+            // 2. CLEAR OBSTRUCTIONS (The "Abeg" Fix)
+            // Sometimes an invisible div from the header or a popup is blocking the click
+            const blockers = Array.from(document.querySelectorAll('div')).filter(el => {
+                const style = window.getComputedStyle(el);
+                return style.position === 'fixed' && style.zIndex > 100 && !el.contains(btn);
+            });
+            blockers.forEach(b => b.remove()); // Delete anything floating over the button
+
+            // 3. FORCE THE CLICK
+            btn.scrollIntoView({ block: 'center' });
+            
+            // We use .click() AND .dispatchEvent to ensure the Vue/React listener catches it
+            btn.click(); 
+            btn.dispatchEvent(new Event('click', { bubbles: true }));
+            btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+            btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+
+            return "EXECUTED";
         });
 
-        if (checkResult.status === "FOUND") {
-            // PHYSICAL HARDWARE STRIKE
-            // We move the mouse, press down, wait 200ms, then lift up
-            await page.mouse.move(checkResult.x, checkResult.y);
-            await page.mouse.down();
-            await new Promise(r => setTimeout(r, 200)); 
-            await page.mouse.up();
-            
-            console.log(`[SYSTEM] Physical hardware tap sent to: ${checkResult.x}, ${checkResult.y}`);
-        }
-
-        // 4. VERIFICATION (Wait and see if it actually changed)
+        // 4. VERIFICATION LOGIC
         await new Promise(r => setTimeout(r, 5000));
         
-        const finalCheck = await page.evaluate(() => {
-            const body = document.body.innerText;
-            if (body.includes('Checked In') || body.includes('success')) return "REAL_SUCCESS";
-            return "STILL_NOT_CLICKED";
+        // Scan for the "Success" toast or text change
+        const isVerified = await page.evaluate(() => {
+            const txt = document.body.innerText;
+            return txt.includes('Checked In') || txt.includes('Success') || txt.includes('successfully');
         });
 
-        if (finalCheck === "REAL_SUCCESS" || checkResult.status === "ALREADY_DONE") {
-            const successSnap = await page.screenshot({ type: 'png' });
-            await bot.sendPhoto(chatId, successSnap, { caption: "✅ [VERIFIED] M4U Check-in complete!" });
+        const finalSnap = await page.screenshot({ type: 'png' });
+
+        if (isVerified || checkResult === "ALREADY_DONE") {
+            await bot.sendPhoto(chatId, finalSnap, { caption: "✅ [VERIFIED] M4U Check-in Success!" });
         } else {
-            const failSnap = await page.screenshot({ type: 'png' });
-            await bot.sendPhoto(chatId, failSnap, { caption: "❌ [FAILED] Button was hit but the site ignored it. Check WhatsApp task completion!" });
+            // If it still didn't click, we force a refresh and try ONE more time automatically
+            await page.reload({ waitUntil: 'networkidle2' });
+            await new Promise(r => setTimeout(r, 4000));
+            await bot.sendPhoto(chatId, finalSnap, { caption: "❌ [RETRYING] Click ignored. Refreshing page... Try /m4usign one more time." });
         }
 
 
