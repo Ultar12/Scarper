@@ -257,56 +257,45 @@ async function performM4USignIn(chatId) {
             }
         }
 
-                                // 2. CLEAR POPUPS & CLICK THE ORANGE SIGN-IN BANNER
-        await new Promise(r => setTimeout(r, 6000));
+         // 2. AGGRESSIVE COORDINATE STRIKE ON ORANGE BANNER
+        await new Promise(r => setTimeout(r, 7000)); // Give it time to fully render
         
+        // Failsafe: Try to close any lingering news popups first
+        await page.evaluate(() => {
+            const items = Array.from(document.querySelectorAll('*'));
+            const closeBtn = items.find(el => (el.innerText || '').trim() === 'Close' && el.offsetParent !== null);
+            if (closeBtn) closeBtn.click();
+        });
+        await new Promise(r => setTimeout(r, 1000));
+
         const bannerClicked = await page.evaluate(async () => {
-            // A. Force-close any hidden overlays first
-            const overlays = Array.from(document.querySelectorAll('*')).filter(el => {
-                const t = (el.innerText || '').trim().toLowerCase();
-                return (t === 'close' || t === 'confirm') && el.offsetParent !== null;
-            });
-            overlays.forEach(o => o.click());
-            await new Promise(r => setTimeout(r, 500));
-
-            // B. Target the Orange Banner specifically
             const elements = Array.from(document.querySelectorAll('*'));
-            const orangeBanner = elements.find(el => {
-                const style = window.getComputedStyle(el);
-                const text = (el.innerText || '').toLowerCase();
-                // We look for the "Sign in" text OR the specific orange gradient background
-                return (text.includes('sign in') || style.backgroundImage.includes('linear-gradient')) 
-                        && el.offsetHeight > 40  // Ensure it's the big banner, not a small icon
-                        && el.offsetParent !== null;
+            // Find the banner by looking for the specific text "Sign in" 
+            // OR the orange container.
+            const target = elements.find(el => {
+                const txt = (el.innerText || el.textContent || '').toLowerCase().trim();
+                return txt === 'sign in' && el.offsetParent !== null;
             });
 
-            if (orangeBanner) {
-                orangeBanner.scrollIntoView({ block: 'center' });
-                const rect = orangeBanner.getBoundingClientRect();
-                
-                // Fire a precise click at the center of the orange bar
-                const events = ['mousedown', 'mouseup', 'click'];
-                events.forEach(name => {
-                    orangeBanner.dispatchEvent(new MouseEvent(name, {
-                        bubbles: true,
-                        cancelable: true,
-                        view: window,
-                        clientX: rect.left + rect.width / 2,
-                        clientY: rect.top + rect.height / 2
-                    }));
-                });
-                return true;
+            if (target) {
+                const rect = target.getBoundingClientRect();
+                return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
             }
-            return false;
+            return null;
         });
 
-        if (!bannerClicked) {
-            const errSnap = await page.screenshot({ type: 'png' });
-            return await bot.sendPhoto(chatId, errSnap, { caption: "[ERROR] Could not find the orange Sign-in banner." });
+        if (bannerClicked) {
+            // PHYSICAL MOUSE STRIKE (Bypasses most anti-bot/UI traps)
+            await page.mouse.click(bannerClicked.x, bannerClicked.y);
+            console.log(`[SYSTEM] Physical click sent to: ${bannerClicked.x}, ${bannerClicked.y}`);
+        } else {
+            // EMERGENCY FALLBACK: Click the middle-top area where the banner usually lives
+            await page.mouse.click(200, 360); 
         }
 
-        // Wait longer for the sliding Calendar animation to finish
-        await new Promise(r => setTimeout(r, 6000));
+        // --- CRITICAL: Wait for the sub-page to actually LOAD ---
+        await new Promise(r => setTimeout(r, 7000)); 
+
 
 
         // 3. CHECK-IN EXECUTION
