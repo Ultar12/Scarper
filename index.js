@@ -298,34 +298,69 @@ async function performM4USignIn(chatId) {
 
 
 
-        // 3. CHECK-IN EXECUTION
-        const checkResult = await page.evaluate(() => {
+                // 3. CHECK-IN EXECUTION (STRICT REPAIR)
+        await new Promise(r => setTimeout(r, 5000)); // Wait for the "slide-in" animation
+
+        const checkResult = await page.evaluate(async () => {
             const elements = Array.from(document.querySelectorAll('*'));
-            for (let el of elements) {
-                const txt = (el.innerText || '').trim();
-                if ((txt === 'Check in Now' || txt === 'Checked In') && el.offsetParent !== null) {
-                    if (txt === 'Checked In') return "ALREADY_DONE";
-                    
-                    el.scrollIntoView({ block: 'center' });
-                    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                    el.click();
-                    return "CLICKED";
-                }
+            
+            // 1. Primary Search: Look for text (case-insensitive & flexible)
+            let targetBtn = elements.find(el => {
+                const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
+                // Matches "Check in Now!", "Check in Now", or "Checked In"
+                return (txt.includes('check in now') || txt === 'checked in') && el.offsetParent !== null;
+            });
+
+            // 2. Fallback Search: Look for the specific Blue Pill button by color
+            if (!targetBtn) {
+                targetBtn = elements.find(el => {
+                    const style = window.getComputedStyle(el);
+                    const color = style.backgroundColor;
+                    // M4U Blue is usually rgb(0, 204, 255) or similar
+                    return (color.includes('0, 204') || color.includes('51, 213')) && el.offsetHeight > 30;
+                });
+            }
+
+            if (targetBtn) {
+                const finalTxt = (targetBtn.innerText || '').trim();
+                if (finalTxt === 'Checked In') return "ALREADY_DONE";
+                
+                targetBtn.scrollIntoView({ block: 'center' });
+                const rect = targetBtn.getBoundingClientRect();
+                
+                // Aggressive Physical Click Sequence
+                const events = ['mousedown', 'mouseup', 'click'];
+                events.forEach(name => {
+                    targetBtn.dispatchEvent(new MouseEvent(name, {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window,
+                        clientX: rect.left + rect.width / 2,
+                        clientY: rect.top + rect.height / 2
+                    }));
+                });
+                return "CLICKED";
             }
             return "BUTTON_NOT_FOUND";
         });
 
-        // 4. TOAST/ERROR DETECTION
-        await new Promise(r => setTimeout(r, 3000));
+        // 4. TOAST/ERROR DETECTION & SUCCESS CAPTURE
+        await new Promise(r => setTimeout(r, 4000));
         const toastMessage = await page.evaluate(() => document.body.innerText);
 
         if (toastMessage.includes('completing the task')) {
             const errSnap = await page.screenshot({ type: 'png' });
-            await bot.sendPhoto(chatId, errSnap, { caption: "[ALERT] M4U: Sign in only after completing the task!" });
-        } else if (checkResult === "BUTTON_NOT_FOUND") {
+            await bot.sendPhoto(chatId, errSnap, { caption: "[ALERT] M4U: You must complete the WhatsApp task before signing in!" });
+        } else if (checkResult === "ALREADY_DONE") {
+            await bot.sendMessage(chatId, "ℹ️ [INFO] M4U: Already checked in for today.");
+        } else if (checkResult === "CLICKED") {
+            const successSnap = await page.screenshot({ type: 'png' });
+            await bot.sendPhoto(chatId, successSnap, { caption: "[SUCCESS] M4U: Check-in button clicked successfully!" });
+        } else {
             const errSnap = await page.screenshot({ type: 'png' });
-            await bot.sendPhoto(chatId, errSnap, { caption: "[ERROR] Check-in button missing on Calendar page." });
+            await bot.sendPhoto(chatId, errSnap, { caption: "[ERROR] Button not found. Check if the calendar page loaded correctly." });
         }
+
 
     } catch (err) {
         if (page) {
