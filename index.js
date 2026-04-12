@@ -298,67 +298,63 @@ async function performM4USignIn(chatId) {
 
 
 
-                // 3. CHECK-IN EXECUTION (STRICT REPAIR)
-        await new Promise(r => setTimeout(r, 5000)); // Wait for the "slide-in" animation
+        // 3. CHECK-IN EXECUTION (PHYSICAL HARDWARE CLICK)
+        await new Promise(r => setTimeout(r, 6000)); // Extra time for the button to become "active"
 
         const checkResult = await page.evaluate(async () => {
             const elements = Array.from(document.querySelectorAll('*'));
             
-            // 1. Primary Search: Look for text (case-insensitive & flexible)
-            let targetBtn = elements.find(el => {
+            // Look for that blue pill button specifically
+            const targetBtn = elements.find(el => {
                 const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
-                // Matches "Check in Now!", "Check in Now", or "Checked In"
-                return (txt.includes('check in now') || txt === 'checked in') && el.offsetParent !== null;
+                const style = window.getComputedStyle(el);
+                const isBlue = style.backgroundColor.includes('0, 204') || style.backgroundColor.includes('51, 213');
+                return (txt.includes('check in now') || isBlue) && el.offsetParent !== null;
             });
-
-            // 2. Fallback Search: Look for the specific Blue Pill button by color
-            if (!targetBtn) {
-                targetBtn = elements.find(el => {
-                    const style = window.getComputedStyle(el);
-                    const color = style.backgroundColor;
-                    // M4U Blue is usually rgb(0, 204, 255) or similar
-                    return (color.includes('0, 204') || color.includes('51, 213')) && el.offsetHeight > 30;
-                });
-            }
 
             if (targetBtn) {
                 const finalTxt = (targetBtn.innerText || '').trim();
-                if (finalTxt === 'Checked In') return "ALREADY_DONE";
+                if (finalTxt === 'Checked In') return { status: "ALREADY_DONE" };
                 
                 targetBtn.scrollIntoView({ block: 'center' });
                 const rect = targetBtn.getBoundingClientRect();
                 
-                // Aggressive Physical Click Sequence
-                const events = ['mousedown', 'mouseup', 'click'];
-                events.forEach(name => {
-                    targetBtn.dispatchEvent(new MouseEvent(name, {
-                        bubbles: true,
-                        cancelable: true,
-                        view: window,
-                        clientX: rect.left + rect.width / 2,
-                        clientY: rect.top + rect.height / 2
-                    }));
-                });
-                return "CLICKED";
+                // Return coordinates to the main thread for a physical mouse strike
+                return { 
+                    status: "FOUND", 
+                    x: rect.left + rect.width / 2, 
+                    y: rect.top + rect.height / 2 
+                };
             }
-            return "BUTTON_NOT_FOUND";
+            return { status: "NOT_FOUND" };
         });
 
-        // 4. TOAST/ERROR DETECTION & SUCCESS CAPTURE
-        await new Promise(r => setTimeout(r, 4000));
-        const toastMessage = await page.evaluate(() => document.body.innerText);
+        if (checkResult.status === "FOUND") {
+            // PHYSICAL HARDWARE STRIKE
+            // We move the mouse, press down, wait 200ms, then lift up
+            await page.mouse.move(checkResult.x, checkResult.y);
+            await page.mouse.down();
+            await new Promise(r => setTimeout(r, 200)); 
+            await page.mouse.up();
+            
+            console.log(`[SYSTEM] Physical hardware tap sent to: ${checkResult.x}, ${checkResult.y}`);
+        }
 
-        if (toastMessage.includes('completing the task')) {
-            const errSnap = await page.screenshot({ type: 'png' });
-            await bot.sendPhoto(chatId, errSnap, { caption: "[ALERT] M4U: You must complete the WhatsApp task before signing in!" });
-        } else if (checkResult === "ALREADY_DONE") {
-            await bot.sendMessage(chatId, "ℹ️ [INFO] M4U: Already checked in for today.");
-        } else if (checkResult === "CLICKED") {
+        // 4. VERIFICATION (Wait and see if it actually changed)
+        await new Promise(r => setTimeout(r, 5000));
+        
+        const finalCheck = await page.evaluate(() => {
+            const body = document.body.innerText;
+            if (body.includes('Checked In') || body.includes('success')) return "REAL_SUCCESS";
+            return "STILL_NOT_CLICKED";
+        });
+
+        if (finalCheck === "REAL_SUCCESS" || checkResult.status === "ALREADY_DONE") {
             const successSnap = await page.screenshot({ type: 'png' });
-            await bot.sendPhoto(chatId, successSnap, { caption: "[SUCCESS] M4U: Check-in button clicked successfully!" });
+            await bot.sendPhoto(chatId, successSnap, { caption: "✅ [VERIFIED] M4U Check-in complete!" });
         } else {
-            const errSnap = await page.screenshot({ type: 'png' });
-            await bot.sendPhoto(chatId, errSnap, { caption: "[ERROR] Button not found. Check if the calendar page loaded correctly." });
+            const failSnap = await page.screenshot({ type: 'png' });
+            await bot.sendPhoto(chatId, failSnap, { caption: "❌ [FAILED] Button was hit but the site ignored it. Check WhatsApp task completion!" });
         }
 
 
