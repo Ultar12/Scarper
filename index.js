@@ -2279,7 +2279,7 @@ bot.onText(/^\/pop$/i, async (msg) => {
 
             if (visibleInputs.length >= 2) {
                 await visibleInputs[0].evaluate(el => el.value = '');
-                await visibleInputs[0].type('09163916311', { delay: 50 });
+                await visibleInputs[0].type('09163916500', { delay: 50 });
                 await visibleInputs[1].evaluate(el => el.value = '');
                 await visibleInputs[1].type('Emmamama', { delay: 50 });
                 await new Promise(r => setTimeout(r, 1000));
