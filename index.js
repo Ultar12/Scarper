@@ -257,60 +257,56 @@ async function performM4USignIn(chatId) {
             }
         }
 
-                        // 2. CLEAR POPUPS & CLICK 'SIGN IN' LINE (STRICT REPAIR)
-        await new Promise(r => setTimeout(r, 6000)); // Increased wait for popup animations
+                                // 2. CLEAR POPUPS & CLICK THE ORANGE SIGN-IN BANNER
+        await new Promise(r => setTimeout(r, 6000));
         
         const bannerClicked = await page.evaluate(async () => {
+            // A. Force-close any hidden overlays first
+            const overlays = Array.from(document.querySelectorAll('*')).filter(el => {
+                const t = (el.innerText || '').trim().toLowerCase();
+                return (t === 'close' || t === 'confirm') && el.offsetParent !== null;
+            });
+            overlays.forEach(o => o.click());
+            await new Promise(r => setTimeout(r, 500));
+
+            // B. Target the Orange Banner specifically
             const elements = Array.from(document.querySelectorAll('*'));
-            
-            // 1. Aggressively clear popups first
-            const popups = elements.filter(el => {
-                const txt = (el.innerText || '').trim();
-                return (txt === 'Close' || txt === 'Confirm' || txt === 'Done' || txt === 'Got it') && el.offsetParent !== null;
-            });
-            
-            for (const p of popups) {
-                p.click();
-                // Brief pause for the UI to register the popup closing
-                await new Promise(r => setTimeout(r, 500)); 
-            }
-
-            // 2. Target the 'Sign in' button
-            // We search for elements containing the text specifically to bypass nested spans
-            const signBtn = elements.find(el => {
-                const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
-                // Match "sign in" exactly, excluding parents that contain too much extra text
-                return txt === 'sign in' && el.offsetParent !== null && el.children.length < 3;
+            const orangeBanner = elements.find(el => {
+                const style = window.getComputedStyle(el);
+                const text = (el.innerText || '').toLowerCase();
+                // We look for the "Sign in" text OR the specific orange gradient background
+                return (text.includes('sign in') || style.backgroundImage.includes('linear-gradient')) 
+                        && el.offsetHeight > 40  // Ensure it's the big banner, not a small icon
+                        && el.offsetParent !== null;
             });
 
-            if (signBtn) {
-                signBtn.scrollIntoView({ block: 'center' });
+            if (orangeBanner) {
+                orangeBanner.scrollIntoView({ block: 'center' });
+                const rect = orangeBanner.getBoundingClientRect();
                 
-                // Helper for a "Real Click" (Touch events)
-                const forceClick = (target) => {
-                    const events = ['mousedown', 'mouseup', 'click'];
-                    events.forEach(name => {
-                        target.dispatchEvent(new MouseEvent(name, { bubbles: true, cancelable: true, view: window }));
-                    });
-                };
-
-                forceClick(signBtn);
-                // Strike parent too in case it's a wrapper listener
-                if (signBtn.parentElement) forceClick(signBtn.parentElement);
+                // Fire a precise click at the center of the orange bar
+                const events = ['mousedown', 'mouseup', 'click'];
+                events.forEach(name => {
+                    orangeBanner.dispatchEvent(new MouseEvent(name, {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window,
+                        clientX: rect.left + rect.width / 2,
+                        clientY: rect.top + rect.height / 2
+                    }));
+                });
                 return true;
             }
             return false;
         });
 
         if (!bannerClicked) {
-            // FALLBACK: If text-based search fails, try a coordinate click on the bottom-right area 
-            // where the "Mine/Sign-in" usually sits, or send the error.
             const errSnap = await page.screenshot({ type: 'png' });
-            return await bot.sendPhoto(chatId, errSnap, { caption: "[ERROR] Sign in line not detected. Check if login was successful!" });
+            return await bot.sendPhoto(chatId, errSnap, { caption: "[ERROR] Could not find the orange Sign-in banner." });
         }
 
-        // Wait for the Check-in Calendar page to fully slide in
-        await new Promise(r => setTimeout(r, 5000)); 
+        // Wait longer for the sliding Calendar animation to finish
+        await new Promise(r => setTimeout(r, 6000));
 
 
         // 3. CHECK-IN EXECUTION
