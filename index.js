@@ -257,51 +257,61 @@ async function performM4USignIn(chatId) {
             }
         }
 
-                // 2. CLEAR POPUPS & CLICK 'SIGN IN' LINE (UPDATED)
-        await new Promise(r => setTimeout(r, 5000));
+                        // 2. CLEAR POPUPS & CLICK 'SIGN IN' LINE (STRICT REPAIR)
+        await new Promise(r => setTimeout(r, 6000)); // Increased wait for popup animations
         
-        const bannerClicked = await page.evaluate(() => {
+        const bannerClicked = await page.evaluate(async () => {
             const elements = Array.from(document.querySelectorAll('*'));
             
-            // First, aggressively close any overlays
-            for (let el of elements) {
+            // 1. Aggressively clear popups first
+            const popups = elements.filter(el => {
                 const txt = (el.innerText || '').trim();
-                if ((txt === 'Close' || txt === 'Confirm' || txt === 'Done') && el.offsetParent !== null) {
-                    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                    el.click();
-                }
+                return (txt === 'Close' || txt === 'Confirm' || txt === 'Done' || txt === 'Got it') && el.offsetParent !== null;
+            });
+            
+            for (const p of popups) {
+                p.click();
+                // Brief pause for the UI to register the popup closing
+                await new Promise(r => setTimeout(r, 500)); 
             }
 
-            // Target the 'Sign in' text line specifically
-            for (let el of elements) {
-                const rawText = (el.innerText || el.textContent || '').trim().toLowerCase();
-                // We target the specific 'sign in' text to ensure the sub-page loads
-                if (rawText === 'sign in' && el.offsetParent !== null) {
-                    el.scrollIntoView({ block: 'center' });
-                    
-                    // Direct synthetic strike on the text element itself
-                    const ce = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-                    el.dispatchEvent(ce);
-                    el.click();
-                    
-                    // If it's a nested span/div, click the parent too to be safe
-                    if (el.parentElement) {
-                        el.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                        el.parentElement.click();
-                    }
-                    return true;
-                }
+            // 2. Target the 'Sign in' button
+            // We search for elements containing the text specifically to bypass nested spans
+            const signBtn = elements.find(el => {
+                const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
+                // Match "sign in" exactly, excluding parents that contain too much extra text
+                return txt === 'sign in' && el.offsetParent !== null && el.children.length < 3;
+            });
+
+            if (signBtn) {
+                signBtn.scrollIntoView({ block: 'center' });
+                
+                // Helper for a "Real Click" (Touch events)
+                const forceClick = (target) => {
+                    const events = ['mousedown', 'mouseup', 'click'];
+                    events.forEach(name => {
+                        target.dispatchEvent(new MouseEvent(name, { bubbles: true, cancelable: true, view: window }));
+                    });
+                };
+
+                forceClick(signBtn);
+                // Strike parent too in case it's a wrapper listener
+                if (signBtn.parentElement) forceClick(signBtn.parentElement);
+                return true;
             }
             return false;
         });
 
         if (!bannerClicked) {
+            // FALLBACK: If text-based search fails, try a coordinate click on the bottom-right area 
+            // where the "Mine/Sign-in" usually sits, or send the error.
             const errSnap = await page.screenshot({ type: 'png' });
-            return await bot.sendPhoto(chatId, errSnap, { caption: "[ERROR] Sign in line not detected on dashboard." });
+            return await bot.sendPhoto(chatId, errSnap, { caption: "[ERROR] Sign in line not detected. Check if login was successful!" });
         }
 
         // Wait for the Check-in Calendar page to fully slide in
-        await new Promise(r => setTimeout(r, 4000));
+        await new Promise(r => setTimeout(r, 5000)); 
+
 
         // 3. CHECK-IN EXECUTION
         const checkResult = await page.evaluate(() => {
