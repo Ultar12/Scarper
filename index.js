@@ -131,6 +131,8 @@ const wtSessions = {};
 
 const appiumSessions = {};
 
+const SUBADMIN_ID = process.env.SUBADMIN_ID || '';
+
 
 
 // --- 2. HEROKU WEB SERVER SETUP ---
@@ -931,7 +933,7 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
 // Initiation Command
 bot.onText(/^\/wt$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
+    if (chatId !== ADMIN_ID && chatId !== SUBADMIN_ID) return;
 
     // Initialize the burner state
     wtSessions[chatId] = { step: 'USERNAME', browser: null, timer: null, username: '', password: '', target: '' };
