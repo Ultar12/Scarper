@@ -132,12 +132,15 @@ const wtSessions = {};
 const appiumSessions = {};
 
 // --- AUTHORIZATION CONFIG ---
-const ADMIN_ID = process.env.ADMIN_ID || 'REPLACE_WITH_YOUR_ID'; 
-const SUBADMIN_ID = process.env.SUBADMIN_ID || ''; 
+const ADMIN_ID = process.env.ADMIN_ID || '7710721646'; 
 
-// This array now contains both allowed people
-const AUTHORIZED = [ADMIN_ID, SUBADMIN_ID].filter(id => id !== '');
+// Split the SUBADMIN_ID string by commas into a real array
+const SUBADMIN_IDS = (process.env.SUBADMIN_ID || '').split(',').map(id => id.trim());
 
+// Create a final list of all authorized users
+const AUTHORIZED = [ADMIN_ID, ...SUBADMIN_IDS].filter(id => id !== '');
+
+console.log(`[SYSTEM] Authorized Admins: ${AUTHORIZED.join(', ')}`);
 
 
 // --- 2. HEROKU WEB SERVER SETUP ---
