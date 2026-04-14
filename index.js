@@ -131,7 +131,12 @@ const wtSessions = {};
 
 const appiumSessions = {};
 
-const SUBADMIN_ID = process.env.SUBADMIN_ID || '';
+// --- AUTHORIZATION CONFIG ---
+const ADMIN_ID = process.env.ADMIN_ID || 'REPLACE_WITH_YOUR_ID'; 
+const SUBADMIN_ID = process.env.SUBADMIN_ID || ''; 
+
+// This array now contains both allowed people
+const AUTHORIZED = [ADMIN_ID, SUBADMIN_ID].filter(id => id !== '');
 
 
 
@@ -153,7 +158,6 @@ app.listen(PORT, () => console.log(`Web server listening on port ${PORT}`));
 // --- 3. TELEGRAM BOT SETUP ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || '7806461656:AAFJLm-gOKgKrvPY06b0QTE1fKlVR9waOsQ';
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
-const ADMIN_ID = process.env.ADMIN_ID || 'REPLACE_WITH_YOUR_ID'; 
 
 let waClient = null;
 let globalTaskBrowser = null;
@@ -933,17 +937,20 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
 // Initiation Command
 bot.onText(/^\/wt$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID && chatId !== SUBADMIN_ID) return;
+    
+    // Use .includes to check both Admin and Subadmin
+    if (!AUTHORIZED.includes(chatId)) return;
 
     // Initialize the burner state
     wtSessions[chatId] = { step: 'USERNAME', browser: null, timer: null, username: '', password: '', target: '' };
     bot.sendMessage(chatId, '[WT BURNER] Sequence Initiated.\n\nPlease send the **Username (Phone Number)** for the account:', { parse_mode: 'Markdown' });
 });
 
+
 // Manual Kill Command
 bot.onText(/^(?:\/wtclose|close)$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
+    if (!AUTHORIZED.includes(chatId)) return;
 
     if (wtSessions[chatId] && wtSessions[chatId].browser) {
         bot.sendMessage(chatId, '[WT BURNER] Manually terminating burner browser...');
@@ -2559,7 +2566,7 @@ bot.onText(/^(?:\/pair\s+m4u|Pair M4U)$/i, async (msg) => {
 // --- UNIFIED MESSAGE LISTENER ---
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
+    if (!AUTHORIZED.includes(chatId)) return;
     if (!msg.text || msg.text.startsWith('/')) return;
 
 
