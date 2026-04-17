@@ -939,15 +939,19 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
 
 // Initiation Command
 bot.onText(/^\/wt$/i, async (msg) => {
-    const chatId = msg.chat.id.toString();
+    const chatId = msg.chat.id.toString(); // Ensure this is a string
     
-    // Use .includes to check both Admin and Subadmin
-    if (!AUTHORIZED.includes(chatId)) return;
+    // Check if the string exists in the AUTHORIZED array
+    if (!AUTHORIZED.includes(chatId)) {
+        console.log(`[AUTH] Unauthorized access attempt by ID: ${chatId}`);
+        return;
+    }
 
     // Initialize the burner state
     wtSessions[chatId] = { step: 'USERNAME', browser: null, timer: null, username: '', password: '', target: '' };
     bot.sendMessage(chatId, '[WT BURNER] Sequence Initiated.\n\nPlease send the **Username (Phone Number)** for the account:', { parse_mode: 'Markdown' });
 });
+
 
 
 // Manual Kill Command
