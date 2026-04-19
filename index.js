@@ -307,60 +307,68 @@ async function performM4USignIn(chatId) {
 
 
 
-                // 3. CHECK-IN EXECUTION (FORCE SCRIPT INJECTION)
-        await new Promise(r => setTimeout(r, 6000)); 
+                        // 3. CHECK-IN EXECUTION (DIRECT TOUCH-EVENT DISPATCH)
+        await new Promise(r => setTimeout(r, 7000)); // Allow site scripts to fully hydrate
 
         const checkResult = await page.evaluate(async () => {
             const elements = Array.from(document.querySelectorAll('*'));
             
-            // 1. Find the button
+            // Look for the blue pill button specifically
             const btn = elements.find(el => {
-                const txt = (el.innerText || '').trim().toLowerCase();
+                const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
                 return txt.includes('check in now') && el.offsetParent !== null;
             });
 
-            if (!btn) return "NOT_FOUND";
-            if (btn.innerText.includes('Checked In')) return "ALREADY_DONE";
+            if (!btn) return { status: "NOT_FOUND" };
+            if (btn.innerText.includes('Checked In')) return { status: "ALREADY_DONE" };
 
-            // 2. CLEAR OBSTRUCTIONS (The "Abeg" Fix)
-            // Sometimes an invisible div from the header or a popup is blocking the click
-            const blockers = Array.from(document.querySelectorAll('div')).filter(el => {
-                const style = window.getComputedStyle(el);
-                return style.position === 'fixed' && style.zIndex > 100 && !el.contains(btn);
-            });
-            blockers.forEach(b => b.remove()); // Delete anything floating over the button
-
-            // 3. FORCE THE CLICK
             btn.scrollIntoView({ block: 'center' });
-            
-            // We use .click() AND .dispatchEvent to ensure the Vue/React listener catches it
-            btn.click(); 
-            btn.dispatchEvent(new Event('click', { bubbles: true }));
-            btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-            btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+            const rect = btn.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
 
-            return "EXECUTED";
+            // --- THE SECRET SAUCE: TOUCH EVENT BOMBING ---
+            // We simulate a real finger touch sequence (start -> end -> click)
+            const touchData = {
+                bubbles: true,
+                cancelable: true,
+                view: window,
+                touches: [{ identifier: Date.now(), target: btn, clientX: x, clientY: y }],
+                targetTouches: [{ identifier: Date.now(), target: btn, clientX: x, clientY: y }],
+                changedTouches: [{ identifier: Date.now(), target: btn, clientX: x, clientY: y }]
+            };
+
+            btn.dispatchEvent(new TouchEvent('touchstart', touchData));
+            await new Promise(r => setTimeout(r, 100)); // Hold for 100ms
+            btn.dispatchEvent(new TouchEvent('touchend', touchData));
+            
+            // Standard click fallback
+            btn.click();
+            btn.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: x, clientY: y }));
+
+            return { status: "EXECUTED" };
         });
 
-        // 4. VERIFICATION LOGIC
+        // 4. VERIFICATION (Check if the screen actually changed)
         await new Promise(r => setTimeout(r, 5000));
         
-        // Scan for the "Success" toast or text change
-        const isVerified = await page.evaluate(() => {
-            const txt = document.body.innerText;
-            return txt.includes('Checked In') || txt.includes('Success') || txt.includes('successfully');
+        const finalStatus = await page.evaluate(() => {
+            const bodyTxt = document.body.innerText;
+            if (bodyTxt.includes('Checked In') || bodyTxt.includes('Success')) return "SUCCESS";
+            if (bodyTxt.includes('completing the task')) return "TASK_LOCKED";
+            return "STILL_IDLE";
         });
 
         const finalSnap = await page.screenshot({ type: 'png' });
 
-        if (isVerified || checkResult === "ALREADY_DONE") {
-            await bot.sendPhoto(chatId, finalSnap, { caption: "✅ [VERIFIED] M4U Check-in Success!" });
+        if (finalStatus === "SUCCESS" || checkResult.status === "ALREADY_DONE") {
+            await bot.sendPhoto(chatId, finalSnap, { caption: "[VERIFIED] M4U Check-in Success." });
+        } else if (finalStatus === "TASK_LOCKED") {
+            await bot.sendPhoto(chatId, finalSnap, { caption: "[LOCKED] M4U: WhatsApp Task is not yet verified by the site." });
         } else {
-            // If it still didn't click, we force a refresh and try ONE more time automatically
-            await page.reload({ waitUntil: 'networkidle2' });
-            await new Promise(r => setTimeout(r, 4000));
-            await bot.sendPhoto(chatId, finalSnap, { caption: "❌ [RETRYING] Click ignored. Refreshing page... Try /m4usign one more time." });
+            await bot.sendPhoto(chatId, finalSnap, { caption: "[FAILED] The button was hit with TouchEvents but did not respond." });
         }
+
 
 
     } catch (err) {
