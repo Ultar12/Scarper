@@ -4,9 +4,9 @@
   "description": "WhatsApp Web JS with PostgreSQL RemoteAuth - 32GB RAM Optimized",
   "main": "index.js",
     "scripts": {
-    "start": "node index.js",
-    "postinstall": "npx playwright install firefox"
-  },
+  "start": "node index.js",
+  "postinstall": "PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install firefox"
+},
 
   "dependencies": {
     "axios": "^1.6.8",
