@@ -1789,6 +1789,18 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         page1 = await browser.newPage();
         pages.push(page1);
 
+
+        // --- THE FIX: DISARM THE INSTALL TRIGGER ---
+        await page1.evaluateOnNewDocument(() => {
+            // 1. Block the native "Install App" dialog from ever triggering
+            window.addEventListener('beforeinstallprompt', (e) => {
+                e.preventDefault(); 
+                return false;
+            });
+            // 2. Pretend the app is already installed to satisfy the site logic
+            window.dispatchEvent(new Event('appinstalled'));
+        });
+
         // 1. START VIDEO RECORDING (To capture the "Install App" struggle)
         recorder = new PuppeteerScreenRecorder(page1, {
             fps: 30,
