@@ -1801,13 +1801,13 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         }
         browser = globalTaskBrowser;
 
+
                 // --- STEP 1: INITIALIZE MASTER TAB & START RECORDING ---
         await updateStatus('[SYSTEM] Opening Master Tab & forcing App Install state...');
         page1 = await browser.newPage();
         pages.push(page1);
 
-        // --- THE PWA SHIELD & INSTALL SPOOFER ---
-        // This stops the system dialog and fakes the "Accepted" state to the site
+        // PWA Spoofing: Lie to the site about installation
         await page1.evaluateOnNewDocument(() => {
             window.addEventListener('beforeinstallprompt', (e) => {
                 e.preventDefault(); 
@@ -1815,122 +1815,85 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                 return false;
             });
             window.dispatchEvent(new Event('appinstalled'));
-            // Fake the related apps check so the site thinks it's already on the device
             navigator.getInstalledRelatedApps = () => Promise.resolve([{ id: 'wsjobs-pwa' }]);
         });
 
-        // 1. START VIDEO RECORDING (Diagnostic Mode)
         recorder = new PuppeteerScreenRecorder(page1, {
-            fps: 30,
-            videoFrame: { width: 412, height: 915 },
-            aspectRatio: '9:16'
+            fps: 30, videoFrame: { width: 412, height: 915 }, aspectRatio: '9:16'
         });
         await recorder.start(videoPath);
 
         await page1.setViewport({ width: 412, height: 915 }); 
         await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-        // 2. Navigation & Session Injection
         await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
         await loadSessionFromDB('wsjobs_task', page1);
 
-        // --- STEP 2: AGGRESSIVE OK -> INSTALL COMBINATION STRIKE ---
-        // Based on video: Clicks "OK" first, then hunts for "Install"
-        await updateStatus('[SYSTEM] Executing OK -> INSTALL sequence...');
+        // --- STEP 2: GEOMETRIC POPUP KILLER ---
+        await updateStatus('[SYSTEM] Executing Geometric Strike on UI traps...');
         for (let i = 0; i < 4; i++) {
             await new Promise(r => setTimeout(r, 2000));
-            await page1.evaluate(() => {
-                const elements = Array.from(document.querySelectorAll('*'));
-                
-                // Strike 1: Clear the white "OK" modal
-                const okBtn = elements.find(el => el.innerText?.trim() === 'OK' && el.offsetParent !== null);
-                if (okBtn) okBtn.click();
-
-                // Strike 2: Click the "Install" button from the second popup
-                const installBtn = elements.find(el => el.innerText?.trim() === 'Install' && el.offsetParent !== null);
-                if (installBtn) installBtn.click();
-
-                // Strike 3: Kill the CSS blur/mask if it gets stuck
-                document.body.style.filter = 'none';
-                document.body.style.overflow = 'auto';
-                document.querySelectorAll('[class*="mask"], [class*="overlay"], .modal-backdrop').forEach(el => el.remove());
+            
+            // Get coordinates for OK or Install buttons
+            const targetCoords = await page1.evaluate(() => {
+                const btn = Array.from(document.querySelectorAll('*')).find(el => 
+                    (el.innerText?.trim() === 'OK' || el.innerText?.trim() === 'Install') && el.offsetParent !== null
+                );
+                if (btn) {
+                    const rect = btn.getBoundingClientRect();
+                    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+                }
+                return null;
             });
+
+            if (targetCoords) {
+                // Physical Hardware Click
+                await page1.mouse.click(targetCoords.x, targetCoords.y);
+                
+                // Nuclear CSS cleanup to remove blur immediately
+                await page1.evaluate(() => {
+                    document.body.style.filter = 'none';
+                    document.body.style.overflow = 'auto';
+                    document.querySelectorAll('[class*="mask"], [class*="overlay"], .modal-backdrop').forEach(el => el.remove());
+                });
+            }
         }
 
-        // --- STEP 3: LOGIN LOGIC (ENTRAR SUPPORT) ---
+        // --- STEP 3: LOGIN LOGIC (SHIGA / ENTRAR SUPPORT) ---
         const requiresLogin = page1.url().includes('login') || await page1.$('input[type="password"]') !== null;
         if (requiresLogin) {
-            await updateStatus('[SYSTEM] Attempting Sign-In (Brazil UI)...');
+            await updateStatus('[SYSTEM] Performing Geometric Sign-In...');
             const allInputs = await page1.$$('input');
             if (allInputs.length >= 2) {
-                // Focus forcing to bypass any ghost blurs
                 await allInputs[0].focus();
-                await allInputs[0].click({ clickCount: 3 });
                 await allInputs[0].type('09163916500', { delay: 50 });
-                
                 await allInputs[1].focus();
-                await allInputs[1].click({ clickCount: 3 });
                 await allInputs[1].type('Emmamama', { delay: 50 });
                 
-                await page1.evaluate(() => {
-                    const btns = Array.from(document.querySelectorAll('button, div, span'));
-                    // Look for "Sign In" or "Entrar" as seen in the Brazil UI
-                    const loginBtn = btns.find(b => 
-                        (b.innerText?.trim() === 'Sign In' || b.innerText?.trim() === 'Entrar' || b.innerText?.trim() === 'ENTRAR') 
-                        && b.offsetParent !== null
+                // Get coordinates for the Shiga/Entrar button
+                const loginCoords = await page1.evaluate(() => {
+                    const btn = Array.from(document.querySelectorAll('*')).find(b => 
+                        ['Shiga', 'Entrar', 'Sign In', 'ENTRAR'].includes(b.innerText?.trim()) && b.offsetParent !== null
                     );
-                    if (loginBtn) loginBtn.click();
+                    if (btn) {
+                        const rect = btn.getBoundingClientRect();
+                        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+                    }
+                    return null;
                 });
-                
+
+                if (loginCoords) {
+                    await page1.mouse.click(loginCoords.x, loginCoords.y);
+                } else {
+                    // Fallback to script click if mouse fails
+                    await page1.evaluate(() => {
+                        const btn = Array.from(document.querySelectorAll('*')).find(b => ['Shiga', 'Entrar', 'Sign In'].includes(b.innerText?.trim()));
+                        if (btn) btn.click();
+                    });
+                }
                 await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
             }
         }
-
-        // 4. Head to Task page
-        await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 4000)); 
-
-        // 5. Check for Login
-        
-        if (requiresLogin) {
-            await updateStatus('[SYSTEM] Session expired. Performing Sign-In...');
-            const allInputs = await page1.$$('input');
-            if (allInputs.length >= 2) {
-                // ADDED FOCUS FORCING: Ensures fields are active after popup closes
-                await allInputs[0].focus();
-                await allInputs[0].click({ clickCount: 3 });
-                await allInputs[0].type('09163916500', { delay: 50 });
-                
-                await allInputs[1].focus();
-                await allInputs[1].click({ clickCount: 3 });
-                await allInputs[1].type('Emmamama', { delay: 50 });
-                
-                await page1.evaluate(() => {
-                    const btns = Array.from(document.querySelectorAll('button, div, span'));
-                    const loginBtn = btns.find(b => b.innerText?.trim() === 'Sign In' && b.offsetParent !== null);
-                    if (loginBtn) loginBtn.click();
-                });
-                
-                await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-            }
-        }
-
-        // 6. Handle "OK" or "Install" Popup again after login
-        await new Promise(r => setTimeout(r, 4000));
-        const finalClear = await page1.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('*'));
-            const btn = elements.find(el => 
-                (el.innerText?.trim() === 'OK' || el.innerText?.trim() === 'Install') && 
-                el.offsetParent !== null
-            );
-            if (btn) {
-                btn.click();
-                return true;
-            }
-            return false;
-        });
-
-        if (finalClear) await updateStatus('[SYSTEM] UI Traps (OK/Install) cleared.');
 
       
 
