@@ -431,9 +431,8 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
         await updateStatus('[SYSTEM] Launching isolated Firefox BiDi instance...');
         
         // --- LAUNCHING FIREFOX USING V24+ API ---
-                browser = await puppeteer.launch({
-            browser: 'firefox', // The v24+ way
-            product: 'firefox', // The v23 way (Just in case!)
+          browser = await puppeteer.launch({
+            browser: 'firefox', // Only use this modern flag
             headless: true,
             args: ['--no-sandbox', '--disable-setuid-sandbox'] 
         });
