@@ -1801,24 +1801,25 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         }
         browser = globalTaskBrowser;
 
-        // --- STEP 1: INITIALIZE MASTER TAB & START RECORDING ---
+                // --- STEP 1: INITIALIZE MASTER TAB & START RECORDING ---
         await updateStatus('[SYSTEM] Opening Master Tab & forcing App Install state...');
         page1 = await browser.newPage();
         pages.push(page1);
 
-
-        // --- THE FIX: DISARM THE INSTALL TRIGGER ---
+        // --- THE PWA SHIELD & INSTALL SPOOFER ---
+        // This stops the system dialog and fakes the "Accepted" state to the site
         await page1.evaluateOnNewDocument(() => {
-            // 1. Block the native "Install App" dialog from ever triggering
             window.addEventListener('beforeinstallprompt', (e) => {
                 e.preventDefault(); 
+                e.userChoice = Promise.resolve({ outcome: 'accepted', platform: 'web' });
                 return false;
             });
-            // 2. Pretend the app is already installed to satisfy the site logic
             window.dispatchEvent(new Event('appinstalled'));
+            // Fake the related apps check so the site thinks it's already on the device
+            navigator.getInstalledRelatedApps = () => Promise.resolve([{ id: 'wsjobs-pwa' }]);
         });
 
-        // 1. START VIDEO RECORDING (To capture the "Install App" struggle)
+        // 1. START VIDEO RECORDING (Diagnostic Mode)
         recorder = new PuppeteerScreenRecorder(page1, {
             fps: 30,
             videoFrame: { width: 412, height: 915 },
@@ -1826,38 +1827,63 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         });
         await recorder.start(videoPath);
 
-        // 2. THE PWA SHIELD & INSTALL SPOOFER
-        await page1.evaluateOnNewDocument(() => {
-            window.addEventListener('beforeinstallprompt', (e) => {
-                e.preventDefault();
-                e.userChoice = Promise.resolve({ outcome: 'accepted', platform: 'web' });
-                return false;
-            });
-            window.dispatchEvent(new Event('appinstalled'));
-        });
-
         await page1.setViewport({ width: 412, height: 915 }); 
         await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-        // 3. Inject Session
-         await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
+        // 2. Navigation & Session Injection
+        await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
         await loadSessionFromDB('wsjobs_task', page1);
 
-        // USE THE FUNCTION HERE
-        await updateStatus('[SYSTEM] Clearing UI obstructions...');
-        await sweepTutorial(page1); 
-        await new Promise(r => setTimeout(r, 2000));
-        await sweepTutorial(page1); // Double strike to be sure
-        // --- NEW: AGGRESSIVE PRE-LOGIN POPUP KILLER ---
+        // --- STEP 2: AGGRESSIVE OK -> INSTALL COMBINATION STRIKE ---
+        // Based on video: Clicks "OK" first, then hunts for "Install"
+        await updateStatus('[SYSTEM] Executing OK -> INSTALL sequence...');
         for (let i = 0; i < 4; i++) {
             await new Promise(r => setTimeout(r, 2000));
             await page1.evaluate(() => {
-                const btn = Array.from(document.querySelectorAll('*')).find(el => 
-                    (el.innerText?.trim() === 'OK' || el.innerText?.trim() === 'Install') && 
-                    el.offsetParent !== null
-                );
-                if (btn) btn.click();
+                const elements = Array.from(document.querySelectorAll('*'));
+                
+                // Strike 1: Clear the white "OK" modal
+                const okBtn = elements.find(el => el.innerText?.trim() === 'OK' && el.offsetParent !== null);
+                if (okBtn) okBtn.click();
+
+                // Strike 2: Click the "Install" button from the second popup
+                const installBtn = elements.find(el => el.innerText?.trim() === 'Install' && el.offsetParent !== null);
+                if (installBtn) installBtn.click();
+
+                // Strike 3: Kill the CSS blur/mask if it gets stuck
+                document.body.style.filter = 'none';
+                document.body.style.overflow = 'auto';
+                document.querySelectorAll('[class*="mask"], [class*="overlay"], .modal-backdrop').forEach(el => el.remove());
             });
+        }
+
+        // --- STEP 3: LOGIN LOGIC (ENTRAR SUPPORT) ---
+        const requiresLogin = page1.url().includes('login') || await page1.$('input[type="password"]') !== null;
+        if (requiresLogin) {
+            await updateStatus('[SYSTEM] Attempting Sign-In (Brazil UI)...');
+            const allInputs = await page1.$$('input');
+            if (allInputs.length >= 2) {
+                // Focus forcing to bypass any ghost blurs
+                await allInputs[0].focus();
+                await allInputs[0].click({ clickCount: 3 });
+                await allInputs[0].type('09163916500', { delay: 50 });
+                
+                await allInputs[1].focus();
+                await allInputs[1].click({ clickCount: 3 });
+                await allInputs[1].type('Emmamama', { delay: 50 });
+                
+                await page1.evaluate(() => {
+                    const btns = Array.from(document.querySelectorAll('button, div, span'));
+                    // Look for "Sign In" or "Entrar" as seen in the Brazil UI
+                    const loginBtn = btns.find(b => 
+                        (b.innerText?.trim() === 'Sign In' || b.innerText?.trim() === 'Entrar' || b.innerText?.trim() === 'ENTRAR') 
+                        && b.offsetParent !== null
+                    );
+                    if (loginBtn) loginBtn.click();
+                });
+                
+                await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+            }
         }
 
         // 4. Head to Task page
