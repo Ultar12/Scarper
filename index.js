@@ -419,13 +419,15 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Booting fresh Login Test Protocol...');
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Booting fresh Login Test Protocol (Video Mode)...');
     const updateStatus = async (text) => {
         await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
     };
 
     let browser = null;
     let page = null;
+    let recorder = null;
+    const videoPath = path.join(__dirname, `testlogin_video_${Date.now()}.mp4`);
 
     try {
         await updateStatus('[SYSTEM] Launching isolated Chrome instance...');
@@ -439,8 +441,13 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
         await page.setViewport({ width: 412, height: 915 });
         await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
+        // --- START VIDEO RECORDING ---
+        recorder = new PuppeteerScreenRecorder(page, {
+            fps: 30, videoFrame: { width: 412, height: 915 }, aspectRatio: '9:16'
+        });
+        await recorder.start(videoPath);
+
         // --- THE TERMINATOR (POPUP KILLER) ---
-        // Runs silently to aggressively clear any install/OK popups that spawn
         await page.evaluateOnNewDocument(() => {
             window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); return false; });
             setInterval(() => {
@@ -517,28 +524,45 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
             await updateStatus('[SYSTEM] Already logged in via cache.');
         }
 
-        // --- VERIFICATION & SCREENSHOT ---
+        // --- VERIFICATION ---
         await updateStatus('[SYSTEM] Teleporting to User Dashboard to verify status...');
         await page.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
 
-        await updateStatus('[SYSTEM] Capture! Snapping the final state...');
-        const finalSnap = await page.screenshot({ type: 'png' });
+        await updateStatus('[SYSTEM] Capture complete! Processing video...');
+        
+        // Stop recording properly
+        if (recorder) {
+            await recorder.stop().catch(() => {});
+        }
 
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-        await bot.sendPhoto(chatId, finalSnap, { caption: '[SUCCESS] Test Login Complete. This is exactly what the bot sees after the login sequence.' });
+        
+        // Send Video to Telegram
+        if (fs.existsSync(videoPath)) {
+            await bot.sendVideo(chatId, videoPath, { caption: '[SUCCESS] Test Login Complete. Here is the full video of the sequence.' });
+            fs.unlinkSync(videoPath); // Cleanup Heroku storage
+        }
 
     } catch (err) {
         await updateStatus(`[ERROR] Test command failed: ${err.message}`);
-        if (page) {
+        
+        // Stop recording if it crashed midway
+        if (recorder) {
+            await recorder.stop().catch(() => {});
+        }
+        
+        // Send the crash video
+        if (fs.existsSync(videoPath)) {
+            await bot.sendVideo(chatId, videoPath, { caption: `[DIAGNOSTIC] Test Login crashed! Video of the failure:\nError: ${err.message}` });
+            fs.unlinkSync(videoPath);
+        } else if (page) {
             try {
-                // Take an emergency picture if it crashes so we know exactly where it died
                 const errSnap = await page.screenshot({ type: 'png' });
                 await bot.sendPhoto(chatId, errSnap, { caption: '[DIAGNOSTIC] Screen state at the exact moment of failure.' });
             } catch (e) {}
         }
     } finally {
-        // ALWAYS close this browser so Heroku RAM doesn't blow up
         if (browser) await browser.close().catch(() => {});
     }
 });
