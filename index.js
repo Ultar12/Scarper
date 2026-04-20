@@ -1802,14 +1802,26 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         browser = globalTaskBrowser;
 
 
-                                        // --- STEP 1: INITIALIZE MASTER TAB ---
+                // --- STEP 1: INITIALIZE MASTER TAB & START RECORDING ---
+        await updateStatus('[SYSTEM] Opening Master Tab & forcing App Install state...');
         page1 = await browser.newPage();
         pages.push(page1);
 
-        // Mute the browser-level install prompt
+        // PWA Spoofing: Lie to the site about installation
         await page1.evaluateOnNewDocument(() => {
-            window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); return false; });
+            window.addEventListener('beforeinstallprompt', (e) => {
+                e.preventDefault(); 
+                e.userChoice = Promise.resolve({ outcome: 'accepted', platform: 'web' });
+                return false;
+            });
+            window.dispatchEvent(new Event('appinstalled'));
+            navigator.getInstalledRelatedApps = () => Promise.resolve([{ id: 'wsjobs-pwa' }]);
         });
+
+        recorder = new PuppeteerScreenRecorder(page1, {
+            fps: 30, videoFrame: { width: 412, height: 915 }, aspectRatio: '9:16'
+        });
+        await recorder.start(videoPath);
 
         await page1.setViewport({ width: 412, height: 915 }); 
         await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
@@ -1817,74 +1829,51 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
         await loadSessionFromDB('wsjobs_task', page1);
 
-        // --- THE NUCLEAR UI CLEANUP ---
-        await updateStatus('[SYSTEM] Deconstructing blocked UI layers...');
-        
-        // We run this multiple times to catch the "refresh" jump seen in the video
-        for (let i = 0; i < 3; i++) {
-            await new Promise(r => setTimeout(r, 3000));
-                        await page1.evaluate(() => {
-                // 1. Physically REMOVE the popup container
-                const elements = Array.from(document.querySelectorAll('*'));
-                const okBtn = elements.find(el => el.innerText?.trim() === 'OK');
-                
-                if (okBtn) {
-                    let container = okBtn.parentElement;
-                    // Safely climb up to the modal wrapper
-                    for(let j=0; j<4; j++) { 
-                        if(container && container.parentElement) container = container.parentElement; 
-                    }
-                    if (container && typeof container.remove === 'function') container.remove();
+        // --- STEP 2: GEOMETRIC POPUP KILLER ---
+        await updateStatus('[SYSTEM] Executing Geometric Strike on UI traps...');
+        for (let i = 0; i < 4; i++) {
+            await new Promise(r => setTimeout(r, 2000));
+            
+            // Get coordinates for OK or Install buttons
+            const targetCoords = await page1.evaluate(() => {
+                const btn = Array.from(document.querySelectorAll('*')).find(el => 
+                    (el.innerText?.trim() === 'OK' || el.innerText?.trim() === 'Install') && el.offsetParent !== null
+                );
+                if (btn) {
+                    const rect = btn.getBoundingClientRect();
+                    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
                 }
-
-                // 2. Kill the BLUR and restore scrolling (SAFE CHECK)
-                if (document.body) {
-                    document.body.style.filter = 'none';
-                    document.body.style.overflow = 'auto';
-                }
-                
-                // 3. Remove all "mask" or "overlay" divs using a safe loop
-                const overlays = document.querySelectorAll('[class*="mask"], [class*="overlay"], .v-modal, .modal-backdrop');
-                overlays.forEach(el => {
-                    if (el && typeof el.remove === 'function') el.remove();
-                });
-                
-                // 4. Force parents to be clickable (with safety checks)
-                const inputs = document.querySelectorAll('input');
-                inputs.forEach(input => {
-                    let p = input.parentElement;
-                    while(p && p !== document.body) {
-                        if (p.style) {
-                            p.style.pointerEvents = 'auto';
-                            p.style.visibility = 'visible';
-                            p.style.opacity = '1';
-                        }
-                        p = p.parentElement;
-                    }
-                });
+                return null;
             });
 
+            if (targetCoords) {
+                // Physical Hardware Click
+                await page1.mouse.click(targetCoords.x, targetCoords.y);
+                
+                // Nuclear CSS cleanup to remove blur immediately
+                await page1.evaluate(() => {
+                    document.body.style.filter = 'none';
+                    document.body.style.overflow = 'auto';
+                    document.querySelectorAll('[class*="mask"], [class*="overlay"], .modal-backdrop').forEach(el => el.remove());
+                });
+            }
         }
 
-        // --- STEP 2: HARDWARE-LEVEL LOGIN ---
+        // --- STEP 3: LOGIN LOGIC (SHIGA / ENTRAR SUPPORT) ---
         const requiresLogin = page1.url().includes('login') || await page1.$('input[type="password"]') !== null;
         if (requiresLogin) {
-            await updateStatus('[SYSTEM] Entering credentials into cleared UI...');
+            await updateStatus('[SYSTEM] Performing Geometric Sign-In...');
             const allInputs = await page1.$$('input');
             if (allInputs.length >= 2) {
-                // Focus and type with a solid delay to ensure the site registers it
                 await allInputs[0].focus();
-                await allInputs[0].click({ clickCount: 3 });
-                await allInputs[0].type('09163916500', { delay: 100 });
-                
+                await allInputs[0].type('09163916500', { delay: 50 });
                 await allInputs[1].focus();
-                await allInputs[1].click({ clickCount: 3 });
-                await allInputs[1].type('Emmamama', { delay: 100 });
+                await allInputs[1].type('Emmamama', { delay: 50 });
                 
-                // Final Geometric Click on Shiga
+                // Get coordinates for the Shiga/Entrar button
                 const loginCoords = await page1.evaluate(() => {
                     const btn = Array.from(document.querySelectorAll('*')).find(b => 
-                        b.innerText?.trim() === 'Shiga' && b.offsetParent !== null
+                        ['Shiga', 'Entrar', 'Sign In', 'ENTRAR'].includes(b.innerText?.trim()) && b.offsetParent !== null
                     );
                     if (btn) {
                         const rect = btn.getBoundingClientRect();
@@ -1895,12 +1884,16 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
                 if (loginCoords) {
                     await page1.mouse.click(loginCoords.x, loginCoords.y);
+                } else {
+                    // Fallback to script click if mouse fails
+                    await page1.evaluate(() => {
+                        const btn = Array.from(document.querySelectorAll('*')).find(b => ['Shiga', 'Entrar', 'Sign In'].includes(b.innerText?.trim()));
+                        if (btn) btn.click();
+                    });
                 }
                 await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
             }
         }
-
-
 
       
 
