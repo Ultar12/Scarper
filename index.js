@@ -1287,9 +1287,30 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await recorder.start(videoPath);
 
         // Step 1: Login & Session Recovery
-        await updateStatus('[SYSTEM] Loading session and checking login state...');
+                await updateStatus('[SYSTEM] Loading session and checking login state...');
         await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'networkidle2' }); 
         await loadSessionFromDB('wsjobs_task', page);
+
+        // --- NEW: AGGRESSIVE PRE-LOGIN POPUP KILLER ---
+        // Loops 3 times to catch "Install App" popups that animate in late
+        for (let i = 0; i < 3; i++) {
+            await new Promise(r => setTimeout(r, 2000));
+            const closed = await page.evaluate(() => {
+                const elements = Array.from(document.querySelectorAll('*'));
+                // Kill any visible "OK" button (Install App or generic notice)
+                const okBtn = elements.find(el => 
+                    el.innerText?.trim() === 'OK' && 
+                    el.offsetParent !== null && 
+                    el.tagName !== 'BODY'
+                );
+                if (okBtn) {
+                    okBtn.click();
+                    return true;
+                }
+                return false;
+            });
+            if (closed) console.log('[SYSTEM] Pre-login popup cleared.');
+        }
 
         const requiresLogin = page.url().includes('login') || await page.$('input[type="password"]') !== null;
 
@@ -1297,8 +1318,10 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             await updateStatus('[SYSTEM] Session expired. Performing New UI Sign-In...');
             const allInputs = await page.$$('input');
             if (allInputs.length >= 2) {
+                // Focus and type into new fields
                 await allInputs[0].click({ clickCount: 3 });
                 await allInputs[0].type('09163916500', { delay: 50 });
+                
                 await allInputs[1].click({ clickCount: 3 });
                 await allInputs[1].type('Emmamama', { delay: 50 });
                 
@@ -1312,6 +1335,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         }
 
         // --- Step 2: Clear Post-Login "Notice" Popup ---
+        // This clears the dark transparent popup after a successful login
         await new Promise(r => setTimeout(r, 4000));
         await page.evaluate(() => {
             const okBtn = Array.from(document.querySelectorAll('*')).find(el => 
@@ -1320,11 +1344,12 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             if (okBtn) okBtn.click();
         });
 
-        // Ensure we are on the Account page
+        // Ensure we are on the Account page for the next steps
         if (!page.url().includes('/account')) {
             await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'networkidle2' });
             await new Promise(r => setTimeout(r, 3000));
         }
+
 
         // Step 3: Scan Balance & Select Tier
         await updateStatus('[SYSTEM] Scanning Account Balance...');
