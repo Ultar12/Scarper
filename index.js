@@ -1802,26 +1802,15 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         browser = globalTaskBrowser;
 
 
-                // --- STEP 1: INITIALIZE MASTER TAB & START RECORDING ---
-        await updateStatus('[SYSTEM] Opening Master Tab & forcing App Install state...');
+                        // --- STEP 1: INITIALIZE MASTER TAB ---
         page1 = await browser.newPage();
         pages.push(page1);
 
-        // PWA Spoofing: Lie to the site about installation
+        // PWA Spoofing (Lie to the site so it thinks we are an app)
         await page1.evaluateOnNewDocument(() => {
-            window.addEventListener('beforeinstallprompt', (e) => {
-                e.preventDefault(); 
-                e.userChoice = Promise.resolve({ outcome: 'accepted', platform: 'web' });
-                return false;
-            });
-            window.dispatchEvent(new Event('appinstalled'));
-            navigator.getInstalledRelatedApps = () => Promise.resolve([{ id: 'wsjobs-pwa' }]);
+            window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); return false; });
+            navigator.getInstalledRelatedApps = () => Promise.resolve([{ id: 'wsjobs' }]);
         });
-
-        recorder = new PuppeteerScreenRecorder(page1, {
-            fps: 30, videoFrame: { width: 412, height: 915 }, aspectRatio: '9:16'
-        });
-        await recorder.start(videoPath);
 
         await page1.setViewport({ width: 412, height: 915 }); 
         await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
@@ -1829,51 +1818,52 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
         await loadSessionFromDB('wsjobs_task', page1);
 
-        // --- STEP 2: GEOMETRIC POPUP KILLER ---
-        await updateStatus('[SYSTEM] Executing Geometric Strike on UI traps...');
-        for (let i = 0; i < 4; i++) {
-            await new Promise(r => setTimeout(r, 2000));
-            
-            // Get coordinates for OK or Install buttons
-            const targetCoords = await page1.evaluate(() => {
-                const btn = Array.from(document.querySelectorAll('*')).find(el => 
-                    (el.innerText?.trim() === 'OK' || el.innerText?.trim() === 'Install') && el.offsetParent !== null
-                );
-                if (btn) {
-                    const rect = btn.getBoundingClientRect();
-                    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-                }
-                return null;
-            });
+        // --- CRITICAL: THE "SETTLE" WAIT ---
+        // We wait 6 seconds to let the site finish its internal "reset" seen in your video
+        await updateStatus('[SYSTEM] Waiting for site UI to settle...');
+        await new Promise(r => setTimeout(r, 6000));
 
-            if (targetCoords) {
-                // Physical Hardware Click
-                await page1.mouse.click(targetCoords.x, targetCoords.y);
-                
-                // Nuclear CSS cleanup to remove blur immediately
-                await page1.evaluate(() => {
-                    document.body.style.filter = 'none';
-                    document.body.style.overflow = 'auto';
-                    document.querySelectorAll('[class*="mask"], [class*="overlay"], .modal-backdrop').forEach(el => el.remove());
-                });
+        // --- THE GEOMETRIC STRIKE (KILL POPUP) ---
+        await updateStatus('[SYSTEM] Executing hardware-level popup kill...');
+        const buttonBox = await page1.evaluate(() => {
+            const okBtn = Array.from(document.querySelectorAll('*')).find(el => 
+                el.innerText?.trim() === 'OK' && el.offsetParent !== null
+            );
+            if (okBtn) {
+                const rect = okBtn.getBoundingClientRect();
+                return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
             }
+            return null;
+        });
+
+        if (buttonBox) {
+            await page1.mouse.click(buttonBox.x, buttonBox.y);
+            // Nuclear cleanup: physically remove the blur style
+            await page1.evaluate(() => {
+                document.body.style.filter = 'none';
+                document.querySelectorAll('[class*="mask"], [class*="overlay"]').forEach(el => el.remove());
+            });
         }
 
-        // --- STEP 3: LOGIN LOGIC (SHIGA / ENTRAR SUPPORT) ---
+        // --- STEP 2: STABLE LOGIN (AFTER RESET) ---
         const requiresLogin = page1.url().includes('login') || await page1.$('input[type="password"]') !== null;
         if (requiresLogin) {
-            await updateStatus('[SYSTEM] Performing Geometric Sign-In...');
+            await updateStatus('[SYSTEM] Site stable. Typing credentials...');
             const allInputs = await page1.$$('input');
             if (allInputs.length >= 2) {
+                // We type slowly to ensure the site registers each key
                 await allInputs[0].focus();
-                await allInputs[0].type('09163916500', { delay: 50 });
-                await allInputs[1].focus();
-                await allInputs[1].type('Emmamama', { delay: 50 });
+                await allInputs[0].click({ clickCount: 3 });
+                await allInputs[0].type('09163916500', { delay: 100 });
                 
-                // Get coordinates for the Shiga/Entrar button
+                await allInputs[1].focus();
+                await allInputs[1].click({ clickCount: 3 });
+                await allInputs[1].type('Emmamama', { delay: 100 });
+                
+                // Geometric click on "Shiga"
                 const loginCoords = await page1.evaluate(() => {
                     const btn = Array.from(document.querySelectorAll('*')).find(b => 
-                        ['Shiga', 'Entrar', 'Sign In', 'ENTRAR'].includes(b.innerText?.trim()) && b.offsetParent !== null
+                        b.innerText?.trim() === 'Shiga' && b.offsetParent !== null
                     );
                     if (btn) {
                         const rect = btn.getBoundingClientRect();
@@ -1884,16 +1874,11 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
                 if (loginCoords) {
                     await page1.mouse.click(loginCoords.x, loginCoords.y);
-                } else {
-                    // Fallback to script click if mouse fails
-                    await page1.evaluate(() => {
-                        const btn = Array.from(document.querySelectorAll('*')).find(b => ['Shiga', 'Entrar', 'Sign In'].includes(b.innerText?.trim()));
-                        if (btn) btn.click();
-                    });
                 }
                 await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
             }
         }
+
 
       
 
