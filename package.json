@@ -5,7 +5,7 @@
   "main": "index.js",
     "scripts": {
     "start": "node index.js",
-    "postinstall": "npx puppeteer browsers install"
+    "postinstall": "npx playwright install firefox --with-deps"
   },
 
   "dependencies": {
