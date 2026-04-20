@@ -1823,37 +1823,47 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         // We run this multiple times to catch the "refresh" jump seen in the video
         for (let i = 0; i < 3; i++) {
             await new Promise(r => setTimeout(r, 3000));
-            await page1.evaluate(() => {
-                // 1. Physically REMOVE the popup and its background mask
+                        await page1.evaluate(() => {
+                // 1. Physically REMOVE the popup container
                 const elements = Array.from(document.querySelectorAll('*'));
                 const okBtn = elements.find(el => el.innerText?.trim() === 'OK');
                 
                 if (okBtn) {
-                    // Find the high-level container (usually 3 or 4 levels up) and delete it
                     let container = okBtn.parentElement;
-                    for(let j=0; j<4; j++) { if(container && container.parentElement) container = container.parentElement; }
-                    if (container) container.remove();
+                    // Safely climb up to the modal wrapper
+                    for(let j=0; j<4; j++) { 
+                        if(container && container.parentElement) container = container.parentElement; 
+                    }
+                    if (container && typeof container.remove === 'function') container.remove();
                 }
 
-                // 2. Kill the BLUR and restore scrolling
-                document.body.style.filter = 'none';
-                document.body.style.overflow = 'auto';
+                // 2. Kill the BLUR and restore scrolling (SAFE CHECK)
+                if (document.body) {
+                    document.body.style.filter = 'none';
+                    document.body.style.overflow = 'auto';
+                }
                 
-                // 3. Remove all "mask" or "overlay" divs that block clicks
-                document.querySelectorAll('[class*="mask"], [class*="overlay"], .v-modal, .modal-backdrop').forEach(el => el.remove());
+                // 3. Remove all "mask" or "overlay" divs using a safe loop
+                const overlays = document.querySelectorAll('[class*="mask"], [class*="overlay"], .v-modal, .modal-backdrop');
+                overlays.forEach(el => {
+                    if (el && typeof el.remove === 'function') el.remove();
+                });
                 
-                // 4. Force all parents of the input fields to be visible/clickable
+                // 4. Force parents to be clickable (with safety checks)
                 const inputs = document.querySelectorAll('input');
                 inputs.forEach(input => {
                     let p = input.parentElement;
                     while(p && p !== document.body) {
-                        p.style.pointerEvents = 'auto';
-                        p.style.visibility = 'visible';
-                        p.style.opacity = '1';
+                        if (p.style) {
+                            p.style.pointerEvents = 'auto';
+                            p.style.visibility = 'visible';
+                            p.style.opacity = '1';
+                        }
                         p = p.parentElement;
                     }
                 });
             });
+
         }
 
         // --- STEP 2: HARDWARE-LEVEL LOGIN ---
