@@ -2015,35 +2015,24 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
         if (requiresLogin) {
             await updateStatus('[SYSTEM] DB Session missing/expired. Performing Physical Login...');
-            const allInputs = await page1.$$('input');
-            const visibleInputs = [];
-            for (let input of allInputs) {
-                const isVisible = await input.evaluate(el => el.offsetParent !== null && window.getComputedStyle(el).display !== 'none');
-                if (isVisible) visibleInputs.push(input);
-            }
+            // --- NEW LOGIN STRIKE ---
+const allInputs = await page1.$$('input');
+if (allInputs.length >= 2) {
+    // Input 0 is Account, Input 1 is Password
+    await allInputs[0].click({ clickCount: 3 });
+    await allInputs[0].type('09163916500', { delay: 50 });
+    
+    await allInputs[1].click({ clickCount: 3 });
+    await allInputs[1].type('Emmamama', { delay: 50 });
+    
+    await page1.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll('button, div, span'));
+        // Target the specific "Sign In" text from your screenshot
+        const loginBtn = btns.find(b => b.innerText?.trim() === 'Sign In' && b.offsetParent !== null);
+        if (loginBtn) loginBtn.click();
+    });
+    await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
 
-            if (visibleInputs.length >= 2) {
-                await visibleInputs[0].evaluate(el => el.value = '');
-                await visibleInputs[0].click();
-                await visibleInputs[0].type('09163916500', { delay: 50 });
-                
-                await visibleInputs[1].evaluate(el => el.value = '');
-                await visibleInputs[1].click();
-                await visibleInputs[1].type('Emmamama', { delay: 50 });
-                
-                await new Promise(r => setTimeout(r, 1000));
-                
-                await page1.evaluate(() => {
-                    const elements = Array.from(document.querySelectorAll('*'));
-                    for (let el of elements) {
-                        if (el.innerText && el.innerText.trim() === 'Login' && el.offsetParent !== null) {
-                            el.click();
-                        }
-                    }
-                });
-            }
-            
-            await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
             await new Promise(r => setTimeout(r, 4000)); 
             
             await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
@@ -2080,18 +2069,33 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         // --- STEP 3: DYNAMIC TARGET ACQUISITION (2-TO-1 RATIO) ---
         await updateStatus(`[SYSTEM] Target acquisition phase for: ${targetSuffix}...`);
         
-        const targetCount = await page1.evaluate((suffixStr) => {
-            const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => 
-                el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null
-            );
-            let count = 0;
-            for (let btn of sendBtns) {
-                let containerText = btn.parentElement?.parentElement?.innerText || '';
-                if (containerText.includes(suffixStr)) count++;
+        // --- NEW DEEP-NEST TARGET SCRAPER ---
+const targetCount = await page1.evaluate((suffixStr) => {
+    // 1. Find all 'Send' buttons first
+    const allBtns = Array.from(document.querySelectorAll('*')).filter(el => 
+        el.innerText?.trim() === 'Send' && el.offsetParent !== null
+    );
+    
+    let matches = 0;
+    for (let btn of allBtns) {
+        // 2. Look at the surrounding text in the task card
+        let parent = btn.parentElement;
+        let contextText = "";
+        // Check 4 levels up to find the phone number suffix
+        for (let i = 0; i < 4; i++) {
+            if (parent) {
+                contextText += parent.innerText || "";
+                parent = parent.parentElement;
             }
-            // Limit to 4 unique numbers to stay within RAM limits (8 tabs + Master)
-            return count > 4 ? 4 : count; 
-        }, targetSuffix);
+        }
+        
+        if (contextText.includes(suffixStr)) {
+            matches++;
+        }
+    }
+    return matches > 4 ? 4 : matches;
+}, targetSuffix);
+
 
         if (targetCount === 0) throw new Error(`Found 0 numbers ending with ${targetSuffix}.`);
 
