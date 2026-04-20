@@ -416,7 +416,7 @@ bot.onText(/\/m4usign/i, (msg) => {
 
 
 
-        // Usage: /testlogin
+// Usage: /testlogin
 bot.onText(/^\/testlogin$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -449,46 +449,34 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
         });
         await recorder.start(videoPath);
 
-        // --- THE GHOST PROTOCOL (NON-DESTRUCTIVE POPUP BYPASS) ---
-        // This hides the popup instantly without breaking the website's code
+        // --- THE NEW TERMINATOR PROTOCOL (POPUP AUTO-CLICKER) ---
         await page.evaluateOnNewDocument(() => {
             window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); return false; });
             
             setInterval(() => {
                 if (!document || !document.body) return;
-                
                 const elements = Array.from(document.querySelectorAll('*'));
-                const popupText = elements.find(el => el.innerText && el.innerText.includes('Add to home screen'));
                 
-                if (popupText) {
-                    // 1. Click OK to appease the site's internal tracking
-                    const okBtn = elements.find(el => el.innerText?.trim() === 'OK' && el.offsetParent !== null);
-                    if (okBtn) okBtn.click();
-                    
-                    // 2. GHOST IT: Hide it with CSS instead of removing it
-                    let container = popupText;
-                    for (let i = 0; i < 5; i++) {
-                        if (container.parentElement && container.parentElement.tagName !== 'BODY' && container.parentElement.tagName !== 'HTML') {
-                            container = container.parentElement;
-                        }
-                    }
-                    if (container) {
-                        container.style.setProperty('display', 'none', 'important');
-                        container.style.setProperty('opacity', '0', 'important');
-                        container.style.setProperty('pointer-events', 'none', 'important');
-                        container.style.setProperty('z-index', '-9999', 'important');
-                    }
-                    
-                    // 3. Unfreeze the background so the bot can type
-                    document.body.style.setProperty('filter', 'none', 'important');
-                    document.body.style.setProperty('overflow', 'auto', 'important');
-                }
+                // 1. Smash the "OK" button for the first notice
+                const okBtn = elements.find(el => el.innerText?.trim() === 'OK' && el.offsetParent !== null);
+                if (okBtn) okBtn.click();
+                
+                // 2. Smash the "Cancel" button for the Install modal
+                // We must Cancel because headless browsers cannot install mobile PWAs natively!
+                const cancelBtn = elements.find(el => el.innerText?.trim() === 'Cancel' && el.offsetParent !== null);
+                if (cancelBtn) cancelBtn.click();
+                
+                // 3. Force unfreeze the DOM in case the popup locked the background
+                document.body.style.setProperty('filter', 'none', 'important');
+                document.body.style.setProperty('overflow', 'auto', 'important');
+                document.body.style.setProperty('pointer-events', 'auto', 'important');
             }, 500); 
         });
 
         await updateStatus('[SYSTEM] Navigating to login page...');
-        await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 4000));
+        // Switched to domcontentloaded to prevent the page from hanging on background tasks
+        await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        await new Promise(r => setTimeout(r, 5000));
 
         // --- LOGIN LOGIC ---
         const requiresLogin = page.url().includes('login') || await page.$('input[type="password"]') !== null;
@@ -529,7 +517,7 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
                 }
                 
                 await updateStatus('[SYSTEM] Waiting for dashboard navigation...');
-                await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+                await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
             }
         } else {
             await updateStatus('[SYSTEM] Already logged in via cache.');
@@ -537,7 +525,7 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
 
         // --- VERIFICATION ---
         await updateStatus('[SYSTEM] Teleporting to User Dashboard to verify status...');
-        await page.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
+        await page.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'domcontentloaded' });
         await new Promise(r => setTimeout(r, 4000));
 
         await updateStatus('[SYSTEM] Capture complete! Processing video...');
