@@ -448,62 +448,59 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
         });
         await recorder.start(videoPath);
 
-        // --- THE NUKE PROTOCOL (DOM DELETION) ---
+        // --- THE SURGICAL CLOAK PROTOCOL ---
         await page.evaluateOnNewDocument(() => {
             window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); return false; });
             
             setInterval(() => {
                 if (!document || !document.body) return;
-                
                 const elements = Array.from(document.querySelectorAll('*'));
                 
-                // 1. Target the annoying "Add to home screen" popup
-                const popupText = elements.find(el => 
-                    el.innerText && el.innerText.includes('Add to home screen for best experience')
-                );
-                
-                if (popupText) {
-                    // DO NOT CLICK OK. Trace up to the container and delete it.
-                    let container = popupText;
-                    for (let i = 0; i < 6; i++) {
-                        if (container.parentElement && 
-                            container.parentElement.tagName !== 'BODY' && 
-                            container.parentElement.tagName !== 'HTML') {
-                            container = container.parentElement;
-                        }
-                    }
-                    
-                    // Nuke it from the HTML DOM entirely
-                    if (container) container.remove();
-                    
-                    // Force the background to unfreeze
-                    document.body.style.setProperty('filter', 'none', 'important');
-                    document.body.style.setProperty('overflow', 'auto', 'important');
-                    document.body.style.setProperty('pointer-events', 'auto', 'important');
-                }
-                
-                // 2. Target the secondary "Install app / Cancel" modal
+                // 1. Natural Dismissal: If there is a 'Cancel' button, just click it!
                 const cancelBtn = elements.find(el => el.innerText?.trim() === 'Cancel' && el.offsetParent !== null);
                 if (cancelBtn) {
-                     let container2 = cancelBtn;
-                     for (let i = 0; i < 5; i++) {
-                         if (container2.parentElement && 
-                             container2.parentElement.tagName !== 'BODY' && 
-                             container2.parentElement.tagName !== 'HTML') {
-                             container2 = container2.parentElement;
-                         }
-                     }
-                     // Nuke it from the HTML DOM entirely
-                     if (container2) container2.remove();
+                    cancelBtn.click();
                 }
                 
+                // 2. Surgical CSS Cloak: Hide the 'Add to home screen' popup WITHOUT deleting the website
+                const popupText = elements.find(el => el.innerText && el.innerText.includes('Add to home screen for best experience'));
+                if (popupText) {
+                    // Hide the text
+                    popupText.style.setProperty('display', 'none', 'important');
+                    
+                    // Hide the 'OK' button right next to it so it can't be clicked
+                    const okBtn = elements.find(el => el.innerText?.trim() === 'OK' && el.offsetParent !== null);
+                    if (okBtn) {
+                        okBtn.style.setProperty('display', 'none', 'important');
+                        if (okBtn.parentElement) okBtn.parentElement.style.setProperty('display', 'none', 'important');
+                    }
+                    
+                    // Hide the dark background overlay specifically
+                    const overlays = elements.filter(el => {
+                        const style = window.getComputedStyle(el);
+                        return style.position === 'fixed' || style.position === 'absolute' || style.backgroundColor.includes('rgba(0, 0, 0');
+                    });
+                    
+                    overlays.forEach(overlay => {
+                        // If it covers more than half the screen, it's an overlay block. Hide it.
+                        if (overlay.offsetHeight > window.innerHeight * 0.5) {
+                            overlay.style.setProperty('display', 'none', 'important');
+                            overlay.style.setProperty('pointer-events', 'none', 'important');
+                        }
+                    });
+                }
+                
+                // 3. Unfreeze the DOM
+                document.body.style.setProperty('filter', 'none', 'important');
+                document.body.style.setProperty('overflow', 'auto', 'important');
+                document.body.style.setProperty('pointer-events', 'auto', 'important');
             }, 500); 
         });
 
         await updateStatus('[SYSTEM] Navigating to login page...');
         await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         
-        // Give the nuke script a few seconds to destroy any popups that load
+        // Give the cloak script a few seconds to hide any popups that animate in
         await new Promise(r => setTimeout(r, 4000));
 
         // --- LOGIN LOGIC ---
