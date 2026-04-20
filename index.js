@@ -415,7 +415,6 @@ bot.onText(/\/m4usign/i, (msg) => {
 
 
 
-
 // Usage: /testlogin
 bot.onText(/^\/testlogin$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
@@ -449,34 +448,63 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
         });
         await recorder.start(videoPath);
 
-        // --- THE NEW TERMINATOR PROTOCOL (POPUP AUTO-CLICKER) ---
+        // --- THE NUKE PROTOCOL (DOM DELETION) ---
         await page.evaluateOnNewDocument(() => {
             window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); return false; });
             
             setInterval(() => {
                 if (!document || !document.body) return;
+                
                 const elements = Array.from(document.querySelectorAll('*'));
                 
-                // 1. Smash the "OK" button for the first notice
-                const okBtn = elements.find(el => el.innerText?.trim() === 'OK' && el.offsetParent !== null);
-                if (okBtn) okBtn.click();
+                // 1. Target the annoying "Add to home screen" popup
+                const popupText = elements.find(el => 
+                    el.innerText && el.innerText.includes('Add to home screen for best experience')
+                );
                 
-                // 2. Smash the "Cancel" button for the Install modal
-                // We must Cancel because headless browsers cannot install mobile PWAs natively!
+                if (popupText) {
+                    // DO NOT CLICK OK. Trace up to the container and delete it.
+                    let container = popupText;
+                    for (let i = 0; i < 6; i++) {
+                        if (container.parentElement && 
+                            container.parentElement.tagName !== 'BODY' && 
+                            container.parentElement.tagName !== 'HTML') {
+                            container = container.parentElement;
+                        }
+                    }
+                    
+                    // Nuke it from the HTML DOM entirely
+                    if (container) container.remove();
+                    
+                    // Force the background to unfreeze
+                    document.body.style.setProperty('filter', 'none', 'important');
+                    document.body.style.setProperty('overflow', 'auto', 'important');
+                    document.body.style.setProperty('pointer-events', 'auto', 'important');
+                }
+                
+                // 2. Target the secondary "Install app / Cancel" modal
                 const cancelBtn = elements.find(el => el.innerText?.trim() === 'Cancel' && el.offsetParent !== null);
-                if (cancelBtn) cancelBtn.click();
+                if (cancelBtn) {
+                     let container2 = cancelBtn;
+                     for (let i = 0; i < 5; i++) {
+                         if (container2.parentElement && 
+                             container2.parentElement.tagName !== 'BODY' && 
+                             container2.parentElement.tagName !== 'HTML') {
+                             container2 = container2.parentElement;
+                         }
+                     }
+                     // Nuke it from the HTML DOM entirely
+                     if (container2) container2.remove();
+                }
                 
-                // 3. Force unfreeze the DOM in case the popup locked the background
-                document.body.style.setProperty('filter', 'none', 'important');
-                document.body.style.setProperty('overflow', 'auto', 'important');
-                document.body.style.setProperty('pointer-events', 'auto', 'important');
             }, 500); 
         });
 
         await updateStatus('[SYSTEM] Navigating to login page...');
-        // Switched to domcontentloaded to prevent the page from hanging on background tasks
         await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-        await new Promise(r => setTimeout(r, 5000));
+        
+        // Give the nuke script a few seconds to destroy any popups that load
+        await new Promise(r => setTimeout(r, 4000));
 
         // --- LOGIN LOGIC ---
         const requiresLogin = page.url().includes('login') || await page.$('input[type="password"]') !== null;
@@ -555,6 +583,7 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
         if (browser) await browser.close().catch(() => {});
     }
 });
+
 
 
 
