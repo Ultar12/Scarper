@@ -1744,14 +1744,14 @@ bot.onText(/\/upscale/i, async (msg) => {
 
 
 
+
 // Usage: /task 127
 bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
     const targetSuffix = match[1]; 
-
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting Multi-Thread Protocol for suffix: ${targetSuffix}...`);
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting Multi-Thread Protocol (Video Active)...`);
     const msgId = statusMsg.message_id;
 
     const updateStatus = async (text) => {
@@ -1759,128 +1759,90 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     };
 
     let browser = null;
+    let page1 = null;
     let pages = []; 
+    let recorder = null;
+    const videoPath = path.join(__dirname, `task_diagnostic_${Date.now()}.mp4`);
 
     try {
-        // --- 1-HOUR IDLE TIMER CLEANUP ---
+        // --- CLEANUP ---
         if (taskIdleTimer) clearTimeout(taskIdleTimer);
         if (activeTaskPages.length > 0) {
-            await updateStatus('[SYSTEM] Closing previous task tabs to free memory...');
+            await updateStatus('[SYSTEM] Closing previous task tabs...');
             for (let p of activeTaskPages) await p.close().catch(()=>{});
             activeTaskPages = [];
         }
 
-        // --- THE ENGINE WARM-UP ---
-        if (typeof globalTaskBrowser === 'undefined' || !globalTaskBrowser) {
-            await updateStatus('[SYSTEM] Cold Boot: Launching background Chrome engine...');
+        // --- ENGINE WARM-UP ---
+        if (!globalTaskBrowser || !globalTaskBrowser.isConnected()) {
+            await updateStatus('[SYSTEM] Launching Chrome Engine...');
             globalTaskBrowser = await puppeteer.launch({
-    headless: true, // Keep true for speed, but you have the RAM for it
-    executablePath: getChromePath(),
-    args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--memory-pressure-thresholds=1', // Tell Chrome it has plenty of room
-        '--js-flags="--max-old-space-size=4096"' // Give each tab up to 4GB of JS heap
-    ]
-});
-
-        } else {
-            await updateStatus('[SYSTEM] Warm Boot: Engine already running.');
+                headless: true,
+                executablePath: getChromePath(),
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--js-flags="--max-old-space-size=4096"']
+            });
         }
         browser = globalTaskBrowser;
 
-        // --- DYNAMIC TUTORIAL TRACKER ---
-        const sweepTutorial = async (targetPage) => {
-            await new Promise(r => setTimeout(r, 2500)); 
-            let maxAttempts = 20; 
-            let emptyChecks = 0;
-            let didSweep = false;
-            
-            while (maxAttempts > 0 && emptyChecks < 3) {
-                maxAttempts--;
-                const clicked = await targetPage.evaluate(() => {
-                    const elements = Array.from(document.querySelectorAll('button, div, span, a'));
-                    for (let el of elements) {
-                        if (el.offsetParent === null) continue; 
-                        const txt = (el.innerText || '').trim().toLowerCase();
-                        
-                        if (txt === 'next' || txt === 'next →' || txt === 'next ->' || txt.includes('next →') || txt === 'done') {
-                            el.scrollIntoView({ block: 'center' });
-                            el.click();
-                            return true;
-                        }
-                    }
-                    return false;
-                });
-
-                if (clicked) {
-                    emptyChecks = 0; 
-                    didSweep = true;
-                    await new Promise(r => setTimeout(r, 1000)); 
-                } else {
-                    emptyChecks++; 
-                    await new Promise(r => setTimeout(r, 1000)); 
-                }
-            }
-            return didSweep;
-        };
-
-                        // --- STEP 1: INITIALIZE MASTER TAB & INJECT DB DATA ---
+        // --- STEP 1: INITIALIZE MASTER TAB & START RECORDING ---
         await updateStatus('[SYSTEM] Opening Master Tab & forcing App Install state...');
-        const page1 = await browser.newPage();
+        page1 = await browser.newPage();
+        pages.push(page1);
 
-        // --- NEW: THE PWA SHIELD & INSTALL SPOOFER ---
-        // This tells the website's code that the user clicked "Install" so the popup disappears
+        // 1. START VIDEO RECORDING (To capture the "Install App" struggle)
+        recorder = new PuppeteerScreenRecorder(page1, {
+            fps: 30,
+            videoFrame: { width: 412, height: 915 },
+            aspectRatio: '9:16'
+        });
+        await recorder.start(videoPath);
+
+        // 2. THE PWA SHIELD & INSTALL SPOOFER
         await page1.evaluateOnNewDocument(() => {
             window.addEventListener('beforeinstallprompt', (e) => {
-                e.preventDefault(); // Stop the gray system box from freezing the script
-                // Pretend the user chose 'Install'
+                e.preventDefault();
                 e.userChoice = Promise.resolve({ outcome: 'accepted', platform: 'web' });
                 return false;
             });
-            // Fake the successful install event to unfreeze the website UI
             window.dispatchEvent(new Event('appinstalled'));
         });
 
-        pages.push(page1);
         await page1.setViewport({ width: 412, height: 915 }); 
         await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-        // 1. Inject Session
+        // 3. Inject Session
         await page1.goto('https://www.wsjobs-ng.com', { waitUntil: 'networkidle2' });
         await loadSessionFromDB('wsjobs_task', page1);
 
         // --- NEW: AGGRESSIVE PRE-LOGIN POPUP KILLER ---
-        // Loops to catch "OK" or "Install" buttons that appear right when site loads
-        for (let i = 0; i < 3; i++) {
+        for (let i = 0; i < 4; i++) {
             await new Promise(r => setTimeout(r, 2000));
             await page1.evaluate(() => {
-                const elements = Array.from(document.querySelectorAll('*'));
-                const btn = elements.find(el => 
+                const btn = Array.from(document.querySelectorAll('*')).find(el => 
                     (el.innerText?.trim() === 'OK' || el.innerText?.trim() === 'Install') && 
-                    el.offsetParent !== null && 
-                    el.tagName !== 'BODY'
+                    el.offsetParent !== null
                 );
                 if (btn) btn.click();
             });
         }
 
-        // 2. Head to Task page
+        // 4. Head to Task page
         await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000)); 
 
-        // 3. Check for Login
+        // 5. Check for Login
         const requiresLogin = page1.url().includes('login') || await page1.$('input[type="password"]') !== null;
 
         if (requiresLogin) {
             await updateStatus('[SYSTEM] Session expired. Performing Sign-In...');
-            
             const allInputs = await page1.$$('input');
             if (allInputs.length >= 2) {
+                // ADDED FOCUS FORCING: Ensures fields are active after popup closes
+                await allInputs[0].focus();
                 await allInputs[0].click({ clickCount: 3 });
                 await allInputs[0].type('09163916500', { delay: 50 });
+                
+                await allInputs[1].focus();
                 await allInputs[1].click({ clickCount: 3 });
                 await allInputs[1].type('Emmamama', { delay: 50 });
                 
@@ -1894,7 +1856,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         }
 
-        // 4. Handle "OK" or "Install" Popup again after login
+        // 6. Handle "OK" or "Install" Popup again after login
         await new Promise(r => setTimeout(r, 4000));
         const finalClear = await page1.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('*'));
@@ -1911,6 +1873,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
         if (finalClear) await updateStatus('[SYSTEM] UI Traps (OK/Install) cleared.');
 
+      
 
         // 5. THE DIRECT JUMP
         await updateStatus('[SYSTEM] Jumping directly to Task page...');
@@ -2098,26 +2061,46 @@ const targetCount = await page1.evaluate((suffixStr) => {
 
 
 
-        // --- STEP 8: KEEP TABS OPEN & ARM IDLE TIMER ---
+                // --- STEP 8: KEEP TABS OPEN & ARM IDLE TIMER ---
         activeTaskPages = pages; 
+
+        // IF SUCCESS: Stop and cleanup video (don't send it if it didn't crash)
+        if (recorder) {
+            await recorder.stop().catch(() => {});
+            if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
+        }
+
         taskIdleTimer = setTimeout(async () => {
             bot.sendMessage(chatId, '[SYSTEM] 1 hour idle timeout reached. Closing inactive task tabs to save RAM.').catch(()=>{});
             for (let p of activeTaskPages) await p.close().catch(()=>{});
             activeTaskPages = [];
-        }, 60 * 60 * 1000); // 1 hour in milliseconds
+        }, 60 * 60 * 1000); 
 
     } catch (err) {
+        // --- UPDATED ERROR LOGIC: SEND VIDEO PROOF ---
         await updateStatus(`[ERROR] Sequence failed: ${err.message}`);
+        
+        if (recorder) await recorder.stop().catch(() => {});
+        
+        // 1. Send the Diagnostic Video if it exists
+        if (fs.existsSync(videoPath)) {
+            await bot.sendVideo(chatId, videoPath, { 
+                caption: `[DIAGNOSTIC] Task Crash Video\nError: ${err.message}` 
+            }).catch(() => {});
+            fs.unlinkSync(videoPath);
+        }
+
+        // 2. Fallback: Send a static screenshot if video failed
         if (pages.length > 0) {
             try {
                 const errBuffer = await pages[0].screenshot({ type: 'png' });
                 await bot.sendPhoto(chatId, errBuffer, { caption: '[DIAGNOSTIC] State of Master Tab at crash.' });
             } catch (snapErr) {}
         }
+        
+        // Safety cleanup of tabs on crash
         for (let p of pages) await p.close().catch(()=>{});
     }
- 
-
 });
 
 
