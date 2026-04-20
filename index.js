@@ -1891,8 +1891,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await new Promise(r => setTimeout(r, 4000)); 
 
         // 5. Check for Login
-        const requiresLogin = page1.url().includes('login') || await page1.$('input[type="password"]') !== null;
-
+        
         if (requiresLogin) {
             await updateStatus('[SYSTEM] Session expired. Performing Sign-In...');
             const allInputs = await page1.$$('input');
