@@ -1,3 +1,18 @@
 python3
 python-is-python3
 
+
+libatk1.0-0
+libatk-bridge2.0-0
+libgbm1
+libasound2
+libpangocairo-1.0-0
+libxkbcommon0
+libxcomposite1
+libxdamage1
+libxfixes3
+libxrandr2
+libnspr4
+libnss3
+
+
