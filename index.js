@@ -431,10 +431,14 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
     let browser = null;
     try {
         // Playwright is smart enough to find its own Firefox binary
+                // Tell the code to look in node_modules instead of the default .cache
+        process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
+
         browser = await firefox.launch({ 
             headless: true,
             args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
+
         
         const context = await browser.newContext({
             userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
