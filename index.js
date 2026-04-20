@@ -1808,9 +1808,9 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         pages.push(page1);
 
         
-              // PWA Spoofing: Lie to the site about installation (UPGRADED)
+              
+               // PWA Spoofing: Safety net to intercept native browser prompts just in case
         await page1.evaluateOnNewDocument(() => {
-            // 1. Intercept standard install prompts
             window.addEventListener('beforeinstallprompt', (e) => {
                 e.preventDefault(); 
                 e.userChoice = Promise.resolve({ outcome: 'accepted', platform: 'web' });
@@ -1818,27 +1818,6 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             });
             window.dispatchEvent(new Event('appinstalled'));
             navigator.getInstalledRelatedApps = () => Promise.resolve([{ id: 'wsjobs-pwa' }]);
-
-            // 2. THE KILLER FIX: Spoof CSS matchMedia so the site thinks it's already in "Standalone" (Installed) mode
-            const originalMatchMedia = window.matchMedia;
-            window.matchMedia = function(query) {
-                if (query === '(display-mode: standalone)' || query === '(display-mode: fullscreen)') {
-                    return {
-                        matches: true,
-                        media: query,
-                        onchange: null,
-                        addListener: () => {},
-                        removeListener: () => {},
-                        addEventListener: () => {},
-                        removeEventListener: () => {},
-                        dispatchEvent: () => false,
-                    };
-                }
-                return originalMatchMedia.call(window, query);
-            };
-
-            // 3. Spoof iOS standalone property just in case
-            Object.defineProperty(navigator, 'standalone', { get: () => true });
         });
 
         recorder = new PuppeteerScreenRecorder(page1, {
@@ -1852,15 +1831,17 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
         await loadSessionFromDB('wsjobs_task', page1);
 
-        // --- STEP 2: GEOMETRIC POPUP KILLER ---
-        await updateStatus('[SYSTEM] Executing Geometric Strike on UI traps...');
+        // --- STEP 2: THE "OK -> INSTALL" PHYSICAL CLICK SEQUENCE ---
+        await updateStatus('[SYSTEM] Executing physical app install sequence...');
+        
+        // Loop a few times to handle animations and loading delays
         for (let i = 0; i < 4; i++) {
             await new Promise(r => setTimeout(r, 2000));
             
-            // Get coordinates for OK or Install buttons
-            const targetCoords = await page1.evaluate(() => {
+            // 1. Look for and strike the "OK" button first
+            const okCoords = await page1.evaluate(() => {
                 const btn = Array.from(document.querySelectorAll('*')).find(el => 
-                    (el.innerText?.trim() === 'OK' || el.innerText?.trim() === 'Install') && el.offsetParent !== null
+                    el.innerText?.trim() === 'OK' && el.offsetParent !== null
                 );
                 if (btn) {
                     const rect = btn.getBoundingClientRect();
@@ -1869,17 +1850,36 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                 return null;
             });
 
-            if (targetCoords) {
-                // Physical Hardware Click
-                await page1.mouse.click(targetCoords.x, targetCoords.y);
-                
-                // Nuclear CSS cleanup to remove blur immediately
-                await page1.evaluate(() => {
-                    document.body.style.filter = 'none';
-                    document.body.style.overflow = 'auto';
-                    document.querySelectorAll('[class*="mask"], [class*="overlay"], .modal-backdrop').forEach(el => el.remove());
-                });
+            if (okCoords) {
+                await updateStatus('[SYSTEM] Clicked "OK". Waiting for Install prompt...');
+                await page1.mouse.click(okCoords.x, okCoords.y);
+                await new Promise(r => setTimeout(r, 2500)); // Wait 2.5 seconds for the next UI to appear
             }
+
+            // 2. Look for and strike the "Install" button
+            const installCoords = await page1.evaluate(() => {
+                const btn = Array.from(document.querySelectorAll('*')).find(el => 
+                    (el.innerText?.trim() === 'Install' || el.innerText?.trim() === 'Instalar' || el.innerText?.trim() === 'Add to home screen') && el.offsetParent !== null
+                );
+                if (btn) {
+                    const rect = btn.getBoundingClientRect();
+                    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+                }
+                return null;
+            });
+
+            if (installCoords) {
+                await updateStatus('[SYSTEM] Clicked "Install". Satisfying app requirement...');
+                await page1.mouse.click(installCoords.x, installCoords.y);
+                await new Promise(r => setTimeout(r, 1500));
+            }
+            
+            // 3. Nuclear CSS cleanup to remove the dark background blur immediately
+            await page1.evaluate(() => {
+                document.body.style.filter = 'none';
+                document.body.style.overflow = 'auto';
+                document.querySelectorAll('[class*="mask"], [class*="overlay"], .modal-backdrop').forEach(el => el.remove());
+            });
         }
 
         // --- STEP 3: LOGIN LOGIC (SHIGA / ENTRAR SUPPORT) ---
@@ -1917,7 +1917,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                 await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
             }
         }
-
+ 
 
         // 5. THE DIRECT JUMP
         await updateStatus('[SYSTEM] Jumping directly to Task page...');
