@@ -4,15 +4,15 @@ const { join } = require('path');
  * @type {import("puppeteer").Configuration}
  */
 module.exports = {
-  // Save the browser directly into the Heroku app folder so it isn't lost
+  // Changes the cache location for Puppeteer to survive Heroku's build process
   cacheDirectory: join(__dirname, '.cache', 'puppeteer'),
   
-  // Completely disable Chrome download
+  // Explicitly kill Chrome so it stops asking for version 127
   chrome: {
     skipDownload: true,
   },
   
-  // ONLY download Firefox Stable
+  // Explicitly tell it to download Firefox Stable
   firefox: {
     skipDownload: false,
   },
