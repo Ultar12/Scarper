@@ -442,17 +442,41 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
         await page.setViewport({ width: 412, height: 915 });
         await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-        // --- 1. GOOGLE COOKIE INJECTION ---
+                // --- 1. GOOGLE COOKIE INJECTION (WITH SCRUBBER) ---
         const cookiePath = path.join(__dirname, 'google_cookies.json');
         if (fs.existsSync(cookiePath)) {
             const cookiesString = fs.readFileSync(cookiePath, 'utf8');
-            const googleCookies = JSON.parse(cookiesString);
+            const rawCookies = JSON.parse(cookiesString);
             
-            await page.setCookie(...googleCookies);
-            await updateStatus('[SYSTEM] Google Session injected from google_cookies.json.');
+            // Scrub the cookies to remove garbage data that crashes Puppeteer
+            const cleanCookies = rawCookies.map(cookie => {
+                const clean = {
+                    name: cookie.name,
+                    value: cookie.value,
+                    domain: cookie.domain,
+                    path: cookie.path || '/',
+                    secure: cookie.secure,
+                    httpOnly: cookie.httpOnly
+                };
+                
+                // Map expiration correctly
+                if (cookie.expirationDate) clean.expires = cookie.expirationDate;
+                
+                // Only allow valid sameSite values, ignore "unspecified"
+                if (cookie.sameSite && ['Strict', 'Lax', 'None'].includes(cookie.sameSite)) {
+                    clean.sameSite = cookie.sameSite;
+                }
+                
+                return clean;
+            });
+            
+            // Inject the clean cookies
+            await page.setCookie(...cleanCookies);
+            await updateStatus('[SYSTEM] Google Session injected (Cookies scrubbed & safe).');
         } else {
             await updateStatus('[WARNING] google_cookies.json not found! Browsing as guest.');
         }
+
 
         // --- START VIDEO RECORDING ---
         recorder = new PuppeteerScreenRecorder(page, {
