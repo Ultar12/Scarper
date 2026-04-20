@@ -1802,11 +1802,11 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         browser = globalTaskBrowser;
 
 
-                        // --- STEP 1: INITIALIZE MASTER TAB ---
+                                // --- STEP 1: INITIALIZE MASTER TAB ---
         page1 = await browser.newPage();
         pages.push(page1);
 
-        // PWA Spoofing (Lie to the site so it thinks we are an app)
+        // PWA Spoofing (Faking the install to stop the site from being aggressive)
         await page1.evaluateOnNewDocument(() => {
             window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); return false; });
             navigator.getInstalledRelatedApps = () => Promise.resolve([{ id: 'wsjobs' }]);
@@ -1818,49 +1818,50 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
         await loadSessionFromDB('wsjobs_task', page1);
 
-        // --- CRITICAL: THE "SETTLE" WAIT ---
-        // We wait 6 seconds to let the site finish its internal "reset" seen in your video
-        await updateStatus('[SYSTEM] Waiting for site UI to settle...');
-        await new Promise(r => setTimeout(r, 6000));
+        // --- CRITICAL: THE NUCLEAR UI CLEANUP ---
+        await updateStatus('[SYSTEM] Executing Element Executioner...');
+        // Wait 3 seconds for the popup to definitely appear
+        await new Promise(r => setTimeout(r, 3000));
 
-        // --- THE GEOMETRIC STRIKE (KILL POPUP) ---
-        await updateStatus('[SYSTEM] Executing hardware-level popup kill...');
-        const buttonBox = await page1.evaluate(() => {
-            const okBtn = Array.from(document.querySelectorAll('*')).find(el => 
-                el.innerText?.trim() === 'OK' && el.offsetParent !== null
-            );
-            if (okBtn) {
-                const rect = okBtn.getBoundingClientRect();
-                return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-            }
-            return null;
+        await page1.evaluate(() => {
+            // 1. Find the OK button and click it first (to trigger site internal close)
+            const okBtn = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.trim() === 'OK');
+            if (okBtn) okBtn.click();
+
+            // 2. Locate the "Install App" modal container and physically DELETE it
+            const elements = document.querySelectorAll('*');
+            elements.forEach(el => {
+                if (el.innerText?.includes('Install App') && el.tagName === 'DIV' && el.children.length < 15) {
+                    el.remove(); // Kill the modal
+                }
+            });
+
+            // 3. Remove the dark background blur/mask classes
+            const masks = document.querySelectorAll('[class*="mask"], [class*="overlay"], .modal-backdrop, [class*="popup"]');
+            masks.forEach(m => m.remove());
+
+            // 4. Force un-blur the entire body
+            document.body.style.filter = 'none';
+            document.body.style.overflow = 'auto';
+            document.documentElement.style.filter = 'none';
         });
 
-        if (buttonBox) {
-            await page1.mouse.click(buttonBox.x, buttonBox.y);
-            // Nuclear cleanup: physically remove the blur style
-            await page1.evaluate(() => {
-                document.body.style.filter = 'none';
-                document.querySelectorAll('[class*="mask"], [class*="overlay"]').forEach(el => el.remove());
-            });
-        }
+        await new Promise(r => setTimeout(r, 2000));
 
-        // --- STEP 2: STABLE LOGIN (AFTER RESET) ---
+        // --- STEP 2: STABLE LOGIN (SHIGA) ---
         const requiresLogin = page1.url().includes('login') || await page1.$('input[type="password"]') !== null;
         if (requiresLogin) {
-            await updateStatus('[SYSTEM] Site stable. Typing credentials...');
+            await updateStatus('[SYSTEM] Popup executed. Typing credentials...');
             const allInputs = await page1.$$('input');
             if (allInputs.length >= 2) {
-                // We type slowly to ensure the site registers each key
+                // Focus and type directly
                 await allInputs[0].focus();
-                await allInputs[0].click({ clickCount: 3 });
                 await allInputs[0].type('09163916500', { delay: 100 });
                 
                 await allInputs[1].focus();
-                await allInputs[1].click({ clickCount: 3 });
                 await allInputs[1].type('Emmamama', { delay: 100 });
                 
-                // Geometric click on "Shiga"
+                // Use hardware-level coordinate click on "Shiga"
                 const loginCoords = await page1.evaluate(() => {
                     const btn = Array.from(document.querySelectorAll('*')).find(b => 
                         b.innerText?.trim() === 'Shiga' && b.offsetParent !== null
@@ -1874,10 +1875,17 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
                 if (loginCoords) {
                     await page1.mouse.click(loginCoords.x, loginCoords.y);
+                } else {
+                    // Fallback to text click if coordinates fail
+                    await page1.evaluate(() => {
+                        const b = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.trim() === 'Shiga');
+                        if (b) b.click();
+                    });
                 }
                 await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
             }
         }
+
 
 
       
