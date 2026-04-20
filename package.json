@@ -14,7 +14,7 @@
     "node-telegram-bot-api": "^0.66.0",
     "pg": "^8.11.5",
     "playwright": "latest",
-    "puppeteer": "latest",
+    "puppeteer-core": "latest",
     "puppeteer-screen-recorder": "^3.0.3",
     "qrcode": "^1.5.3",
     "sharp": "^0.33.3",
