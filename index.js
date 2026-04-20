@@ -434,7 +434,6 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
           browser = await puppeteer.launch({
             browser: 'firefox', // Only use this modern flag
             headless: true,
-             product: 'firefox',
             args: ['--no-sandbox', '--disable-setuid-sandbox'] 
         });
 
