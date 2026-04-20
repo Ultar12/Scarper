@@ -414,12 +414,14 @@ bot.onText(/\/m4usign/i, (msg) => {
 });
 
 
-// Usage: /testlogin
+
+
+        // Usage: /testlogin
 bot.onText(/^\/testlogin$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Booting fresh Login Test Protocol (Video Mode)...');
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Booting fresh Login Test Protocol (Ghost Mode)...');
     const updateStatus = async (text) => {
         await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
     };
@@ -447,30 +449,39 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
         });
         await recorder.start(videoPath);
 
-        // --- THE TERMINATOR (POPUP KILLER) ---
+        // --- THE GHOST PROTOCOL (NON-DESTRUCTIVE POPUP BYPASS) ---
+        // This hides the popup instantly without breaking the website's code
         await page.evaluateOnNewDocument(() => {
             window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); return false; });
+            
             setInterval(() => {
                 if (!document || !document.body) return;
+                
                 const elements = Array.from(document.querySelectorAll('*'));
-                const popup = elements.find(el => el.innerText && el.innerText.includes('Add to home screen'));
-                if (popup) {
+                const popupText = elements.find(el => el.innerText && el.innerText.includes('Add to home screen'));
+                
+                if (popupText) {
+                    // 1. Click OK to appease the site's internal tracking
                     const okBtn = elements.find(el => el.innerText?.trim() === 'OK' && el.offsetParent !== null);
                     if (okBtn) okBtn.click();
                     
-                    let container = popup;
+                    // 2. GHOST IT: Hide it with CSS instead of removing it
+                    let container = popupText;
                     for (let i = 0; i < 5; i++) {
                         if (container.parentElement && container.parentElement.tagName !== 'BODY' && container.parentElement.tagName !== 'HTML') {
                             container = container.parentElement;
                         }
                     }
-                    if (container) container.remove();
-                    
-                    if (document.body) {
-                        document.body.style.filter = 'none';
-                        document.body.style.overflow = 'auto';
-                        document.body.style.pointerEvents = 'auto';
+                    if (container) {
+                        container.style.setProperty('display', 'none', 'important');
+                        container.style.setProperty('opacity', '0', 'important');
+                        container.style.setProperty('pointer-events', 'none', 'important');
+                        container.style.setProperty('z-index', '-9999', 'important');
                     }
+                    
+                    // 3. Unfreeze the background so the bot can type
+                    document.body.style.setProperty('filter', 'none', 'important');
+                    document.body.style.setProperty('overflow', 'auto', 'important');
                 }
             }, 500); 
         });
@@ -531,28 +542,18 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
 
         await updateStatus('[SYSTEM] Capture complete! Processing video...');
         
-        // Stop recording properly
-        if (recorder) {
-            await recorder.stop().catch(() => {});
-        }
-
+        if (recorder) await recorder.stop().catch(() => {});
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
         
-        // Send Video to Telegram
         if (fs.existsSync(videoPath)) {
             await bot.sendVideo(chatId, videoPath, { caption: '[SUCCESS] Test Login Complete. Here is the full video of the sequence.' });
-            fs.unlinkSync(videoPath); // Cleanup Heroku storage
+            fs.unlinkSync(videoPath); 
         }
 
     } catch (err) {
         await updateStatus(`[ERROR] Test command failed: ${err.message}`);
+        if (recorder) await recorder.stop().catch(() => {});
         
-        // Stop recording if it crashed midway
-        if (recorder) {
-            await recorder.stop().catch(() => {});
-        }
-        
-        // Send the crash video
         if (fs.existsSync(videoPath)) {
             await bot.sendVideo(chatId, videoPath, { caption: `[DIAGNOSTIC] Test Login crashed! Video of the failure:\nError: ${err.message}` });
             fs.unlinkSync(videoPath);
