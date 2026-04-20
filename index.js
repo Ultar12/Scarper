@@ -419,7 +419,7 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Booting fresh Login Test Protocol (v24+ Firefox BiDi Engine)...');
+    let statusMsg = await bot.sendMessage(chatId, '🚀 [SYSTEM] Booting Firefox v24+ (Stealth Mode)...');
     const updateStatus = async (text) => {
         await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
     };
@@ -428,89 +428,111 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
     let page = null;
 
     try {
-        await updateStatus('[SYSTEM] Launching isolated Firefox BiDi instance...');
+        await updateStatus('⚙️ [SYSTEM] Launching isolated Firefox BiDi instance...');
         
-        // --- LAUNCHING FIREFOX USING V24+ API ---
-          browser = await puppeteer.launch({
-            browser: 'firefox', // Only use this modern flag
+        // Use the modern Puppeteer v24 launch syntax
+        browser = await puppeteer.launch({
+            browser: 'firefox', 
             headless: true,
             args: ['--no-sandbox', '--disable-setuid-sandbox'] 
         });
 
-
         page = await browser.newPage();
         await page.setViewport({ width: 412, height: 915 });
         
-        // Tell the website we are using Firefox on Android
+        // 1. THE HUMAN MASK: Use a real Firefox Mobile User-Agent
         await page.setUserAgent('Mozilla/5.0 (Android 13; Mobile; rv:109.0) Gecko/115.0 Firefox/115.0');
 
-        await updateStatus('[SYSTEM] Navigating to login page...');
-        await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-        await new Promise(r => setTimeout(r, 4000));
+        // 2. THE STEALTH PATCH & DOM SNIPER
+        await page.evaluateOnNewDocument(() => {
+            // --- ANTI-BOT FINGERPRINTING ---
+            // Remove the 'webdriver' flag that tells the site "I am a bot"
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
+            
+            // --- FAKE MEMORY IMPLANT ---
+            try {
+                localStorage.setItem('pwa_installed', 'true');
+                localStorage.setItem('app_install_dismissed', 'true');
+                localStorage.setItem('is_installed', 'true');
+            } catch(e) {}
 
-        // --- LOGIN LOGIC ---
-        const requiresLogin = page.url().includes('login') || await page.$('input[type="password"]') !== null;
-        if (requiresLogin) {
-            await updateStatus('[SYSTEM] Login required. Injecting credentials...');
-            const allInputs = await page.$$('input');
-            if (allInputs.length >= 2) {
-                await allInputs[0].focus();
-                await allInputs[0].type('09163916500', { delay: 50 });
-                await allInputs[1].focus();
-                await allInputs[1].type('Emmamama', { delay: 50 });
+            // --- DOM SNIPER (HTML POPUP KILLER) ---
+            setInterval(() => {
+                if (!document || !document.body) return;
                 
-                await updateStatus('[SYSTEM] Striking the Login button...');
-                const loginCoords = await page.evaluate(() => {
-                    if (!document || !document.body) return null;
+                // Hunt for the "OK" button in that custom popup
+                const elements = Array.from(document.querySelectorAll('*'));
+                const okBtn = elements.find(el => {
+                    const text = el.innerText?.trim();
+                    return text === 'OK' && el.offsetParent !== null; 
+                });
+                
+                if (okBtn) {
+                    okBtn.click(); // Smash the button
+                    // Force the background to unblur and unfreeze
+                    document.body.style.setProperty('filter', 'none', 'important');
+                    document.body.style.setProperty('overflow', 'auto', 'important');
+                    document.body.style.setProperty('pointer-events', 'auto', 'important');
+                }
+            }, 300); 
+        });
+
+        await updateStatus('🌐 [SYSTEM] Navigating to account portal...');
+        await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        
+        // Give the page time to try and show its popups so the Sniper can kill them
+        await new Promise(r => setTimeout(r, 5000));
+
+        // 3. LOGIN LOGIC
+        const requiresLogin = page.url().includes('login') || await page.$('input[type="password"]') !== null;
+        
+        if (requiresLogin) {
+            await updateStatus('🔑 [SYSTEM] Injecting credentials into form...');
+            const allInputs = await page.$$('input');
+            
+            if (allInputs.length >= 2) {
+                // Focus and type like a human
+                await allInputs[0].focus();
+                await allInputs[0].type('09163916500', { delay: 60 });
+                await allInputs[1].focus();
+                await allInputs[1].type('Emmamama', { delay: 60 });
+                
+                await updateStatus('🖱️ [SYSTEM] Clicking login action...');
+                
+                // Find and click the login button based on text
+                await page.evaluate(() => {
                     const btn = Array.from(document.querySelectorAll('*')).find(b => {
                         const txt = (b.innerText || '').trim().toUpperCase();
-                        return ['SHIGA', 'ENTRAR', 'SIGN IN', 'LOGIN'].includes(txt) && b.offsetParent !== null;
+                        return ['SHIGA', 'ENTRAR', 'SIGN IN', 'LOGIN'].includes(txt);
                     });
-                    if (btn) {
-                        const rect = btn.getBoundingClientRect();
-                        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-                    }
-                    return null;
+                    if (btn) btn.click();
                 });
-
-                if (loginCoords) {
-                    await page.mouse.click(loginCoords.x, loginCoords.y);
-                } else {
-                    await page.evaluate(() => {
-                        if (!document || !document.body) return;
-                        const btn = Array.from(document.querySelectorAll('*')).find(b => {
-                            const txt = (b.innerText || '').trim().toUpperCase();
-                            return ['SHIGA', 'ENTRAR', 'SIGN IN', 'LOGIN'].includes(txt);
-                        });
-                        if (btn) btn.click();
-                    });
-                }
                 
-                await updateStatus('[SYSTEM] Waiting for dashboard navigation...');
+                await updateStatus('⏳ [SYSTEM] Awaiting dashboard redirect...');
                 await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
             }
         } else {
-            await updateStatus('[SYSTEM] Already logged in via cache.');
+            await updateStatus('✅ [SYSTEM] Login session confirmed.');
         }
 
-        // --- VERIFICATION ---
-        await updateStatus('[SYSTEM] Teleporting to User Dashboard to verify status...');
+        // 4. VERIFICATION SNAPSHOT
+        await updateStatus('📸 [SYSTEM] Moving to dashboard for final verification...');
         await page.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'domcontentloaded' });
         await new Promise(r => setTimeout(r, 4000));
 
-        await updateStatus('[SYSTEM] Capture complete! Taking Final Snapshot...');
+        const finalSnap = await page.screenshot({ type: 'png', fullPage: false });
         
-        // Video is bypassed because WebDriver BiDi doesn't support screencasting yet
-        const finalSnap = await page.screenshot({ type: 'png' });
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-        await bot.sendPhoto(chatId, finalSnap, { caption: '[SUCCESS] Firefox Test Login Complete! No PWA popups triggered.' });
+        await bot.sendPhoto(chatId, finalSnap, { 
+            caption: '🎯 [SUCCESS] Firefox Test Login Complete!\n\nThe Stealth Patch bypassed detection and the DOM Sniper neutralized the PWA popup.' 
+        });
 
     } catch (err) {
-        await updateStatus(`[ERROR] Firefox command failed: ${err.message}`);
+        await updateStatus(`❌ [ERROR] Firefox Session Failed: ${err.message}`);
         if (page) {
             try {
                 const errSnap = await page.screenshot({ type: 'png' });
-                await bot.sendPhoto(chatId, errSnap, { caption: `[DIAGNOSTIC] Firefox crashed!\nError: ${err.message}` });
+                await bot.sendPhoto(chatId, errSnap, { caption: `⚠️ [DIAGNOSTIC] Firefox Crash State:\n${err.message}` });
             } catch (e) {}
         }
     } finally {
