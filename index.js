@@ -1743,6 +1743,23 @@ bot.onText(/\/upscale/i, async (msg) => {
 });
 
 
+const sweepTutorial = async (targetPage) => {
+    await new Promise(r => setTimeout(r, 2000)); 
+    const didSweep = await targetPage.evaluate(() => {
+        const elements = Array.from(document.querySelectorAll('*'));
+        // Updated for the new Brazil UI "OK" and "Install" buttons
+        const btn = elements.find(el => 
+            (el.innerText?.trim() === 'OK' || el.innerText?.trim() === 'Install') && 
+            el.offsetParent !== null
+        );
+        if (btn) {
+            btn.click();
+            return true;
+        }
+        return false;
+    });
+    return didSweep;
+};
 
 
 // Usage: /task 127
@@ -1823,9 +1840,14 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
         // 3. Inject Session
-        await page1.goto('https://www.wsjobs-ng.com', { waitUntil: 'networkidle2' });
+         await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
         await loadSessionFromDB('wsjobs_task', page1);
 
+        // USE THE FUNCTION HERE
+        await updateStatus('[SYSTEM] Clearing UI obstructions...');
+        await sweepTutorial(page1); 
+        await new Promise(r => setTimeout(r, 2000));
+        await sweepTutorial(page1); // Double strike to be sure
         // --- NEW: AGGRESSIVE PRE-LOGIN POPUP KILLER ---
         for (let i = 0; i < 4; i++) {
             await new Promise(r => setTimeout(r, 2000));
