@@ -1807,8 +1807,10 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         page1 = await browser.newPage();
         pages.push(page1);
 
-        // PWA Spoofing: Lie to the site about installation
+        
+              // PWA Spoofing: Lie to the site about installation (UPGRADED)
         await page1.evaluateOnNewDocument(() => {
+            // 1. Intercept standard install prompts
             window.addEventListener('beforeinstallprompt', (e) => {
                 e.preventDefault(); 
                 e.userChoice = Promise.resolve({ outcome: 'accepted', platform: 'web' });
@@ -1816,6 +1818,27 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             });
             window.dispatchEvent(new Event('appinstalled'));
             navigator.getInstalledRelatedApps = () => Promise.resolve([{ id: 'wsjobs-pwa' }]);
+
+            // 2. THE KILLER FIX: Spoof CSS matchMedia so the site thinks it's already in "Standalone" (Installed) mode
+            const originalMatchMedia = window.matchMedia;
+            window.matchMedia = function(query) {
+                if (query === '(display-mode: standalone)' || query === '(display-mode: fullscreen)') {
+                    return {
+                        matches: true,
+                        media: query,
+                        onchange: null,
+                        addListener: () => {},
+                        removeListener: () => {},
+                        addEventListener: () => {},
+                        removeEventListener: () => {},
+                        dispatchEvent: () => false,
+                    };
+                }
+                return originalMatchMedia.call(window, query);
+            };
+
+            // 3. Spoof iOS standalone property just in case
+            Object.defineProperty(navigator, 'standalone', { get: () => true });
         });
 
         recorder = new PuppeteerScreenRecorder(page1, {
@@ -1895,7 +1918,6 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         }
 
-      
 
         // 5. THE DIRECT JUMP
         await updateStatus('[SYSTEM] Jumping directly to Task page...');
