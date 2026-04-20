@@ -431,11 +431,13 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
         await updateStatus('[SYSTEM] Launching isolated Firefox BiDi instance...');
         
         // --- LAUNCHING FIREFOX USING V24+ API ---
-        browser = await puppeteer.launch({
-            browser: 'firefox', // THE MODERN V24 SYNTAX
+                browser = await puppeteer.launch({
+            browser: 'firefox', // The v24+ way
+            product: 'firefox', // The v23 way (Just in case!)
             headless: true,
             args: ['--no-sandbox', '--disable-setuid-sandbox'] 
         });
+
 
         page = await browser.newPage();
         await page.setViewport({ width: 412, height: 915 });
