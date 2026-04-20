@@ -414,6 +414,137 @@ bot.onText(/\/m4usign/i, (msg) => {
 });
 
 
+// Usage: /testlogin
+bot.onText(/^\/testlogin$/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Booting fresh Login Test Protocol...');
+    const updateStatus = async (text) => {
+        await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+    };
+
+    let browser = null;
+    let page = null;
+
+    try {
+        await updateStatus('[SYSTEM] Launching isolated Chrome instance...');
+        browser = await puppeteer.launch({
+            headless: true,
+            executablePath: getChromePath(), 
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        });
+
+        page = await browser.newPage();
+        await page.setViewport({ width: 412, height: 915 });
+        await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+
+        // --- THE TERMINATOR (POPUP KILLER) ---
+        // Runs silently to aggressively clear any install/OK popups that spawn
+        await page.evaluateOnNewDocument(() => {
+            window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); return false; });
+            setInterval(() => {
+                if (!document || !document.body) return;
+                const elements = Array.from(document.querySelectorAll('*'));
+                const popup = elements.find(el => el.innerText && el.innerText.includes('Add to home screen'));
+                if (popup) {
+                    const okBtn = elements.find(el => el.innerText?.trim() === 'OK' && el.offsetParent !== null);
+                    if (okBtn) okBtn.click();
+                    
+                    let container = popup;
+                    for (let i = 0; i < 5; i++) {
+                        if (container.parentElement && container.parentElement.tagName !== 'BODY' && container.parentElement.tagName !== 'HTML') {
+                            container = container.parentElement;
+                        }
+                    }
+                    if (container) container.remove();
+                    
+                    if (document.body) {
+                        document.body.style.filter = 'none';
+                        document.body.style.overflow = 'auto';
+                        document.body.style.pointerEvents = 'auto';
+                    }
+                }
+            }, 500); 
+        });
+
+        await updateStatus('[SYSTEM] Navigating to login page...');
+        await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 4000));
+
+        // --- LOGIN LOGIC ---
+        const requiresLogin = page.url().includes('login') || await page.$('input[type="password"]') !== null;
+        if (requiresLogin) {
+            await updateStatus('[SYSTEM] Login required. Injecting credentials...');
+            const allInputs = await page.$$('input');
+            if (allInputs.length >= 2) {
+                await allInputs[0].focus();
+                await allInputs[0].type('09163916500', { delay: 50 });
+                await allInputs[1].focus();
+                await allInputs[1].type('Emmamama', { delay: 50 });
+                
+                await updateStatus('[SYSTEM] Striking the Login button...');
+                const loginCoords = await page.evaluate(() => {
+                    if (!document || !document.body) return null;
+                    const btn = Array.from(document.querySelectorAll('*')).find(b => {
+                        const txt = (b.innerText || '').trim().toUpperCase();
+                        return ['SHIGA', 'ENTRAR', 'SIGN IN', 'LOGIN'].includes(txt) && b.offsetParent !== null;
+                    });
+                    if (btn) {
+                        const rect = btn.getBoundingClientRect();
+                        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+                    }
+                    return null;
+                });
+
+                if (loginCoords) {
+                    await page.mouse.click(loginCoords.x, loginCoords.y);
+                } else {
+                    await page.evaluate(() => {
+                        if (!document || !document.body) return;
+                        const btn = Array.from(document.querySelectorAll('*')).find(b => {
+                            const txt = (b.innerText || '').trim().toUpperCase();
+                            return ['SHIGA', 'ENTRAR', 'SIGN IN', 'LOGIN'].includes(txt);
+                        });
+                        if (btn) btn.click();
+                    });
+                }
+                
+                await updateStatus('[SYSTEM] Waiting for dashboard navigation...');
+                await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+            }
+        } else {
+            await updateStatus('[SYSTEM] Already logged in via cache.');
+        }
+
+        // --- VERIFICATION & SCREENSHOT ---
+        await updateStatus('[SYSTEM] Teleporting to User Dashboard to verify status...');
+        await page.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 4000));
+
+        await updateStatus('[SYSTEM] Capture! Snapping the final state...');
+        const finalSnap = await page.screenshot({ type: 'png' });
+
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+        await bot.sendPhoto(chatId, finalSnap, { caption: '[SUCCESS] Test Login Complete. This is exactly what the bot sees after the login sequence.' });
+
+    } catch (err) {
+        await updateStatus(`[ERROR] Test command failed: ${err.message}`);
+        if (page) {
+            try {
+                // Take an emergency picture if it crashes so we know exactly where it died
+                const errSnap = await page.screenshot({ type: 'png' });
+                await bot.sendPhoto(chatId, errSnap, { caption: '[DIAGNOSTIC] Screen state at the exact moment of failure.' });
+            } catch (e) {}
+        }
+    } finally {
+        // ALWAYS close this browser so Heroku RAM doesn't blow up
+        if (browser) await browser.close().catch(() => {});
+    }
+});
+
+
+
 // Usage: /appurl [send apk file after]
 bot.onText(/\/appurl/i, async (msg) => {
     const chatId = msg.chat.id.toString();
