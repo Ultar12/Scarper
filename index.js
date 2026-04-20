@@ -440,9 +440,11 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
 
         page = await browser.newPage();
         await page.setViewport({ width: 412, height: 915 });
+        
+        // 1. THE PHONE MASK: Tell the website we are a Samsung Galaxy
         await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-                // --- 1. GOOGLE COOKIE INJECTION (WITH SCRUBBER) ---
+        // --- 2. GOOGLE COOKIE INJECTION (WITH SCRUBBER) ---
         const cookiePath = path.join(__dirname, 'google_cookies.json');
         if (fs.existsSync(cookiePath)) {
             const cookiesString = fs.readFileSync(cookiePath, 'utf8');
@@ -458,25 +460,18 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
                     secure: cookie.secure,
                     httpOnly: cookie.httpOnly
                 };
-                
-                // Map expiration correctly
                 if (cookie.expirationDate) clean.expires = cookie.expirationDate;
-                
-                // Only allow valid sameSite values, ignore "unspecified"
                 if (cookie.sameSite && ['Strict', 'Lax', 'None'].includes(cookie.sameSite)) {
                     clean.sameSite = cookie.sameSite;
                 }
-                
                 return clean;
             });
             
-            // Inject the clean cookies
             await page.setCookie(...cleanCookies);
             await updateStatus('[SYSTEM] Google Session injected (Cookies scrubbed & safe).');
         } else {
             await updateStatus('[WARNING] google_cookies.json not found! Browsing as guest.');
         }
-
 
         // --- START VIDEO RECORDING ---
         recorder = new PuppeteerScreenRecorder(page, {
@@ -484,43 +479,76 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
         });
         await recorder.start(videoPath);
 
-        // --- 2. THE PWA ILLUSION PROTOCOL (POPUP BLOCKER) ---
-        // Forces the browser to act like the app is already installed
+        // --- 3. THE PWA SPOOFING ENGINE & INVISIBLE CLOAK ---
+        // Hack the CSS media queries to say "I am an installed app"
         await page.emulateMediaFeatures([
             { name: 'display-mode', value: 'standalone' }
         ]);
 
         await page.evaluateOnNewDocument(() => {
+            // Spoof iOS/Safari standalone mode
+            Object.defineProperty(navigator, 'standalone', { get: () => true });
+            
             // Block the native install prompt event
             window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); return false; });
             
-            // Spoof iOS/Safari standalone mode
-            Object.defineProperty(navigator, 'standalone', { get: () => true });
+            // Fire a fake "App Installed" success signal to the website
+            window.dispatchEvent(new Event('appinstalled'));
+            
+            // Force-feed the local storage with common "already installed" flags
+            try {
+                localStorage.setItem('pwa_installed', 'true');
+                localStorage.setItem('is_installed', 'true');
+                localStorage.setItem('app_install_dismissed', 'true');
+            } catch(e) {}
             
             // Mock the matchMedia API so the site thinks the PWA is active
             const originalMatchMedia = window.matchMedia;
             window.matchMedia = (query) => {
                 if (query === '(display-mode: standalone)') {
-                    return { 
-                        matches: true, 
-                        media: query, 
-                        onchange: null, 
-                        addListener: () => {}, 
-                        removeListener: () => {}, 
-                        addEventListener: () => {}, 
-                        removeEventListener: () => {}, 
-                        dispatchEvent: () => {} 
-                    };
+                    return { matches: true, media: query, addListener: () => {}, removeListener: () => {} };
                 }
                 return originalMatchMedia(query);
             };
+
+            // THE INVISIBLE CLOAK: Hide rogue popups without breaking the DOM
+            setInterval(() => {
+                if (!document || !document.body) return;
+                
+                const elements = Array.from(document.querySelectorAll('*'));
+                const targetTexts = ['Add to home screen for best experience', 'Install App', 'Install app'];
+                
+                elements.forEach(el => {
+                    const txt = el.innerText?.trim() || '';
+                    if (targetTexts.some(t => txt.includes(t))) {
+                        let container = el;
+                        // Walk up the HTML tree to grab the dark background container
+                        for (let i = 0; i < 5; i++) {
+                            if (container.parentElement && container.parentElement.tagName !== 'BODY' && container.parentElement.tagName !== 'HTML') {
+                                container = container.parentElement;
+                            }
+                        }
+                        // Turn it into a ghost
+                        if (container) {
+                            container.style.setProperty('opacity', '0', 'important');
+                            container.style.setProperty('pointer-events', 'none', 'important');
+                            container.style.setProperty('z-index', '-9999', 'important');
+                        }
+                    }
+                });
+                
+                // Force the background to unfreeze
+                document.body.style.setProperty('filter', 'none', 'important');
+                document.body.style.setProperty('overflow', 'auto', 'important');
+                document.body.style.setProperty('pointer-events', 'auto', 'important');
+            }, 300); 
         });
 
         await updateStatus('[SYSTEM] Navigating to login page...');
         await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await new Promise(r => setTimeout(r, 4000));
 
-        // --- LOGIN LOGIC ---
+        // --- 4. LOGIN LOGIC ---
         const requiresLogin = page.url().includes('login') || await page.$('input[type="password"]') !== null;
         if (requiresLogin) {
             await updateStatus('[SYSTEM] Login required. Injecting credentials...');
@@ -565,7 +593,7 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
             await updateStatus('[SYSTEM] Already logged in via cache.');
         }
 
-        // --- VERIFICATION ---
+        // --- 5. VERIFICATION ---
         await updateStatus('[SYSTEM] Teleporting to User Dashboard to verify status...');
         await page.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'domcontentloaded' });
         await new Promise(r => setTimeout(r, 4000));
