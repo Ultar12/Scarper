@@ -417,8 +417,6 @@ bot.onText(/\/m4usign/i, (msg) => {
 
 
 
-const puppeteer = require('puppeteer-core');
-
 bot.onText(/^\/testlogin$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
