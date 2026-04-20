@@ -4,7 +4,7 @@
   "description": "WhatsApp Web JS with PostgreSQL RemoteAuth - 32GB RAM Optimized",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
     "postinstall": "npx puppeteer browsers install firefox"
   },
   "dependencies": {
