@@ -419,7 +419,7 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Booting fresh Login Test Protocol (Firefox Engine)...');
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Booting fresh Login Test Protocol (v24+ Firefox BiDi Engine)...');
     const updateStatus = async (text) => {
         await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
     };
@@ -428,11 +428,11 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
     let page = null;
 
     try {
-        await updateStatus('[SYSTEM] Launching isolated Firefox instance...');
+        await updateStatus('[SYSTEM] Launching isolated Firefox BiDi instance...');
         
-        // --- LAUNCHING FIREFOX INSTEAD OF CHROME ---
+        // --- LAUNCHING FIREFOX USING V24+ API ---
         browser = await puppeteer.launch({
-            product: 'firefox', // Switches the engine from Chromium to Gecko
+            browser: 'firefox', // THE MODERN V24 SYNTAX
             headless: true,
             args: ['--no-sandbox', '--disable-setuid-sandbox'] 
         });
@@ -499,10 +499,10 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
 
         await updateStatus('[SYSTEM] Capture complete! Taking Final Snapshot...');
         
-        // Take a screenshot since Video doesn't work on Firefox
+        // Video is bypassed because WebDriver BiDi doesn't support screencasting yet
         const finalSnap = await page.screenshot({ type: 'png' });
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-        await bot.sendPhoto(chatId, finalSnap, { caption: '[SUCCESS] Firefox Test Login Complete! No PWA popups.' });
+        await bot.sendPhoto(chatId, finalSnap, { caption: '[SUCCESS] Firefox Test Login Complete! No PWA popups triggered.' });
 
     } catch (err) {
         await updateStatus(`[ERROR] Firefox command failed: ${err.message}`);
@@ -516,6 +516,7 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
         if (browser) await browser.close().catch(() => {});
     }
 });
+
 
 
 
