@@ -8,7 +8,7 @@ const { Pool } = require('pg');
 const path = require('path');
 const { firefox } = require('playwright');
 const sharp = require('sharp');
-const puppeteer = require('puppeteer'); 
+const puppeteer = require('puppeteer-core'):
 const QRCode = require('qrcode');
 const { remote } = require('webdriverio');
 const axios = require('axios');
@@ -417,83 +417,104 @@ bot.onText(/\/m4usign/i, (msg) => {
 
 
 
+const puppeteer = require('puppeteer-core');
+
 bot.onText(/^\/testlogin$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    let statusMsg = await bot.sendMessage(chatId, '[PLAYWRIGHT] Starting Firefox Session...');
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Launching System Firefox (/usr/bin/firefox)...');
     
+    const updateStatus = async (text) => {
+        await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+    };
+
     let browser = null;
     try {
-        // 1. Launch Browser
-        browser = await firefox.launch({ 
+        // 1. Launch using the system-installed Firefox binary
+        browser = await puppeteer.launch({
+            executablePath: '/usr/bin/firefox', // Points to the Linux system path
+            browser: 'firefox',
             headless: true,
             args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
+
+        const page = await browser.newPage();
+        await page.setViewport({ width: 412, height: 915 });
         
-        // 2. Create a Context with Mobile Emulation
-        const context = await browser.newContext({
-            userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
-            viewport: { width: 412, height: 915 },
-            isMobile: true,
-            hasTouch: true
-        });
+        // Use a clean Firefox Mobile User-Agent
+        await page.setUserAgent('Mozilla/5.0 (Android 13; Mobile; rv:109.0) Gecko/115.0 Firefox/115.0');
 
-        const page = await context.newPage();
-
-        // 3. Stealth Script and Popup Killer
-        await page.addInitScript(() => {
-            // Mask automation
+        // 2. STEALTH PATCH & DOM SNIPER
+        await page.evaluateOnNewDocument(() => {
+            // Mask automation fingerprint
             Object.defineProperty(navigator, 'webdriver', { get: () => false });
             
-            // Kill the "OK" HTML popup instantly
+            // Kill the "Install App" HTML popup instantly
             setInterval(() => {
-                const okBtn = Array.from(document.querySelectorAll('*'))
-                    .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
+                if (!document || !document.body) return;
+                
+                const elements = Array.from(document.querySelectorAll('*'));
+                const okBtn = elements.find(el => 
+                    el.innerText?.trim() === 'OK' && 
+                    el.offsetParent !== null // Only click if it's visible
+                );
+                
                 if (okBtn) {
                     okBtn.click();
-                    document.body.style.filter = 'none';
-                    document.body.style.overflow = 'auto';
+                    // Forcefully unblur the background
+                    document.body.style.setProperty('filter', 'none', 'important');
+                    document.body.style.setProperty('overflow', 'auto', 'important');
                 }
-            }, 150);
+            }, 300);
         });
 
-        await bot.editMessageText('[PLAYWRIGHT] Navigating to Account...', { chat_id: chatId, message_id: statusMsg.message_id });
+        await updateStatus('[SYSTEM] Navigating to wsjobs-ng...');
         await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         
-        // Wait for potential popups to trigger
-        await page.waitForTimeout(5000);
+        // Wait for the page to settle and popups to attempt to trigger
+        await new Promise(r => setTimeout(r, 5000));
 
-        // 4. Login Form Handling
-        const loginInput = await page.$('input[type="text"], input[type="tel"]');
-        if (loginInput) {
-            await loginInput.fill('09163916500');
-            await page.fill('input[type="password"]', 'Emmamama');
+        // 3. LOGIN LOGIC
+        const isLoginPage = page.url().includes('login') || await page.$('input[type="password"]') !== null;
+        
+        if (isLoginPage) {
+            await updateStatus('[SYSTEM] Injecting login credentials...');
+            const inputs = await page.$$('input');
             
-            // Click the button containing login keywords
-            const loginBtn = page.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').first();
-            await loginBtn.click();
-            
-            await page.waitForLoadState('networkidle');
+            if (inputs.length >= 2) {
+                await inputs[0].type('09163916500', { delay: 100 });
+                await inputs[1].type('Emmamama', { delay: 100 });
+                
+                // Find and click login button
+                await page.evaluate(() => {
+                    const btn = Array.from(document.querySelectorAll('*')).find(b => {
+                        const t = (b.innerText || '').trim().toUpperCase();
+                        return ['SHIGA', 'LOGIN', 'SIGN IN'].includes(t);
+                    });
+                    if (btn) btn.click();
+                });
+                
+                await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+            }
         }
 
-        // 5. Navigate to Dashboard for Verification
-        await page.goto('https://www.wsjobs-ng.com/user');
-        await page.waitForTimeout(4000);
+        // 4. VERIFICATION
+        await updateStatus('[SYSTEM] Moving to dashboard...');
+        await page.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'domcontentloaded' });
+        await new Promise(r => setTimeout(r, 4000));
+
+        const finalSnap = await page.screenshot({ type: 'png' });
         
-        const buffer = await page.screenshot({ fullPage: false });
-        
-        await bot.deleteMessage(chatId, statusMsg.message_id);
-        await bot.sendPhoto(chatId, buffer, { 
-            caption: '[SUCCESS] Playwright Firefox login completed. The popup was bypassed using the DOM sniper.' 
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+        await bot.sendPhoto(chatId, finalSnap, { 
+            caption: '[SUCCESS] Firefox Login Complete\n\nMethod: System Binary (/usr/bin/firefox)\nDetection: Bypassed\nPopup: Neutralized' 
         });
 
     } catch (err) {
-        await bot.sendMessage(chatId, `[PLAYWRIGHT ERROR]: ${err.message}`);
+        await updateStatus(`[ERROR] System Firefox Failed: ${err.message}`);
     } finally {
-        if (browser) {
-            await browser.close();
-        }
+        if (browser) await browser.close();
     }
 });
 
