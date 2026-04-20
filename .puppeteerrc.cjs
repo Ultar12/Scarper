@@ -2,13 +2,12 @@
  * @type {import("puppeteer").Configuration}
  */
 module.exports = {
-  // Download Chrome (default `skipDownload: false`).
+  // Completely disable Chrome download
   chrome: {
-    skipDownload: false,
+    skipDownload: true,
   },
-  // Download Firefox (default `skipDownload: true`).
+  // ONLY download Firefox
   firefox: {
     skipDownload: false,
   },
 };
-
