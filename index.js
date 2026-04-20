@@ -1802,14 +1802,13 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         browser = globalTaskBrowser;
 
 
-                                // --- STEP 1: INITIALIZE MASTER TAB ---
+                                        // --- STEP 1: INITIALIZE MASTER TAB ---
         page1 = await browser.newPage();
         pages.push(page1);
 
-        // PWA Spoofing (Faking the install to stop the site from being aggressive)
+        // Mute the browser-level install prompt
         await page1.evaluateOnNewDocument(() => {
             window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); return false; });
-            navigator.getInstalledRelatedApps = () => Promise.resolve([{ id: 'wsjobs' }]);
         });
 
         await page1.setViewport({ width: 412, height: 915 }); 
@@ -1818,50 +1817,61 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
         await loadSessionFromDB('wsjobs_task', page1);
 
-        // --- CRITICAL: THE NUCLEAR UI CLEANUP ---
-        await updateStatus('[SYSTEM] Executing Element Executioner...');
-        // Wait 3 seconds for the popup to definitely appear
-        await new Promise(r => setTimeout(r, 3000));
-
-        await page1.evaluate(() => {
-            // 1. Find the OK button and click it first (to trigger site internal close)
-            const okBtn = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.trim() === 'OK');
-            if (okBtn) okBtn.click();
-
-            // 2. Locate the "Install App" modal container and physically DELETE it
-            const elements = document.querySelectorAll('*');
-            elements.forEach(el => {
-                if (el.innerText?.includes('Install App') && el.tagName === 'DIV' && el.children.length < 15) {
-                    el.remove(); // Kill the modal
+        // --- THE NUCLEAR UI CLEANUP ---
+        await updateStatus('[SYSTEM] Deconstructing blocked UI layers...');
+        
+        // We run this multiple times to catch the "refresh" jump seen in the video
+        for (let i = 0; i < 3; i++) {
+            await new Promise(r => setTimeout(r, 3000));
+            await page1.evaluate(() => {
+                // 1. Physically REMOVE the popup and its background mask
+                const elements = Array.from(document.querySelectorAll('*'));
+                const okBtn = elements.find(el => el.innerText?.trim() === 'OK');
+                
+                if (okBtn) {
+                    // Find the high-level container (usually 3 or 4 levels up) and delete it
+                    let container = okBtn.parentElement;
+                    for(let j=0; j<4; j++) { if(container && container.parentElement) container = container.parentElement; }
+                    if (container) container.remove();
                 }
+
+                // 2. Kill the BLUR and restore scrolling
+                document.body.style.filter = 'none';
+                document.body.style.overflow = 'auto';
+                
+                // 3. Remove all "mask" or "overlay" divs that block clicks
+                document.querySelectorAll('[class*="mask"], [class*="overlay"], .v-modal, .modal-backdrop').forEach(el => el.remove());
+                
+                // 4. Force all parents of the input fields to be visible/clickable
+                const inputs = document.querySelectorAll('input');
+                inputs.forEach(input => {
+                    let p = input.parentElement;
+                    while(p && p !== document.body) {
+                        p.style.pointerEvents = 'auto';
+                        p.style.visibility = 'visible';
+                        p.style.opacity = '1';
+                        p = p.parentElement;
+                    }
+                });
             });
+        }
 
-            // 3. Remove the dark background blur/mask classes
-            const masks = document.querySelectorAll('[class*="mask"], [class*="overlay"], .modal-backdrop, [class*="popup"]');
-            masks.forEach(m => m.remove());
-
-            // 4. Force un-blur the entire body
-            document.body.style.filter = 'none';
-            document.body.style.overflow = 'auto';
-            document.documentElement.style.filter = 'none';
-        });
-
-        await new Promise(r => setTimeout(r, 2000));
-
-        // --- STEP 2: STABLE LOGIN (SHIGA) ---
+        // --- STEP 2: HARDWARE-LEVEL LOGIN ---
         const requiresLogin = page1.url().includes('login') || await page1.$('input[type="password"]') !== null;
         if (requiresLogin) {
-            await updateStatus('[SYSTEM] Popup executed. Typing credentials...');
+            await updateStatus('[SYSTEM] Entering credentials into cleared UI...');
             const allInputs = await page1.$$('input');
             if (allInputs.length >= 2) {
-                // Focus and type directly
+                // Focus and type with a solid delay to ensure the site registers it
                 await allInputs[0].focus();
+                await allInputs[0].click({ clickCount: 3 });
                 await allInputs[0].type('09163916500', { delay: 100 });
                 
                 await allInputs[1].focus();
+                await allInputs[1].click({ clickCount: 3 });
                 await allInputs[1].type('Emmamama', { delay: 100 });
                 
-                // Use hardware-level coordinate click on "Shiga"
+                // Final Geometric Click on Shiga
                 const loginCoords = await page1.evaluate(() => {
                     const btn = Array.from(document.querySelectorAll('*')).find(b => 
                         b.innerText?.trim() === 'Shiga' && b.offsetParent !== null
@@ -1875,12 +1885,6 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
                 if (loginCoords) {
                     await page1.mouse.click(loginCoords.x, loginCoords.y);
-                } else {
-                    // Fallback to text click if coordinates fail
-                    await page1.evaluate(() => {
-                        const b = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.trim() === 'Shiga');
-                        if (b) b.click();
-                    });
                 }
                 await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
             }
