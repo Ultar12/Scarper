@@ -448,59 +448,44 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
         });
         await recorder.start(videoPath);
 
-        // --- THE SURGICAL CLOAK PROTOCOL ---
+        // --- THE PWA ILLUSION PROTOCOL ---
+        // We can't install apps on a headless server.
+        // Instead, we trick the website into thinking it's ALREADY installed.
+        
+        // 1. Force the browser into "Standalone" mode (This is how installed PWAs operate)
+        await page.emulateMediaFeatures([
+            { name: 'display-mode', value: 'standalone' }
+        ]);
+
+        // 2. Inject fake properties into the browser before the page even loads
         await page.evaluateOnNewDocument(() => {
+            // Block the native install prompt event
             window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); return false; });
             
-            setInterval(() => {
-                if (!document || !document.body) return;
-                const elements = Array.from(document.querySelectorAll('*'));
-                
-                // 1. Natural Dismissal: If there is a 'Cancel' button, just click it!
-                const cancelBtn = elements.find(el => el.innerText?.trim() === 'Cancel' && el.offsetParent !== null);
-                if (cancelBtn) {
-                    cancelBtn.click();
+            // Spoof iOS/Safari standalone mode
+            Object.defineProperty(navigator, 'standalone', { get: () => true });
+            
+            // Automatically mock the 'matchMedia' API if the site queries it to check install status
+            const originalMatchMedia = window.matchMedia;
+            window.matchMedia = (query) => {
+                if (query === '(display-mode: standalone)') {
+                    return { 
+                        matches: true, 
+                        media: query, 
+                        onchange: null, 
+                        addListener: () => {}, 
+                        removeListener: () => {}, 
+                        addEventListener: () => {}, 
+                        removeEventListener: () => {}, 
+                        dispatchEvent: () => {} 
+                    };
                 }
-                
-                // 2. Surgical CSS Cloak: Hide the 'Add to home screen' popup WITHOUT deleting the website
-                const popupText = elements.find(el => el.innerText && el.innerText.includes('Add to home screen for best experience'));
-                if (popupText) {
-                    // Hide the text
-                    popupText.style.setProperty('display', 'none', 'important');
-                    
-                    // Hide the 'OK' button right next to it so it can't be clicked
-                    const okBtn = elements.find(el => el.innerText?.trim() === 'OK' && el.offsetParent !== null);
-                    if (okBtn) {
-                        okBtn.style.setProperty('display', 'none', 'important');
-                        if (okBtn.parentElement) okBtn.parentElement.style.setProperty('display', 'none', 'important');
-                    }
-                    
-                    // Hide the dark background overlay specifically
-                    const overlays = elements.filter(el => {
-                        const style = window.getComputedStyle(el);
-                        return style.position === 'fixed' || style.position === 'absolute' || style.backgroundColor.includes('rgba(0, 0, 0');
-                    });
-                    
-                    overlays.forEach(overlay => {
-                        // If it covers more than half the screen, it's an overlay block. Hide it.
-                        if (overlay.offsetHeight > window.innerHeight * 0.5) {
-                            overlay.style.setProperty('display', 'none', 'important');
-                            overlay.style.setProperty('pointer-events', 'none', 'important');
-                        }
-                    });
-                }
-                
-                // 3. Unfreeze the DOM
-                document.body.style.setProperty('filter', 'none', 'important');
-                document.body.style.setProperty('overflow', 'auto', 'important');
-                document.body.style.setProperty('pointer-events', 'auto', 'important');
-            }, 500); 
+                return originalMatchMedia(query);
+            };
         });
 
         await updateStatus('[SYSTEM] Navigating to login page...');
         await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-        
-        // Give the cloak script a few seconds to hide any popups that animate in
         await new Promise(r => setTimeout(r, 4000));
 
         // --- LOGIN LOGIC ---
