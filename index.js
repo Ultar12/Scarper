@@ -414,137 +414,40 @@ bot.onText(/\/m4usign/i, (msg) => {
 });
 
 
-
 // Usage: /testlogin
 bot.onText(/^\/testlogin$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Booting fresh Login Test Protocol (Ghost Mode + VIP Auth)...');
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Booting fresh Login Test Protocol (Firefox Engine)...');
     const updateStatus = async (text) => {
         await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
     };
 
     let browser = null;
     let page = null;
-    let recorder = null;
-    const videoPath = path.join(__dirname, `testlogin_video_${Date.now()}.mp4`);
 
     try {
-        await updateStatus('[SYSTEM] Launching isolated Chrome instance...');
+        await updateStatus('[SYSTEM] Launching isolated Firefox instance...');
+        
+        // --- LAUNCHING FIREFOX INSTEAD OF CHROME ---
         browser = await puppeteer.launch({
+            product: 'firefox', // Switches the engine from Chromium to Gecko
             headless: true,
-            executablePath: getChromePath(), 
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+            args: ['--no-sandbox', '--disable-setuid-sandbox'] 
         });
 
         page = await browser.newPage();
         await page.setViewport({ width: 412, height: 915 });
         
-        // 1. THE PHONE MASK: Tell the website we are a Samsung Galaxy
-        await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
-
-        // --- 2. GOOGLE COOKIE INJECTION (WITH SCRUBBER) ---
-        const cookiePath = path.join(__dirname, 'google_cookies.json');
-        if (fs.existsSync(cookiePath)) {
-            const cookiesString = fs.readFileSync(cookiePath, 'utf8');
-            const rawCookies = JSON.parse(cookiesString);
-            
-            // Scrub the cookies to remove garbage data that crashes Puppeteer
-            const cleanCookies = rawCookies.map(cookie => {
-                const clean = {
-                    name: cookie.name,
-                    value: cookie.value,
-                    domain: cookie.domain,
-                    path: cookie.path || '/',
-                    secure: cookie.secure,
-                    httpOnly: cookie.httpOnly
-                };
-                if (cookie.expirationDate) clean.expires = cookie.expirationDate;
-                if (cookie.sameSite && ['Strict', 'Lax', 'None'].includes(cookie.sameSite)) {
-                    clean.sameSite = cookie.sameSite;
-                }
-                return clean;
-            });
-            
-            await page.setCookie(...cleanCookies);
-            await updateStatus('[SYSTEM] Google Session injected (Cookies scrubbed & safe).');
-        } else {
-            await updateStatus('[WARNING] google_cookies.json not found! Browsing as guest.');
-        }
-
-        // --- START VIDEO RECORDING ---
-        recorder = new PuppeteerScreenRecorder(page, {
-            fps: 30, videoFrame: { width: 412, height: 915 }, aspectRatio: '9:16'
-        });
-        await recorder.start(videoPath);
-
-        // --- 3. THE PWA SPOOFING ENGINE & INVISIBLE CLOAK ---
-        // (Removed the crashing native emulator, relying entirely on safe JS injection)
-        await page.evaluateOnNewDocument(() => {
-            // Spoof iOS/Safari standalone mode
-            Object.defineProperty(navigator, 'standalone', { get: () => true });
-            
-            // Block the native install prompt event
-            window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); return false; });
-            
-            // Fire a fake "App Installed" success signal to the website
-            window.dispatchEvent(new Event('appinstalled'));
-            
-            // Force-feed the local storage with common "already installed" flags
-            try {
-                localStorage.setItem('pwa_installed', 'true');
-                localStorage.setItem('is_installed', 'true');
-                localStorage.setItem('app_install_dismissed', 'true');
-            } catch(e) {}
-            
-            // Mock the matchMedia API so the site thinks the PWA is active
-            const originalMatchMedia = window.matchMedia;
-            window.matchMedia = (query) => {
-                if (query === '(display-mode: standalone)') {
-                    return { matches: true, media: query, addListener: () => {}, removeListener: () => {} };
-                }
-                return originalMatchMedia(query);
-            };
-
-            // THE INVISIBLE CLOAK: Hide rogue popups without breaking the DOM
-            setInterval(() => {
-                if (!document || !document.body) return;
-                
-                const elements = Array.from(document.querySelectorAll('*'));
-                const targetTexts = ['Add to home screen for best experience', 'Install App', 'Install app'];
-                
-                elements.forEach(el => {
-                    const txt = el.innerText?.trim() || '';
-                    if (targetTexts.some(t => txt.includes(t))) {
-                        let container = el;
-                        // Walk up the HTML tree to grab the dark background container
-                        for (let i = 0; i < 5; i++) {
-                            if (container.parentElement && container.parentElement.tagName !== 'BODY' && container.parentElement.tagName !== 'HTML') {
-                                container = container.parentElement;
-                            }
-                        }
-                        // Turn it into a ghost
-                        if (container) {
-                            container.style.setProperty('opacity', '0', 'important');
-                            container.style.setProperty('pointer-events', 'none', 'important');
-                            container.style.setProperty('z-index', '-9999', 'important');
-                        }
-                    }
-                });
-                
-                // Force the background to unfreeze
-                document.body.style.setProperty('filter', 'none', 'important');
-                document.body.style.setProperty('overflow', 'auto', 'important');
-                document.body.style.setProperty('pointer-events', 'auto', 'important');
-            }, 300); 
-        });
+        // Tell the website we are using Firefox on Android
+        await page.setUserAgent('Mozilla/5.0 (Android 13; Mobile; rv:109.0) Gecko/115.0 Firefox/115.0');
 
         await updateStatus('[SYSTEM] Navigating to login page...');
         await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await new Promise(r => setTimeout(r, 4000));
 
-        // --- 4. LOGIN LOGIC ---
+        // --- LOGIN LOGIC ---
         const requiresLogin = page.url().includes('login') || await page.$('input[type="password"]') !== null;
         if (requiresLogin) {
             await updateStatus('[SYSTEM] Login required. Injecting credentials...');
@@ -589,32 +492,24 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
             await updateStatus('[SYSTEM] Already logged in via cache.');
         }
 
-        // --- 5. VERIFICATION ---
+        // --- VERIFICATION ---
         await updateStatus('[SYSTEM] Teleporting to User Dashboard to verify status...');
         await page.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'domcontentloaded' });
         await new Promise(r => setTimeout(r, 4000));
 
-        await updateStatus('[SYSTEM] Capture complete! Processing video...');
+        await updateStatus('[SYSTEM] Capture complete! Taking Final Snapshot...');
         
-        if (recorder) await recorder.stop().catch(() => {});
+        // Take a screenshot since Video doesn't work on Firefox
+        const finalSnap = await page.screenshot({ type: 'png' });
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-        
-        if (fs.existsSync(videoPath)) {
-            await bot.sendVideo(chatId, videoPath, { caption: '[SUCCESS] Test Login Complete. Here is the full video of the sequence.' });
-            fs.unlinkSync(videoPath); 
-        }
+        await bot.sendPhoto(chatId, finalSnap, { caption: '[SUCCESS] Firefox Test Login Complete! No PWA popups.' });
 
     } catch (err) {
-        await updateStatus(`[ERROR] Test command failed: ${err.message}`);
-        if (recorder) await recorder.stop().catch(() => {});
-        
-        if (fs.existsSync(videoPath)) {
-            await bot.sendVideo(chatId, videoPath, { caption: `[DIAGNOSTIC] Test Login crashed! Video of the failure:\nError: ${err.message}` });
-            fs.unlinkSync(videoPath);
-        } else if (page) {
+        await updateStatus(`[ERROR] Firefox command failed: ${err.message}`);
+        if (page) {
             try {
                 const errSnap = await page.screenshot({ type: 'png' });
-                await bot.sendPhoto(chatId, errSnap, { caption: '[DIAGNOSTIC] Screen state at the exact moment of failure.' });
+                await bot.sendPhoto(chatId, errSnap, { caption: `[DIAGNOSTIC] Firefox crashed!\nError: ${err.message}` });
             } catch (e) {}
         }
     } finally {
