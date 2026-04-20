@@ -1827,9 +1827,23 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             return didSweep;
         };
 
-                // --- STEP 1: INITIALIZE MASTER TAB & INJECT DB DATA ---
-        await updateStatus('[SYSTEM] Opening Master Tab & loading DB credentials...');
+                        // --- STEP 1: INITIALIZE MASTER TAB & INJECT DB DATA ---
+        await updateStatus('[SYSTEM] Opening Master Tab & forcing App Install state...');
         const page1 = await browser.newPage();
+
+        // --- NEW: THE PWA SHIELD & INSTALL SPOOFER ---
+        // This tells the website's code that the user clicked "Install" so the popup disappears
+        await page1.evaluateOnNewDocument(() => {
+            window.addEventListener('beforeinstallprompt', (e) => {
+                e.preventDefault(); // Stop the gray system box from freezing the script
+                // Pretend the user chose 'Install'
+                e.userChoice = Promise.resolve({ outcome: 'accepted', platform: 'web' });
+                return false;
+            });
+            // Fake the successful install event to unfreeze the website UI
+            window.dispatchEvent(new Event('appinstalled'));
+        });
+
         pages.push(page1);
         await page1.setViewport({ width: 412, height: 915 }); 
         await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
@@ -1837,6 +1851,21 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         // 1. Inject Session
         await page1.goto('https://www.wsjobs-ng.com', { waitUntil: 'networkidle2' });
         await loadSessionFromDB('wsjobs_task', page1);
+
+        // --- NEW: AGGRESSIVE PRE-LOGIN POPUP KILLER ---
+        // Loops to catch "OK" or "Install" buttons that appear right when site loads
+        for (let i = 0; i < 3; i++) {
+            await new Promise(r => setTimeout(r, 2000));
+            await page1.evaluate(() => {
+                const elements = Array.from(document.querySelectorAll('*'));
+                const btn = elements.find(el => 
+                    (el.innerText?.trim() === 'OK' || el.innerText?.trim() === 'Install') && 
+                    el.offsetParent !== null && 
+                    el.tagName !== 'BODY'
+                );
+                if (btn) btn.click();
+            });
+        }
 
         // 2. Head to Task page
         await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
@@ -1865,20 +1894,23 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         }
 
-        // 4. Handle "OK" Popup after login
+        // 4. Handle "OK" or "Install" Popup again after login
         await new Promise(r => setTimeout(r, 4000));
-        const popupExists = await page1.evaluate(() => {
-            const okBtn = Array.from(document.querySelectorAll('*')).find(el => 
-                el.innerText?.trim() === 'OK' && el.offsetParent !== null
+        const finalClear = await page1.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('*'));
+            const btn = elements.find(el => 
+                (el.innerText?.trim() === 'OK' || el.innerText?.trim() === 'Install') && 
+                el.offsetParent !== null
             );
-            if (okBtn) {
-                okBtn.click();
+            if (btn) {
+                btn.click();
                 return true;
             }
             return false;
         });
 
-        if (popupExists) await updateStatus('[SYSTEM] Dark "Notice" cleared.');
+        if (finalClear) await updateStatus('[SYSTEM] UI Traps (OK/Install) cleared.');
+
 
         // 5. THE DIRECT JUMP
         await updateStatus('[SYSTEM] Jumping directly to Task page...');
