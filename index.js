@@ -1809,15 +1809,40 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
         
               
-               // PWA Spoofing: Safety net to intercept native browser prompts just in case
+                       // --- STEP 1.5: THE TERMINATOR (PWA SPOOFER & POPUP KILLER) ---
         await page1.evaluateOnNewDocument(() => {
-            window.addEventListener('beforeinstallprompt', (e) => {
-                e.preventDefault(); 
-                e.userChoice = Promise.resolve({ outcome: 'accepted', platform: 'web' });
-                return false;
-            });
-            window.dispatchEvent(new Event('appinstalled'));
-            navigator.getInstalledRelatedApps = () => Promise.resolve([{ id: 'wsjobs-pwa' }]);
+            // 1. Lie to the browser events just in case
+            window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); return false; });
+            
+            // 2. THE TERMINATOR BACKGROUND LOOP
+            // This runs silently in the background of EVERY page load (Login, Task, User, etc.)
+            setInterval(() => {
+                const elements = Array.from(document.querySelectorAll('*'));
+                const popup = elements.find(el => el.innerText && el.innerText.includes('Add to home screen for best experience'));
+                
+                if (popup) {
+                    // Try to click the OK button to satisfy any internal site logic
+                    const okBtn = elements.find(el => el.innerText?.trim() === 'OK' && el.offsetParent !== null);
+                    if (okBtn) {
+                        okBtn.click();
+                    } 
+                    
+                    // Forcefully nuke the popup container from the HTML DOM
+                    let container = popup;
+                    for (let i = 0; i < 5; i++) {
+                        // Traverse up the tree to grab the whole dark overlay, but don't delete the body
+                        if (container.parentElement && container.parentElement.tagName !== 'BODY' && container.parentElement.tagName !== 'HTML') {
+                            container = container.parentElement;
+                        }
+                    }
+                    container.remove();
+                    
+                    // Reset the screen so the bot can click the login fields behind it
+                    document.body.style.filter = 'none';
+                    document.body.style.overflow = 'auto';
+                    document.body.style.pointerEvents = 'auto';
+                }
+            }, 500); // Scans the screen every half-second forever
         });
 
         recorder = new PuppeteerScreenRecorder(page1, {
@@ -1831,58 +1856,8 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
         await loadSessionFromDB('wsjobs_task', page1);
 
-        // --- STEP 2: THE "OK -> INSTALL" PHYSICAL CLICK SEQUENCE ---
-        await updateStatus('[SYSTEM] Executing physical app install sequence...');
-        
-        // Loop a few times to handle animations and loading delays
-        for (let i = 0; i < 4; i++) {
-            await new Promise(r => setTimeout(r, 2000));
-            
-            // 1. Look for and strike the "OK" button first
-            const okCoords = await page1.evaluate(() => {
-                const btn = Array.from(document.querySelectorAll('*')).find(el => 
-                    el.innerText?.trim() === 'OK' && el.offsetParent !== null
-                );
-                if (btn) {
-                    const rect = btn.getBoundingClientRect();
-                    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-                }
-                return null;
-            });
-
-            if (okCoords) {
-                await updateStatus('[SYSTEM] Clicked "OK". Waiting for Install prompt...');
-                await page1.mouse.click(okCoords.x, okCoords.y);
-                await new Promise(r => setTimeout(r, 2500)); // Wait 2.5 seconds for the next UI to appear
-            }
-
-            // 2. Look for and strike the "Install" button
-            const installCoords = await page1.evaluate(() => {
-                const btn = Array.from(document.querySelectorAll('*')).find(el => 
-                    (el.innerText?.trim() === 'Install' || el.innerText?.trim() === 'Instalar' || el.innerText?.trim() === 'Add to home screen') && el.offsetParent !== null
-                );
-                if (btn) {
-                    const rect = btn.getBoundingClientRect();
-                    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-                }
-                return null;
-            });
-
-            if (installCoords) {
-                await updateStatus('[SYSTEM] Clicked "Install". Satisfying app requirement...');
-                await page1.mouse.click(installCoords.x, installCoords.y);
-                await new Promise(r => setTimeout(r, 1500));
-            }
-            
-            // 3. Nuclear CSS cleanup to remove the dark background blur immediately
-            await page1.evaluate(() => {
-                document.body.style.filter = 'none';
-                document.body.style.overflow = 'auto';
-                document.querySelectorAll('[class*="mask"], [class*="overlay"], .modal-backdrop').forEach(el => el.remove());
-            });
-        }
-
         // --- STEP 3: LOGIN LOGIC (SHIGA / ENTRAR SUPPORT) ---
+        // (NOTE: The old STEP 2 was removed because the Terminator loop above handles popups automatically now)
         const requiresLogin = page1.url().includes('login') || await page1.$('input[type="password"]') !== null;
         if (requiresLogin) {
             await updateStatus('[SYSTEM] Performing Geometric Sign-In...');
@@ -1917,7 +1892,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                 await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
             }
         }
- 
+
 
         // 5. THE DIRECT JUMP
         await updateStatus('[SYSTEM] Jumping directly to Task page...');
