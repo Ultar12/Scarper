@@ -1248,9 +1248,7 @@ bot.onText(/^\/getfile$/i, async (msg) => {
 
 
 
-
-// --- WSJOBS SMART WITHDRAWAL ---
-// Usage: /withdraw task
+// --- WSJOBS SMART WITHDRAWAL (BRAZIL UI UPDATED) ---
 bot.onText(/\/withdraw\s+task/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -1265,9 +1263,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
     let recorder = null;
     const videoPath = path.join(__dirname, `withdraw_debug_${Date.now()}.mp4`);
 
-    
     try {
-        // Use the global browser engine to save RAM, just like /task
         if (typeof globalTaskBrowser === 'undefined' || !globalTaskBrowser) {
             await updateStatus('[SYSTEM] Cold Boot: Launching background Chrome engine...');
             globalTaskBrowser = await puppeteer.launch({
@@ -1282,8 +1278,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await page.setViewport({ width: 412, height: 915 });
         await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-                // --- START VIDEO RECORDING ---
-        await updateStatus('[SYSTEM] Starting screen recorder...');
+        // --- START VIDEO RECORDING ---
         recorder = new PuppeteerScreenRecorder(page, {
             fps: 30,
             videoFrame: { width: 412, height: 915 },
@@ -1291,317 +1286,127 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         });
         await recorder.start(videoPath);
 
-
-        // Step 1: Inject DB Session (Shares exact memory with /task)
-        await updateStatus('[SYSTEM] Loading permanent session from Database...');
-        await page.goto('https://www.wsjobs-ng.com', { waitUntil: 'networkidle2' }); 
+        // Step 1: Login & Session Recovery
+        await updateStatus('[SYSTEM] Loading session and checking login state...');
+        await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'networkidle2' }); 
         await loadSessionFromDB('wsjobs_task', page);
 
-        // Step 2: Teleport to User Dashboard
-        await updateStatus('[SYSTEM] Checking Wsjobs session...');
-        await page.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 4000));
+        const requiresLogin = page.url().includes('login') || await page.$('input[type="password"]') !== null;
 
-        // Safe Login check
-        if (await page.$('input[type="password"]')) {
-            await updateStatus('[SYSTEM] Session expired. Performing Physical Login...');
+        if (requiresLogin) {
+            await updateStatus('[SYSTEM] Session expired. Performing New UI Sign-In...');
             const allInputs = await page.$$('input');
-            const vis = [];
-            for (let input of allInputs) {
-                if (await input.evaluate(el => el.offsetParent !== null)) vis.push(input);
-            }
-            if (vis.length >= 2) {
-                // Safe input clearing that doesn't break modern websites
-                await vis[0].click({ clickCount: 3 });
-                await page.keyboard.press('Backspace');
-                await vis[0].type('09163916311', { delay: 50 });
-                
-                await vis[1].click({ clickCount: 3 });
-                await page.keyboard.press('Backspace');
-                await vis[1].type('Emmamama', { delay: 50 });
-                
-                await new Promise(r => setTimeout(r, 1000));
+            if (allInputs.length >= 2) {
+                await allInputs[0].click({ clickCount: 3 });
+                await allInputs[0].type('09163916500', { delay: 50 });
+                await allInputs[1].click({ clickCount: 3 });
+                await allInputs[1].type('Emmamama', { delay: 50 });
                 
                 await page.evaluate(() => {
-                    Array.from(document.querySelectorAll('*')).forEach(el => {
-                        if (el.innerText && el.innerText.trim() === 'Login' && el.offsetParent !== null) el.click();
-                    });
+                    const btns = Array.from(document.querySelectorAll('button, div, span'));
+                    const loginBtn = btns.find(b => b.innerText?.trim() === 'Sign In' && b.offsetParent !== null);
+                    if (loginBtn) loginBtn.click();
                 });
-                
                 await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-                await new Promise(r => setTimeout(r, 4000));
-                
-                await page.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
-                await new Promise(r => setTimeout(r, 4000));
-                
-                // SAVE TO DB: Update the permanent session memory
-                await saveSessionToDB('wsjobs_task', page);
             }
         }
 
-        // Step 3: Scan Balance with Bulletproof Regex
-        await updateStatus('[SYSTEM] Scanning Account Balance...');
-        const balanceData = await page.evaluate(() => {
-            const rawText = document.body.textContent || '';
-            const match = rawText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
-            if (match) return match[1];
-            return null;
+        // --- Step 2: Clear Post-Login "Notice" Popup ---
+        await new Promise(r => setTimeout(r, 4000));
+        await page.evaluate(() => {
+            const okBtn = Array.from(document.querySelectorAll('*')).find(el => 
+                el.innerText?.trim() === 'OK' && el.offsetParent !== null
+            );
+            if (okBtn) okBtn.click();
         });
 
-        if (!balanceData) throw new Error("Could not detect Account Balance on the user page.");
-
-        const rawBalance = parseFloat(balanceData.replace(/,/g, ''));
-        if (rawBalance < 12000) {
-            await updateStatus(`[FAILED] Balance is ${balanceData}. Minimum requirement is 12000.`);
-            await page.close().catch(() => {});
-            return;
+        // Ensure we are on the Account page
+        if (!page.url().includes('/account')) {
+            await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'networkidle2' });
+            await new Promise(r => setTimeout(r, 3000));
         }
 
-        // Calculate highest affordable tier
+        // Step 3: Scan Balance & Select Tier
+        await updateStatus('[SYSTEM] Scanning Account Balance...');
+        const balanceData = await page.evaluate(() => {
+            const match = document.body.innerText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
+            return match ? match[1] : null;
+        });
+
+        if (!balanceData) throw new Error("Could not detect Balance.");
+        const rawBalance = parseFloat(balanceData.replace(/,/g, ''));
+        
         const tiers = [50000, 26000, 23000, 20000, 18000, 15000, 12000];
-        let targetAmount = 12000;
-        for (let t of tiers) {
-            if (rawBalance >= t) {
-                targetAmount = t;
+        let targetAmount = tiers.find(t => rawBalance >= t) || 12000;
+
+        // Click the "Account Withdrawal" Card
+        await page.evaluate(() => {
+            const cards = Array.from(document.querySelectorAll('div, span, p'));
+            const withdrawCard = cards.find(el => el.innerText?.trim() === 'Account Withdrawal' && el.offsetParent !== null);
+            if (withdrawCard) withdrawCard.click();
+        });
+        await new Promise(r => setTimeout(r, 4000));
+
+        // Select Amount Chip
+        await page.evaluate((amt) => {
+            const target = amt.toString();
+            const chips = Array.from(document.querySelectorAll('*'));
+            for (let chip of chips) {
+                if (chip.innerText?.replace(/[^0-9]/g, '') === target && chip.offsetParent !== null) {
+                    chip.click();
+                    return true;
+                }
+            }
+        }, targetAmount);
+        await new Promise(r => setTimeout(r, 1500));
+
+        // Step 4: Confirm Withdrawal Flow
+        await updateStatus(`[SYSTEM] Selecting ${targetAmount}. Clicking WITHDRAW NOW...`);
+        await page.evaluate(() => {
+            const btns = Array.from(document.querySelectorAll('button, div, span'));
+            const mainBtn = btns.find(b => b.innerText?.trim() === 'WITHDRAW NOW' && b.offsetParent !== null);
+            if (mainBtn) mainBtn.click();
+        });
+        await new Promise(r => setTimeout(r, 3000));
+
+        // Input Password
+        const pin = 'Emmamama'; // Replace with your actual withdrawal PIN
+        const pwInputs = await page.$$('input');
+        for (let input of pwInputs) {
+            const ph = await page.evaluate(el => el.placeholder || '', input);
+            if (ph.toLowerCase().includes('password')) {
+                await input.click({ clickCount: 3 });
+                await input.type(pin, { delay: 100 });
                 break;
             }
         }
 
-        await updateStatus(`[SYSTEM] Balance is ${balanceData}. Automatically selecting tier: ${targetAmount}`);
-
-                // Step 4: Teleport to Withdrawal Page
-        await updateStatus('[SYSTEM] Jumping to withdrawal page to execute...');
-        await page.goto('https://www.wsjobs-ng.com/withdrawal', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 4000));
-
-        // --- NEW: SEND SCREENSHOT IF TIER IS ABOVE 12000 ---
-                // If target is 12000, skip clicking since it is selected by default!
-        if (targetAmount !== 12000) {
-            await updateStatus(`[SYSTEM] Selecting tier: ${targetAmount}...`);
-            const clickedTier = await page.evaluate((amt) => {
-                const target = amt.toString();
-                const elements = Array.from(document.querySelectorAll('*'));
-                
-                for (let el of elements) {
-                    // Grab all text inside the element
-                    const rawText = el.innerText || el.textContent || '';
-                    // Strip EVERYTHING except numbers. "20000 ✔" becomes "20000"
-                    const cleanText = rawText.replace(/[^0-9]/g, '');
-
-                    if (cleanText === target && el.offsetParent !== null) {
-                        el.scrollIntoView({ block: 'center' });
-                        
-                        // Fire synthetic MouseEvents to forcefully bypass Vue/React traps
-                        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                        el.click();
-                        
-                        if (el.parentElement) {
-                            el.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                            el.parentElement.click();
-                        }
-                        return true;
-                    }
-                }
-                return false;
-            }, targetAmount);
-
-            if (!clickedTier) throw new Error(`Could not locate the physical button for tier: ${targetAmount}`);
-            await new Promise(r => setTimeout(r, 1500));
-        } else {
-            await updateStatus(`[SYSTEM] Target is 12000 (Default). Skipping tier selection...`);
-        }
-
-
-                await updateStatus('[SYSTEM] Clicking "Withdrawal Now"...');
+        // Final Confirm Strike
         await page.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('*'));
-            for (let el of elements) {
-                const txt = (el.innerText || el.textContent || '').trim();
-                if (txt === 'Withdrawal Now' && el.offsetParent !== null) {
-                    el.scrollIntoView({ block: 'center' });
-                    // Force synthetic mouse click to bypass UI traps
-                    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                    el.click();
-                    if (el.parentElement) el.parentElement.click();
-                    return; // Stop searching once we click it
-                }
-            }
+            const btns = Array.from(document.querySelectorAll('button, div, span'));
+            const finalBtn = btns.find(b => b.innerText?.trim() === 'Confirm Withdrawal' && b.offsetParent !== null);
+            if (finalBtn) finalBtn.click();
         });
-        await new Promise(r => setTimeout(r, 3000));
-
-        await updateStatus('[SYSTEM] Processing confirmation screen...');
-        await page.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('*'));
-            for (let el of elements) {
-                const txt = (el.innerText || el.textContent || '').trim();
-                // Check for either 'Withdrawal' or 'Confirm' on the popup
-                if ((txt === 'Withdrawal' || txt === 'Confirm') && el.offsetParent !== null) {
-                    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                    el.click();
-                    if (el.parentElement) el.parentElement.click();
-                    return; 
-                }
-            }
-        });
-        await new Promise(r => setTimeout(r, 3000));
-
-
-                await updateStatus('[SYSTEM] Waiting for PIN modal to fully render...');
-        await new Promise(r => setTimeout(r, 2500)); // Let the slide-up animation finish completely
-
-    
         
-                 // --- 1. PHYSICAL COORDINATE TAP & TYPING (UPDATED) ---
-        await updateStatus('[SYSTEM] Calculating geometric coordinates to force-focus the box...');
-        let inputFound = false;
-        const passwordInputs = await page.$$('input');
-        
-        for (let input of passwordInputs) {
-            const isValid = await input.evaluate(el => el.type !== 'hidden' && (el.offsetParent !== null || window.getComputedStyle(el).opacity === '0'));
-            if (isValid) {
-                const box = await input.boundingBox();
-                if (box) {
-                    await updateStatus('[SYSTEM] Target locked. Executing raw physical mouse click...');
-                    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-                    await new Promise(r => setTimeout(r, 1000)); 
-                    
-                    // --- NEW: CLEAR BOX BEFORE TYPING ---
-                    await page.keyboard.down('Control');
-                    await page.keyboard.press('a');
-                    await page.keyboard.up('Control');
-                    await page.keyboard.press('Backspace');
-                    await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 5000));
+        await updateStatus('[SUCCESS] Withdrawal sequence finished.');
+        const finalSnap = await page.screenshot({ type: 'png' });
+        await bot.sendPhoto(chatId, finalSnap, { caption: `[FINISH] Withdrawal submitted for ${targetAmount}.` });
 
-                    await updateStatus('[SYSTEM] Typing PIN with sync protection...');
-                    // Press keys one by one with deliberate 250ms delay + 150ms type delay
-                    for (let i = 0; i < pin.length; i++) {
-                        // Use .type for individual character fidelity
-                        await page.keyboard.type(pin[i], { delay: 150 });
-                        await new Promise(r => setTimeout(r, 250));
-                    }
-                    inputFound = true;
-                    break; 
-                }
-            }
-        }
-
-        if (!inputFound) {
-            await updateStatus('[WARNING] Could not find the PIN box coordinates!');
-        }
-
-        await updateStatus('[SYSTEM] Waiting for UI to register input...');
-        await new Promise(r => setTimeout(r, 3000));
-
-        // --- 2. AGGRESSIVE CONFIRM CLICK (UPDATED) ---
-        await page.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('*'));
-            for (let el of elements) {
-                const txt = (el.innerText || el.textContent || '').trim();
-                if (txt === 'Confirm' && el.offsetParent !== null) {
-                    const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-                    el.dispatchEvent(clickEvent);
-                    el.click();
-                    // DOUBLE STRIKE: Hit it again 500ms later to ensure submission
-                    setTimeout(() => el.click(), 500);
-                    if (el.parentElement) el.parentElement.click();
-                    return; 
-                }
-            }
-        });
-
-        await updateStatus('[SYSTEM] Waiting for server verification...');
-        await new Promise(r => setTimeout(r, 4000)); 
-
-        // --- 3. ERROR DETECTION & RETRY LOGIC (UPDATED) ---
-        const errorModalDetected = await page.evaluate(() => {
-            const body = document.body.innerText || '';
-            return body.includes('password incorrect') || body.includes('Re-enter');
-        });
-
-        if (errorModalDetected) {
-            await updateStatus('[SYSTEM] Incorrect PIN modal detected. Clicking Re-enter...');
-            await page.evaluate(() => {
-                const elements = Array.from(document.querySelectorAll('*'));
-                for (let el of elements) {
-                    if ((el.innerText || '').trim() === 'Re-enter' && el.offsetParent !== null) {
-                        el.click(); return;
-                    }
-                }
-            });
-            
-            await new Promise(r => setTimeout(r, 2500)); 
-
-            await updateStatus('[SYSTEM] Retrying: Executing second coordinate tap...');
-            const retryInputs = await page.$$('input');
-            for (let input of retryInputs) {
-                const isValid = await input.evaluate(el => el.type !== 'hidden' && (el.offsetParent !== null || window.getComputedStyle(el).opacity === '0'));
-                if (isValid) {
-                    const box = await input.boundingBox();
-                    if (box) {
-                        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-                        await new Promise(r => setTimeout(r, 1000));
-
-                        // Clear again for the retry
-                        await page.keyboard.down('Control');
-                        await page.keyboard.press('a');
-                        await page.keyboard.up('Control');
-                        await page.keyboard.press('Backspace');
-
-                        for (let i = 0; i < pin.length; i++) {
-                            await page.keyboard.type(pin[i], { delay: 150 });
-                            await new Promise(r => setTimeout(r, 250));
-                        }
-                        break;
-                    }
-                }
-            }
-
-            await new Promise(r => setTimeout(r, 3000));
-
-            await page.evaluate(() => {
-                const elements = Array.from(document.querySelectorAll('*'));
-                for (let el of elements) {
-                    const txt = (el.innerText || el.textContent || '').trim();
-                    if (txt === 'Confirm' && el.offsetParent !== null) {
-                        const ce = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-                        el.dispatchEvent(ce);
-                        el.click();
-                        if (el.parentElement) el.parentElement.click();
-                        return; 
-                    }
-                }
-            });
-            await new Promise(r => setTimeout(r, 6000)); 
-        } else {
-            await new Promise(r => setTimeout(r, 2000)); 
-        }
-
-
-
-
-        await updateStatus('[SUCCESS] Auto-withdrawal completed.');
-        const screenshotBuffer = await page.screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, screenshotBuffer, { caption: '[SUCCESS] Wsjobs Final State' });
+        await saveSessionToDB('wsjobs_task', page);
 
     } catch (err) {
-        await updateStatus(`[ERROR] Sequence failed: ${err.message}`);
-        } finally {
-        // --- STOP RECORDING AND SEND VIDEO ---
-        if (recorder) {
-            await updateStatus('[SYSTEM] Stopping video recording and uploading...');
-            await recorder.stop().catch(() => {});
-            
-            try {
-                await bot.sendVideo(chatId, videoPath, { caption: '[DEBUG] Full Withdrawal Screen Recording' });
-            } catch (videoErr) {}
-            
-            // Clean up the MP4 from Heroku storage
-            try { if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath); } catch (e) {}
-        }
-
+        await updateStatus(`[ERROR] Withdrawal failed: ${err.message}`);
+    } finally {
+        if (recorder) await recorder.stop().catch(() => {});
+        try { if (fs.existsSync(videoPath)) await bot.sendVideo(chatId, videoPath); } catch (e) {}
         if (page) await page.close().catch(() => {});
     }
 });
+
+
+                
+       
 
 
 // --- CONTINUOUS TASK MODE ---
@@ -1997,47 +1802,64 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             return didSweep;
         };
 
-        // --- STEP 1: INITIALIZE MASTER TAB & INJECT DB DATA ---
+                // --- STEP 1: INITIALIZE MASTER TAB & INJECT DB DATA ---
         await updateStatus('[SYSTEM] Opening Master Tab & loading DB credentials...');
         const page1 = await browser.newPage();
         pages.push(page1);
         await page1.setViewport({ width: 412, height: 915 }); 
         await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
-        // Go to base URL first so localStorage injects safely without cross-domain errors
+        // 1. Inject Session
         await page1.goto('https://www.wsjobs-ng.com', { waitUntil: 'networkidle2' });
         await loadSessionFromDB('wsjobs_task', page1);
 
+        // 2. Head to Task page
         await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000)); 
 
-        const requiresLogin = await page1.$('input[type="password"]') !== null;
+        // 3. Check for Login
+        const requiresLogin = page1.url().includes('login') || await page1.$('input[type="password"]') !== null;
 
         if (requiresLogin) {
-            await updateStatus('[SYSTEM] DB Session missing/expired. Performing Physical Login...');
-            // --- NEW LOGIN STRIKE ---
-const allInputs = await page1.$$('input');
-if (allInputs.length >= 2) {
-    // Input 0 is Account, Input 1 is Password
-    await allInputs[0].click({ clickCount: 3 });
-    await allInputs[0].type('09163916500', { delay: 50 });
-    
-    await allInputs[1].click({ clickCount: 3 });
-    await allInputs[1].type('Emmamama', { delay: 50 });
-    
-    await page1.evaluate(() => {
-        const btns = Array.from(document.querySelectorAll('button, div, span'));
-        // Target the specific "Sign In" text from your screenshot
-        const loginBtn = btns.find(b => b.innerText?.trim() === 'Sign In' && b.offsetParent !== null);
-        if (loginBtn) loginBtn.click();
-    });
-    await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-
-            await new Promise(r => setTimeout(r, 4000)); 
+            await updateStatus('[SYSTEM] Session expired. Performing Sign-In...');
             
-            await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
-            await new Promise(r => setTimeout(r, 4000));
+            const allInputs = await page1.$$('input');
+            if (allInputs.length >= 2) {
+                await allInputs[0].click({ clickCount: 3 });
+                await allInputs[0].type('09163916500', { delay: 50 });
+                await allInputs[1].click({ clickCount: 3 });
+                await allInputs[1].type('Emmamama', { delay: 50 });
+                
+                await page1.evaluate(() => {
+                    const btns = Array.from(document.querySelectorAll('button, div, span'));
+                    const loginBtn = btns.find(b => b.innerText?.trim() === 'Sign In' && b.offsetParent !== null);
+                    if (loginBtn) loginBtn.click();
+                });
+                
+                await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+            }
         }
+
+        // 4. Handle "OK" Popup after login
+        await new Promise(r => setTimeout(r, 4000));
+        const popupExists = await page1.evaluate(() => {
+            const okBtn = Array.from(document.querySelectorAll('*')).find(el => 
+                el.innerText?.trim() === 'OK' && el.offsetParent !== null
+            );
+            if (okBtn) {
+                okBtn.click();
+                return true;
+            }
+            return false;
+        });
+
+        if (popupExists) await updateStatus('[SYSTEM] Dark "Notice" cleared.');
+
+        // 5. THE DIRECT JUMP
+        await updateStatus('[SYSTEM] Jumping directly to Task page...');
+        await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 4000)); 
+
 
 
                 // --- STEP 1.5: FETCH INITIAL BALANCE ---
