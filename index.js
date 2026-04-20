@@ -420,7 +420,7 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Booting fresh Login Test Protocol (Ghost Mode)...');
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Booting fresh Login Test Protocol (Ghost Mode + VIP Auth)...');
     const updateStatus = async (text) => {
         await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
     };
@@ -442,22 +442,30 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
         await page.setViewport({ width: 412, height: 915 });
         await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
+        // --- 1. GOOGLE COOKIE INJECTION ---
+        const cookiePath = path.join(__dirname, 'google_cookies.json');
+        if (fs.existsSync(cookiePath)) {
+            const cookiesString = fs.readFileSync(cookiePath, 'utf8');
+            const googleCookies = JSON.parse(cookiesString);
+            
+            await page.setCookie(...googleCookies);
+            await updateStatus('[SYSTEM] Google Session injected from google_cookies.json.');
+        } else {
+            await updateStatus('[WARNING] google_cookies.json not found! Browsing as guest.');
+        }
+
         // --- START VIDEO RECORDING ---
         recorder = new PuppeteerScreenRecorder(page, {
             fps: 30, videoFrame: { width: 412, height: 915 }, aspectRatio: '9:16'
         });
         await recorder.start(videoPath);
 
-        // --- THE PWA ILLUSION PROTOCOL ---
-        // We can't install apps on a headless server.
-        // Instead, we trick the website into thinking it's ALREADY installed.
-        
-        // 1. Force the browser into "Standalone" mode (This is how installed PWAs operate)
+        // --- 2. THE PWA ILLUSION PROTOCOL (POPUP BLOCKER) ---
+        // Forces the browser to act like the app is already installed
         await page.emulateMediaFeatures([
             { name: 'display-mode', value: 'standalone' }
         ]);
 
-        // 2. Inject fake properties into the browser before the page even loads
         await page.evaluateOnNewDocument(() => {
             // Block the native install prompt event
             window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); return false; });
@@ -465,7 +473,7 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
             // Spoof iOS/Safari standalone mode
             Object.defineProperty(navigator, 'standalone', { get: () => true });
             
-            // Automatically mock the 'matchMedia' API if the site queries it to check install status
+            // Mock the matchMedia API so the site thinks the PWA is active
             const originalMatchMedia = window.matchMedia;
             window.matchMedia = (query) => {
                 if (query === '(display-mode: standalone)') {
@@ -565,7 +573,6 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
         if (browser) await browser.close().catch(() => {});
     }
 });
-
 
 
 
