@@ -480,11 +480,7 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
         await recorder.start(videoPath);
 
         // --- 3. THE PWA SPOOFING ENGINE & INVISIBLE CLOAK ---
-        // Hack the CSS media queries to say "I am an installed app"
-        await page.emulateMediaFeatures([
-            { name: 'display-mode', value: 'standalone' }
-        ]);
-
+        // (Removed the crashing native emulator, relying entirely on safe JS injection)
         await page.evaluateOnNewDocument(() => {
             // Spoof iOS/Safari standalone mode
             Object.defineProperty(navigator, 'standalone', { get: () => true });
