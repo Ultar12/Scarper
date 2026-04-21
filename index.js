@@ -2247,7 +2247,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         })));
 
 
-        const finalSnap = await page.screenshot({ type: 'png' });
+        const finalTaskSnap = await masterPage.screenshot({ type: 'png' });
 
                  // --- 7. YELLOW-PRIORITY BALANCE SCRAPER (FINAL) ---
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
