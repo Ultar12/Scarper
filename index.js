@@ -332,11 +332,11 @@ async function performM4USignIn(chatId) {
         const vPath = await video.path().catch(() => null);
 
         if (finalStatus === "SUCCESS") {
-            await bot.sendPhoto(chatId, finalSnap, { caption: "M4U Check-in Success." }, { filename: 'success.png' });
+            await bot.sendPhoto(chat_id, finalSnap, { caption: "M4U Check-in Success." }, { filename: 'success.png' });
             if (vPath && fs.existsSync(vPath)) fs.unlinkSync(vPath);
         } else {
             // FAILURE: Send screenshot AND the video record to see why it didn't fill
-            await bot.sendPhoto(chatId, finalSnap, { caption: "Check-in failed. Sending video record..." }, { filename: 'failed.png' });
+            await bot.sendPhoto(chat_id, finalSnap, { caption: "Check-in failed. Sending video record..." }, { filename: 'failed.png' });
             if (vPath && fs.existsSync(vPath)) {
                 await bot.sendVideo(chatId, vPath, { caption: "M4U Diagnostic Video" });
                 setTimeout(() => { if (fs.existsSync(vPath)) fs.unlinkSync(vPath); }, 5000);
@@ -345,7 +345,7 @@ async function performM4USignIn(chatId) {
 
     } catch (err) {
         if (context) await context.close().catch(() => {});
-        await bot.sendMessage(chatId, `⚠️ M4U Crash: ${err.message}`);
+        await bot.sendMessage(chat_id, `M4U Crash: ${err.message}`);
     } finally {
         if (browser) await browser.close();
     }
