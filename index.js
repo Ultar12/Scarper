@@ -1659,6 +1659,9 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
     let browser = null;
     let context = null;
+    let page = null; 
+    const videoDir = path.join(__dirname, 'videos');
+    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
 
     try {
         process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
@@ -1796,7 +1799,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         }
 
     } catch (err) {
-        await bot.sendMessage(chatId, `❌ [WITHDRAW ERROR]: ${err.message}`);
+        await bot.sendMessage(chatId, `[WITHDRAW ERROR]: ${err.message}`);
         if (context) {
             const video = page?.video();
             await context.close();
