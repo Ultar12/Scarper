@@ -249,13 +249,33 @@ async function performM4USignIn(chatId) {
 
         const needsLogin = await page.evaluate(() => !!document.querySelector('input[placeholder*="phone number"]'));
 
-        if (needsLogin) {
+                if (needsLogin) {
             await page.fill('input[placeholder*="phone number"]', 'Staring');
             await page.fill('input[placeholder*="password"]', 'Emmama');
-            await page.locator('button:has-text("Login"), .van-button--info').first().click();
+            
+            // AGGRESSIVE LOGIN CLICKER
+            // Finds any element containing "Login" that is not hidden
+            await page.evaluate(() => {
+                const elements = Array.from(document.querySelectorAll('*'));
+                const loginBtn = elements.find(el => 
+                    el.innerText?.trim() === 'Login' && 
+                    el.offsetHeight > 0 && 
+                    window.getComputedStyle(el).display !== 'none'
+                );
+                if (loginBtn) {
+                    loginBtn.click();
+                    // Dispatch events just in case it's a touch-sensitive div
+                    ['mousedown', 'mouseup', 'click'].forEach(name => {
+                        loginBtn.dispatchEvent(new MouseEvent(name, { bubbles: true, cancelable: true, view: window }));
+                    });
+                }
+            });
+            
+            // Wait for the URL to change to the dashboard
             await page.waitForURL('**/home', { timeout: 15000 }).catch(() => {});
             await page.waitForTimeout(5000); 
         }
+
 
         // 2. THE PERMANENT SNIPER (Runs even if already logged in)
         await page.evaluate(() => {
@@ -2066,7 +2086,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         })));
 
-                        // --- 7. ACCURATE MATH (YELLOW-PRIORITY SCRAPER) ---
+                   // --- 7. ACCURATE MATH (YELLOW-PRIORITY SCRAPER) ---
         await masterPage.waitForTimeout(6000);
         const finalTaskSnap = await masterPage.screenshot({ type: 'png' });
 
@@ -2104,7 +2124,6 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
         // --- MATH EXECUTION ---
         const diff = finalBalanceNum - initialBalanceNum;
-        // Fix: If profit is negative (due to a bad initial scan), show 0.00 instead of a mess
         const profitText = diff > 0 ? diff.toFixed(2) : "0.00";
         
         await bot.deleteMessage(chatId, msgId).catch(() => {});
@@ -2115,16 +2134,13 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         }, { filename: 'task_result.png' });
 
     } catch (err) {
+        // Use chatId (camelCase) to match your variable definition
         await bot.sendMessage(chatId, `[STRIKE FAILED]: ${err.message}`);
     } finally {
         if (context) await context.close().catch(() => {});
     }
-
-    }
-
-    });
-
-
+}); // Only one closing brace and parenthesis needed to close the listener
+ 
 
 
 // --- THE M4U WITHDRAW COMMAND ---
