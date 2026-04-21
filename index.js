@@ -229,8 +229,6 @@ async function clearOnboardingPopups(page, updateStatus) {
 }
 
 
-
-
 async function performM4USignIn(chatId) {
     let browser = null;
     let context = null;
@@ -238,59 +236,38 @@ async function performM4USignIn(chatId) {
 
     try {
         process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
-
-        browser = await firefox.launch({
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
-
+        browser = await firefox.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
         context = await browser.newContext({
             userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
             viewport: { width: 412, height: 915 }
         });
-
         page = await context.newPage();
 
-        // 1. LOGIN & SESSION VERIFICATION
-        // Navigate to home to check if we are already logged in
-        await page.goto('https://taskm4u.com/#/home', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(5000);
+        // 1. LOGIN SEQUENCE
+        await page.goto('https://taskm4u.com/#/login', { waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(3000);
 
-        // Check for the login placeholders from your screenshot
-        const needsLogin = await page.evaluate(() => {
-            return !!document.querySelector('input[placeholder*="phone number"]');
-        });
-
-        if (needsLogin) {
+        const isLoginPage = await page.evaluate(() => !!document.querySelector('input[placeholder*="phone number"]'));
+        if (isLoginPage) {
             await page.fill('input[placeholder*="phone number"]', 'Staring');
             await page.fill('input[placeholder*="password"]', 'Emmama');
-            
-            // Clicks the purple Login button
             await page.locator('text=/Login/i').first().click();
             
-            // Wait for the URL to change to the dashboard
             await page.waitForURL('**/home', { timeout: 15000 }).catch(() => {});
-            await page.waitForTimeout(5000); 
+            await page.waitForTimeout(4000); 
         }
 
-        // 2. THE SNIPER: KILL WELCOME ADS & OVERLAYS
+        // 2. CLEAR THE ADS (As shown in video 0:05)
         await page.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('*'));
-            const closeBtn = elements.find(el => 
-                el.innerText?.trim() === 'Close' && el.offsetHeight > 0
-            );
+            const closeBtn = Array.from(document.querySelectorAll('*'))
+                .find(el => el.innerText?.trim() === 'Close' && el.offsetHeight > 0);
             
             if (closeBtn) {
                 closeBtn.click();
-                // Find and remove the entire modal structure to prevent "ghost" blocking
-                const modal = closeBtn.closest('div[class*="modal"], div[class*="mask"], div[class*="van-popup"]');
-                if (modal) modal.remove();
+                // Nuclear removal of all overlays
+                const blockers = document.querySelectorAll('.van-overlay, .van-popup, .van-modal, [class*="mask"]');
+                blockers.forEach(el => el.remove());
                 
-                // Clear any dark overlays that prevent clicking the background
-                const overlays = document.querySelectorAll('.van-overlay, [class*="overlay"], [class*="mask"]');
-                overlays.forEach(o => o.remove());
-                
-                // Restore body scrolling/interaction
                 document.body.style.filter = 'none';
                 document.body.style.overflow = 'auto';
                 document.body.style.pointerEvents = 'auto';
@@ -299,11 +276,14 @@ async function performM4USignIn(chatId) {
 
         await page.waitForTimeout(2000);
 
-        // 3. TELEPORT TO SIGN-IN CALENDAR
+        // 3. TELEPORT TO SIGN-IN (Direct Route)
         await page.goto('https://taskm4u.com/#/signIn', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(6000);
+        
+        // Wait for the blue "Check in Now!" button to actually exist
+        await page.waitForSelector('text=/Check in Now!/i', { timeout: 10000 }).catch(() => {});
+        await page.waitForTimeout(3000);
 
-        // 4. PRECISION STRIKE ON "CHECK IN NOW!"
+        // 4. THE FINAL STRIKE (Touch Event Sequence)
         const strikeResult = await page.evaluate(async () => {
             const btn = Array.from(document.querySelectorAll('*'))
                 .find(el => el.innerText?.trim() === 'Check in Now!' && el.offsetHeight > 0);
@@ -317,42 +297,41 @@ async function performM4USignIn(chatId) {
             const x = rect.left + rect.width / 2;
             const y = rect.top + rect.height / 2;
 
-            // Mimic a real finger touch sequence for mobile-designed buttons
-            const events = ['touchstart', 'touchend', 'mousedown', 'mouseup', 'click'];
-            events.forEach(name => {
+            // Full mobile-touch sequence
+            ['touchstart', 'touchend', 'mousedown', 'mouseup', 'click'].forEach(name => {
                 const ev = (name.includes('touch')) 
                     ? new TouchEvent(name, { bubbles: true, touches: [{ clientX: x, clientY: y }] })
                     : new MouseEvent(name, { bubbles: true, clientX: x, clientY: y });
                 btn.dispatchEvent(ev);
             });
-
             return "STRIKE_EXECUTED";
         });
 
         await page.waitForTimeout(4000);
 
-        // 5. FINAL VERIFICATION
+        // 5. VERIFICATION
         const finalStatus = await page.evaluate(() => {
             const txt = document.body.innerText;
             if (txt.includes('Checked In') || txt.includes('Success')) return "SUCCESS";
-            if (txt.includes('completing the task')) return "TASK_LOCKED";
             return "IDLE";
         });
 
         const finalSnap = await page.screenshot({ type: 'png' });
 
         if (finalStatus === "SUCCESS" || strikeResult === "ALREADY_DONE") {
-            await bot.sendPhoto(chatId, finalSnap, { caption: "M4U Check-in Success." });
-        } else if (finalStatus === "TASK_LOCKED") {
-            await bot.sendPhoto(chatId, finalSnap, { caption: "M4U: Task not verified by site." });
+            await bot.sendPhoto(chatId, finalSnap, { caption: "M4U Check-in Success." }, { filename: 'success.png' });
         } else {
-            await bot.sendPhoto(chatId, finalSnap, { caption: "Check-in button did not respond." });
+            await bot.sendPhoto(chatId, finalSnap, { caption: "Check-in button did not respond." }, { filename: 'failed.png' });
         }
 
     } catch (err) {
         if (page) {
-            const errSnap = await page.screenshot().catch(() => null);
-            await bot.sendPhoto(chatId, errSnap || Buffer.alloc(0), { caption: `M4U Crash: ${err.message}` });
+            const errSnap = await page.screenshot({ type: 'png' }).catch(() => null);
+            if (errSnap) {
+                await bot.sendPhoto(chatId, errSnap, { caption: `M4U Error: ${err.message}` }, { filename: 'error.png' });
+            } else {
+                await bot.sendMessage(chatId, `M4U Error: ${err.message}`);
+            }
         }
     } finally {
         if (browser) await browser.close();
