@@ -1852,53 +1852,42 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         // 2. Wait for the selection animation and state to fully update
         await page.waitForTimeout(3000);
 
-        // --- 3. NUCLEAR BUTTON STRIKE (SCORCHED EARTH) ---
-        
-        // Phase A: Playwright Native Force Click
-        // This explicitly ignores pointer-events interception and glass walls
-        try {
-            const withdrawLocator = page.locator('text=/WITHDRAW NOW|SACAR AGORA/i').last();
-            await withdrawLocator.click({ force: true, delay: 150, timeout: 3000 });
-        } catch (e) {
-            // Failsafe moves to JS evaluation if Playwright can't resolve the node
-        }
-
-        // Phase B: JavaScript DOM Blast (Hits the element, parent, and grandparent)
+        // --- 3. NUCLEAR BUTTON STRIKE (FIREFOX COMPATIBLE) ---
         await page.evaluate(() => {
-            // Destroy overlays completely
-            document.querySelectorAll('.van-overlay, .van-mask, [class*="mask"], [class*="overlay"]').forEach(o => o.remove());
-
-            const elements = Array.from(document.querySelectorAll('button, div, span, a'));
-            // Reverse search to grab the deepest nested element with the text
-            const mainBtn = elements.reverse().find(b => 
+            const mainBtn = Array.from(document.querySelectorAll('*')).find(b => 
                 (b.innerText?.includes('WITHDRAW NOW') || b.innerText?.includes('SACAR AGORA')) && 
-                b.offsetHeight > 0
+                b.offsetHeight > 0 && 
+                window.getComputedStyle(b).display !== 'none'
             );
 
             if (mainBtn) {
-                let curr = mainBtn;
-                // Fire clicks on the text node itself, then the button container, then the outer wrapper
-                for (let i = 0; i < 3; i++) {
-                    if (!curr) break;
-                    
-                    curr.click();
-                    
-                    const rect = curr.getBoundingClientRect();
-                    const ev = { bubbles: true, cancelable: true, view: window, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
-                    curr.dispatchEvent(new MouseEvent('mousedown', ev));
-                    curr.dispatchEvent(new MouseEvent('mouseup', ev));
-                    curr.dispatchEvent(new MouseEvent('click', ev));
-                    
-                    curr = curr.parentElement;
-                }
+                const rect = mainBtn.getBoundingClientRect();
+                const x = rect.left + rect.width / 2;
+                const y = rect.top + rect.height / 2;
+
+                // Fire coordinate-based MouseEvents (Works on Firefox/Mobile)
+                const createEvent = (type) => new MouseEvent(type, {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window,
+                    clientX: x,
+                    clientY: y,
+                    buttons: 1
+                });
+
+                // Human sequence: Press down, release, then click
+                mainBtn.dispatchEvent(createEvent('mousedown'));
+                mainBtn.dispatchEvent(createEvent('mouseup'));
+                mainBtn.dispatchEvent(createEvent('click'));
+                
+                return "STRIKE_EXECUTED";
+            } else {
+                throw new Error("Withdraw button not found in DOM");
             }
         });
 
-        // Phase C: Physical Barrage 
-        // Fires clicks across the typical vertical spread of that specific green button
-        await page.mouse.click(206, 360).catch(() => {}); 
-        await page.mouse.click(206, 380).catch(() => {}); 
-        await page.mouse.click(206, 400).catch(() => {}); 
+        // Physical Mouse Backup (Safe for Firefox)
+        await page.mouse.click(206, 320).catch(() => {}); 
 
         await page.waitForTimeout(3000);
 
