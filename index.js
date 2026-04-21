@@ -265,14 +265,14 @@ async function performM4USignIn(chatId) {
         page = await context.newPage();
 
         // --- PHASE 1: LOGIN (THE VIDEO-PROVEN METHOD) ---
-        await updateStatus('🔄 [SYSTEM] Navigating to M4U Login...');
+        await updateStatus('[SYSTEM] Navigating to M4U Login...');
         await page.goto('https://taskm4u.com/#/login', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(5000);
 
         const needsLogin = await page.evaluate(() => !!document.querySelector('input[placeholder*="phone number"]'));
 
         if (needsLogin) {
-            await updateStatus('🔑 [SYSTEM] Injecting credentials...');
+            await updateStatus('[SYSTEM] Injecting credentials...');
             
             const phoneInput = page.locator('input[placeholder*="phone number"]').first();
             await phoneInput.click();
@@ -293,7 +293,7 @@ async function performM4USignIn(chatId) {
                 });
             });
 
-            await updateStatus('⏳ [SYSTEM] Login clicked. Waiting for server to authenticate...');
+            await updateStatus('[SYSTEM] Login clicked. Waiting for server to authenticate...');
             
             try {
                 await page.waitForFunction(() => {
@@ -307,12 +307,12 @@ async function performM4USignIn(chatId) {
         }
 
         // --- PHASE 2: TELEPORT TO SIGN-IN ---
-        await updateStatus('🚀 [SYSTEM] Authentication confirmed. Teleporting to Check-in page...');
+        await updateStatus('[SYSTEM] Authentication confirmed. Teleporting to Check-in page...');
         await page.goto('https://taskm4u.com/#/signIn', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(4000);
 
         // --- 2.5: POPUP SWEEPER ---
-        await updateStatus('🧹 [SYSTEM] Sweeping welcome ads and overlays...');
+        await updateStatus('[SYSTEM] Sweeping welcome ads and overlays...');
         await page.evaluate(() => {
             Array.from(document.querySelectorAll('button, div, span, a')).forEach(el => {
                 if (el.innerText && el.innerText.trim() === 'Close' && el.offsetHeight > 0) {
@@ -328,7 +328,7 @@ async function performM4USignIn(chatId) {
         await page.waitForTimeout(2000);
 
         // --- PHASE 3: THE CHECK-IN STRIKE (MOBILE UPGRADED) ---
-        await updateStatus('🎯 [SYSTEM] Attempting "Check in Now!" strike...');
+        await updateStatus('[SYSTEM] Attempting "Check in Now!" strike...');
         
         let checkInResult = "ATTEMPTING";
         
@@ -401,7 +401,7 @@ async function performM4USignIn(chatId) {
 
     } catch (err) {
         // --- BULLETPROOF CRASH HANDLER ---
-        await updateStatus(`⚠️ M4U Crash: ${err.message}`); // Leaves the error text on screen
+        await updateStatus(`M4U Crash: ${err.message}`); // Leaves the error text on screen
         
         let vPath = null;
         let crashSnap = null;
