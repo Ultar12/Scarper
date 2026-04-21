@@ -231,7 +231,9 @@ async function clearOnboardingPopups(page, updateStatus) {
 
 
 
-    async function performM4USignIn(chatId) {
+    
+
+   async function performM4USignIn(chatId) {
     let browser = null;
     let context = null;
     let page = null;
@@ -261,7 +263,7 @@ async function clearOnboardingPopups(page, updateStatus) {
         
         page = await context.newPage();
 
-                // --- PHASE 1: LOGIN ---
+        // --- PHASE 1: LOGIN (VUE-SAFE INJECTION) ---
         await updateStatus('[SYSTEM] Navigating to M4U Login...');
         await page.goto('https://taskm4u.com/#/login', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(5000);
@@ -269,57 +271,42 @@ async function clearOnboardingPopups(page, updateStatus) {
         const needsLogin = await page.evaluate(() => !!document.querySelector('input[placeholder*="phone number"]'));
 
         if (needsLogin) {
-            await updateStatus('[SYSTEM] Injecting credentials...');
+            await updateStatus('[SYSTEM] Injecting credentials (Vue-Safe)...');
             
-            // 1. Phone Input (Clear, Type, Blur)
-            const phoneInput = page.locator('input[placeholder*="phone number"]');
-            await phoneInput.click();
-            await page.evaluate(el => el.value = '', await phoneInput.elementHandle()); 
-            await phoneInput.type('Staring', { delay: 100 });
+            // 1. Playwright's native .fill() perfectly triggers Vue's internal state updates
+            const phoneInput = page.locator('input[placeholder*="phone number"]').first();
+            await phoneInput.fill('Staring');
+            await page.waitForTimeout(500);
 
-            // 2. Password Input (Clear, Type, Blur)
-            const passInput = page.locator('input[placeholder*="password"]');
-            await passInput.click();
-            await page.evaluate(el => el.value = '', await passInput.elementHandle());
-            await passInput.type('Emmama', { delay: 100 });
+            const passInput = page.locator('input[placeholder*="password"]').first();
+            await passInput.fill('Emmama');
+            await page.waitForTimeout(500);
 
-            // 3. Force state update in the UI framework
-            await page.keyboard.press('Tab');
-            await page.waitForTimeout(1500);
+            // 2. Playwright Force Click
+            try {
+                const loginBtn = page.locator('button, div, span').filter({ hasText: /^Login$/ }).first();
+                await loginBtn.click({ force: true, delay: 150 });
+            } catch (e) {
+                await page.evaluate(() => {
+                    const btn = Array.from(document.querySelectorAll('button, div, span')).find(el => el.innerText?.trim() === 'Login');
+                    if(btn) btn.click();
+                });
+            }
 
-            // 4. Mobile Touch Login Strike
-            await page.evaluate(() => {
-                const btn = Array.from(document.querySelectorAll('button, div, span')).find(el => 
-                    el.innerText?.trim() === 'Login' && el.offsetHeight > 0
-                );
-                
-                if (btn) {
-                    const rect = btn.getBoundingClientRect();
-                    const x = rect.left + rect.width / 2;
-                    const y = rect.top + rect.height / 2;
-
-                    // Standard Mouse Events
-                    const ev = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
-                    ['mousedown', 'mouseup', 'click'].forEach(t => btn.dispatchEvent(new MouseEvent(t, ev)));
-                    
-                    // Mobile Touch Events (Bypasses Vant UI locks)
-                    try {
-                        const touchObj = new Touch({ identifier: Date.now(), target: btn, clientX: x, clientY: y, radiusX: 2.5, radiusY: 2.5, rotationAngle: 10, force: 0.5 });
-                        btn.dispatchEvent(new TouchEvent('touchstart', { cancelable: true, bubbles: true, touches: [touchObj], targetTouches: [touchObj], changedTouches: [touchObj] }));
-                        btn.dispatchEvent(new TouchEvent('touchend', { cancelable: true, bubbles: true, touches: [], targetTouches: [], changedTouches: [touchObj] }));
-                    } catch(e) {}
-                }
-            });
-
-            // 5. Wait to see if login actually worked
-            await page.waitForTimeout(5000); 
+            // 3. The Token Waiting Room
+            await updateStatus('[SYSTEM] Waiting for server authentication token to save...');
+            await page.waitForFunction(() => !document.querySelector('input[placeholder*="phone number"]'), { timeout: 15000 }).catch(() => {});
             
             const stillOnLogin = await page.evaluate(() => !!document.querySelector('input[placeholder*="phone number"]'));
+            
             if (stillOnLogin) {
+                // Throwing an error here triggers the catch block which WILL SEND THE VIDEO
                 throw new Error("Site rejected the login credentials or blocked the click. Cannot proceed to check-in.");
             }
-        }
 
+            // Lock the auth token into localStorage before teleporting
+            await page.waitForTimeout(4000); 
+        }
 
         // --- PHASE 2: TELEPORT TO SIGN-IN ---
         await updateStatus('[SYSTEM] Teleporting to Check-in page...');
@@ -361,26 +348,47 @@ async function clearOnboardingPopups(page, updateStatus) {
 
         if (finalStatus === "SUCCESS") {
             await bot.sendPhoto(chatId, finalSnap, { caption: "✅ M4U Check-in Success." });
-            // Clean up video if successful to save space
             await context.close();
             if (vPath && fs.existsSync(vPath)) fs.unlinkSync(vPath);
         } else {
-            await bot.sendPhoto(chatId, finalSnap, { caption: `❌ Check-in state: ${checkInResult}. Diagnostic video follows...` });
-            await context.close();
-            if (vPath && fs.existsSync(vPath)) {
-                await bot.sendVideo(chatId, vPath, { caption: "M4U Diagnostic Video" });
-                setTimeout(() => { if (fs.existsSync(vPath)) fs.unlinkSync(vPath); }, 5000);
-            }
+            // Throw error to push to catch block for unified error handling
+            throw new Error(`Check-in failed. Button state: ${checkInResult}`);
         }
 
     } catch (err) {
+        // --- GLOBAL CRASH HANDLER (NOW GUARANTEES VIDEO) ---
+        await updateStatus(`⚠️ M4U Crash: ${err.message}`);
+        
+        let vPath = null;
+        let crashSnap = null;
+
+        if (page) {
+            try {
+                crashSnap = await page.screenshot({ type: 'png' });
+                if (page.video()) vPath = await page.video().path().catch(() => null);
+            } catch(e) {}
+        }
+
+        // CRITICAL: You MUST close the context for Playwright to finish writing the MP4 file to disk
         if (context) await context.close().catch(() => {});
-        await bot.sendMessage(chatId, `M4U Crash: ${err.message}`);
+
+        // Send Screenshot
+        if (crashSnap) {
+            await bot.sendPhoto(chatId, crashSnap, { caption: `[DIAGNOSTIC] Screen at moment of failure.` }).catch(() => {});
+        }
+
+        // Send Video
+        if (vPath && fs.existsSync(vPath)) {
+            await bot.sendVideo(chatId, vPath, { caption: `[DIAGNOSTIC VIDEO] Session Recording` }).catch(() => {});
+            // Clean up Heroku memory
+            setTimeout(() => { if (fs.existsSync(vPath)) fs.unlinkSync(vPath); }, 5000);
+        }
+
     } finally {
         if (browser) await browser.close().catch(() => {});
     }
 }
-      
+ 
 
 // --- 4. TELEGRAM COMMAND LISTENERS ---
 
