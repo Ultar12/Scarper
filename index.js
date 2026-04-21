@@ -243,47 +243,46 @@ async function performM4USignIn(chatId) {
         });
         page = await context.newPage();
 
-        // 1. LOGIN SEQUENCE
-        await page.goto('https://taskm4u.com/#/login', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(3000);
+        // 1. DYNAMIC ENTRY
+        await page.goto('https://taskm4u.com/#/home', { waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(5000);
 
-        const isLoginPage = await page.evaluate(() => !!document.querySelector('input[placeholder*="phone number"]'));
-        if (isLoginPage) {
+        const needsLogin = await page.evaluate(() => !!document.querySelector('input[placeholder*="phone number"]'));
+
+        if (needsLogin) {
             await page.fill('input[placeholder*="phone number"]', 'Staring');
             await page.fill('input[placeholder*="password"]', 'Emmama');
-            await page.locator('text=/Login/i').first().click();
-            
+            await page.locator('button:has-text("Login"), .van-button--info').first().click();
             await page.waitForURL('**/home', { timeout: 15000 }).catch(() => {});
-            await page.waitForTimeout(4000); 
+            await page.waitForTimeout(5000); 
         }
 
-        // 2. CLEAR THE ADS (As shown in video 0:05)
+        // 2. THE PERMANENT SNIPER (Runs even if already logged in)
         await page.evaluate(() => {
             const closeBtn = Array.from(document.querySelectorAll('*'))
                 .find(el => el.innerText?.trim() === 'Close' && el.offsetHeight > 0);
             
-            if (closeBtn) {
-                closeBtn.click();
-                // Nuclear removal of all overlays
-                const blockers = document.querySelectorAll('.van-overlay, .van-popup, .van-modal, [class*="mask"]');
-                blockers.forEach(el => el.remove());
-                
-                document.body.style.filter = 'none';
-                document.body.style.overflow = 'auto';
-                document.body.style.pointerEvents = 'auto';
-            }
+            if (closeBtn) closeBtn.click();
+            
+            // Delete the "Glass Wall" (overlays) from the page entirely
+            const blockers = document.querySelectorAll('.van-overlay, .van-popup, .van-modal, [class*="mask"]');
+            blockers.forEach(el => el.remove());
+            
+            // Force the page to be clickable again
+            document.body.style.setProperty('pointer-events', 'auto', 'important');
+            document.body.style.setProperty('filter', 'none', 'important');
         });
 
         await page.waitForTimeout(2000);
 
-        // 3. TELEPORT TO SIGN-IN (Direct Route)
+        // 3. TELEPORT & WAIT FOR HYDRATION
         await page.goto('https://taskm4u.com/#/signIn', { waitUntil: 'domcontentloaded' });
         
-        // Wait for the blue "Check in Now!" button to actually exist
-        await page.waitForSelector('text=/Check in Now!/i', { timeout: 10000 }).catch(() => {});
-        await page.waitForTimeout(3000);
+        // Wait specifically for the button text to appear in the HTML
+        await page.waitForSelector('text=/Check in Now!/i', { timeout: 12000 }).catch(() => {});
+        await page.waitForTimeout(4000); 
 
-        // 4. THE FINAL STRIKE (Touch Event Sequence)
+        // 4. THE COORDINATE STRIKE (Bypasses all invisible blockers)
         const strikeResult = await page.evaluate(async () => {
             const btn = Array.from(document.querySelectorAll('*'))
                 .find(el => el.innerText?.trim() === 'Check in Now!' && el.offsetHeight > 0);
@@ -297,23 +296,27 @@ async function performM4USignIn(chatId) {
             const x = rect.left + rect.width / 2;
             const y = rect.top + rect.height / 2;
 
-            // Full mobile-touch sequence
-            ['touchstart', 'touchend', 'mousedown', 'mouseup', 'click'].forEach(name => {
-                const ev = (name.includes('touch')) 
-                    ? new TouchEvent(name, { bubbles: true, touches: [{ clientX: x, clientY: y }] })
-                    : new MouseEvent(name, { bubbles: true, clientX: x, clientY: y });
-                btn.dispatchEvent(ev);
+            // Trigger touch and mouse events on the exact spot
+            const evs = ['touchstart', 'touchend', 'mousedown', 'mouseup', 'click'];
+            evs.forEach(n => {
+                const e = n.includes('touch') 
+                    ? new TouchEvent(n, { bubbles: true, touches: [{ clientX: x, clientY: y }] })
+                    : new MouseEvent(n, { bubbles: true, clientX: x, clientY: y });
+                btn.dispatchEvent(e);
             });
             return "STRIKE_EXECUTED";
         });
 
+        // 5. FINAL CLICK FALLBACK (Physical Mouse)
+        if (strikeResult === "STRIKE_EXECUTED") {
+            await page.mouse.click(206, 695); // Approximate center of the button on a 412x915 screen
+        }
+
         await page.waitForTimeout(4000);
 
-        // 5. VERIFICATION
         const finalStatus = await page.evaluate(() => {
             const txt = document.body.innerText;
-            if (txt.includes('Checked In') || txt.includes('Success')) return "SUCCESS";
-            return "IDLE";
+            return (txt.includes('Checked In') || txt.includes('Success')) ? "SUCCESS" : "IDLE";
         });
 
         const finalSnap = await page.screenshot({ type: 'png' });
@@ -327,11 +330,7 @@ async function performM4USignIn(chatId) {
     } catch (err) {
         if (page) {
             const errSnap = await page.screenshot({ type: 'png' }).catch(() => null);
-            if (errSnap) {
-                await bot.sendPhoto(chatId, errSnap, { caption: `M4U Error: ${err.message}` }, { filename: 'error.png' });
-            } else {
-                await bot.sendMessage(chatId, `M4U Error: ${err.message}`);
-            }
+            await bot.sendPhoto(chatId, errSnap, { caption: `M4U Error: ${err.message}` }, { filename: 'error.png' });
         }
     } finally {
         if (browser) await browser.close();
@@ -1827,21 +1826,29 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             if (fs.existsSync(vPath)) fs.unlinkSync(vPath);
         }
 
-    } catch (err) {
-        await bot.sendMessage(chatId, `[WITHDRAW ERROR]: ${err.message}`);
+        } catch (err) {
+        console.log(`[WITHDRAW ERROR]: ${err.message}`);
+        // Ensure you use chatId (no underscore)
+        await bot.sendMessage(chatId, `[WITHDRAW ERROR]: ${err.message}`); 
+        
         if (context) {
             const video = page?.video();
-            await context.close();
+            await context.close().catch(() => {});
             if (video) {
-                const vPath = await video.path();
-                await bot.sendVideo(chatId, vPath, { caption: `Diagnostic: Withdrawal Failure\nError: ${err.message}` });
+                const vPath = await video.path().catch(() => null);
+                if (vPath && fs.existsSync(vPath)) {
+                    // Changed chat_id to chatId here too
+                    await bot.sendVideo(chatId, vPath, { 
+                        caption: `Diagnostic: Withdrawal Failure\nError: ${err.message}` 
+                    }).catch(() => {});
+                    fs.unlinkSync(vPath);
+                }
             }
         }
     } finally {
-        if (browser) await browser.close();
+        if (browser) await browser.close().catch(() => {});
     }
 });
-
 
 
 bot.onText(/\/upscale/i, async (msg) => {
