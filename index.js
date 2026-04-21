@@ -1750,15 +1750,24 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(5000); // Give sniper time to kill the "Notice" ad
 
-        // --- STEP 2: ROBUST BALANCE DETECTION ---
+                // --- STEP 2: AGGRESSIVE BALANCE SCRAPER ---
+        await page.waitForTimeout(4000);
+        
         const rawBalance = await page.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('div, span, p, h1, h2'));
-            const balanceMatches = elements
-                .map(el => el.innerText?.replace(/,/g, '').trim())
-                .filter(text => /^\d+\.\d{2}$/.test(text)); 
-
-            if (balanceMatches.length > 0) {
-                const numbers = balanceMatches.map(n => parseFloat(n));
+            // 1. Grab every single piece of text on the page
+            const allText = document.body.innerText;
+            
+            // 2. Find anything that looks like a number (e.g., 14450, 14450.00, 14,450)
+            // This regex finds numbers with optional commas and decimals
+            const matches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?|\d+(\.\d+)?/g);
+            
+            if (context && matches) {
+                const numbers = matches
+                    .map(n => n.replace(/,/g, '')) // Remove commas
+                    .map(n => parseFloat(n))       // Convert to actual numbers
+                    .filter(n => n < 1000000 && n > 0); // Ignore massive numbers (like phone IDs)
+                
+                // 3. Return the largest number found (which will be the 14450.00)
                 return Math.max(...numbers);
             }
             return 0;
@@ -1770,10 +1779,11 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         if (!targetAmount) {
             const errSnap = await page.screenshot();
             await bot.sendPhoto(chatId, errSnap, { 
-                caption: `[DIAGNOSTIC] Detected Balance: ${rawBalance}. No matching tier.` 
+                caption: `[DIAGNOSTIC] Scanned Balance: ${rawBalance}. Still no tier match.` 
             });
-            throw new Error(`Balance ${rawBalance} is too low.`);
+            throw new Error(`Balance ${rawBalance} is too low for a withdrawal.`);
         }
+
 
         await bot.editMessageText(`[SYSTEM] Target Acquired: ${targetAmount}. Proceeding to Saque...`, { 
             chat_id: chatId, 
