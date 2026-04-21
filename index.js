@@ -1714,23 +1714,33 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             await page.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
         }
 
-        // Step 2: Detect Balance and Enter Withdrawal Page
+                // --- Step 2: Accurate Balance & Amount Selection ---
         await page.waitForTimeout(3000);
-        const balanceData = await page.evaluate(() => {
-            const el = Array.from(document.querySelectorAll('*')).find(e => e.innerText?.includes('Saldo da Conta') || e.innerText?.includes('Balance:'));
-            return el ? el.innerText.replace(/[^0-9.]/g, '') : '0';
+        
+        const rawBalance = await page.evaluate(() => {
+            // Find the large yellow balance text (the one that says 13890.00)
+            const elements = Array.from(document.querySelectorAll('div, span, p'));
+            const balanceEl = elements.find(el => 
+                /^\d+\.\d{2}$/.test(el.innerText?.trim()) && 
+                window.getComputedStyle(el).color === 'rgb(255, 235, 59)' // Checks for yellow color
+            );
+            return balanceEl ? parseFloat(balanceEl.innerText.replace(/,/g, '')) : 0;
         });
 
-        const rawBalance = parseFloat(balanceData) || 0;
         const tiers = [50000, 26000, 23000, 20000, 18000, 15000, 12000];
         const targetAmount = tiers.find(t => rawBalance >= t);
 
-        if (!targetAmount) throw new Error(`Balance ${rawBalance} is below minimum withdrawal.`);
+        if (!targetAmount) throw new Error(`Balance ${rawBalance} is too low.`);
 
-        await bot.editMessageText(`[SYSTEM] Balance: ${rawBalance}. Target: ${targetAmount}. Opening Saque...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        // Use bot.editMessageText directly to avoid "updateStatus undefined"
+        await bot.editMessageText(`[SYSTEM] Balance: ${rawBalance}. Target: ${targetAmount}.`, { 
+            chat_id: chatId, 
+            message_id: statusMsg.message_id 
+        });
         
-        // Navigate to withdrawal page directly
+        // Go to withdrawal page
         await page.goto('https://www.wsjobs-ng.com/account/withdraw', { waitUntil: 'domcontentloaded' });
+
         await page.waitForTimeout(4000);
 
         // Step 3: Select Amount and Click SACAR AGORA
