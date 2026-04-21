@@ -1893,39 +1893,77 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
 
 
-// --- STEP 4: PASSWORD & FINAL CONFIRM ---
-const passInput = page.locator('input[type="password"], .modal-body input, [placeholder*="password"]').last();
+        // --- STEP 4: PASSWORD & FINAL CONFIRM ---
+        const passInput = page.locator('input[type="password"], .modal-body input, [placeholder*="password"], [placeholder*="senha"]').last();
+        
+        // 1. Ensure modal is ready
+        await passInput.waitFor({ state: 'visible', timeout: 10000 });
+        
+        // 2. High-Precision Input
+        await passInput.click();
+        await page.evaluate(el => el.value = '', await passInput.elementHandle()); // Hard clear
+        await passInput.type('111111', { delay: 100 }); 
 
-// 1. Ensure modal is ready
-await passInput.waitFor({ state: 'visible', timeout: 10000 });
+        // 3. CRITICAL: Force the input to lose focus so the site validates the PIN
+        await page.keyboard.press('Tab');
+        await page.waitForTimeout(1000);
 
-// 2. High-Precision Input
-await passInput.click();
-await page.evaluate(el => el.value = '', await passInput.elementHandle()); // Hard clear
-await passInput.type('111111', { delay: 100 }); 
+        // --- 4. FINAL NUCLEAR STRIKE (TABBATAR CIREWA) ---
+        
+        // Phase A: Try Playwright's native force click first
+        try {
+            const confirmBtn = page.locator('text=/Tabbatar Cirewa|Confirm/i').last();
+            await confirmBtn.click({ force: true, delay: 150, timeout: 3000 });
+        } catch (e) {
+            // Proceed to DOM strike if native fails
+        }
 
-// 3. Final "Tabbatar Cirewa" Strike
-await page.evaluate(() => {
-    // Remove the new modal overlay that appears after clicking "Withdraw Now"
-    const modalBlockers = document.querySelectorAll('.van-overlay, .modal-mask');
-    modalBlockers.forEach(el => el.remove());
+        // Phase B: JS Mobile Touch & Deep Node Strike
+        await page.evaluate(() => {
+            // Remove the new modal overlay
+            const modalBlockers = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"]');
+            modalBlockers.forEach(el => el.remove());
 
-    const finalBtn = Array.from(document.querySelectorAll('*')).find(b => 
-        (b.innerText?.includes('Tabbatar Cirewa') || b.innerText?.includes('Confirm')) && 
-        b.offsetHeight > 0
-    );
+            // Reverse search finds the deepest element (the actual text, not the container)
+            const elements = Array.from(document.querySelectorAll('button, div, span'));
+            const finalBtn = elements.reverse().find(b => 
+                (b.innerText?.includes('Tabbatar Cirewa') || b.innerText?.includes('Confirm')) && 
+                b.offsetHeight > 0
+            );
 
-    if (finalBtn) {
-        const rect = finalBtn.getBoundingClientRect();
-        const ev = { bubbles: true, view: window, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
-        finalBtn.dispatchEvent(new MouseEvent('click', ev));
-    }
-});
+            if (finalBtn) {
+                // If it's a span, grab its parent button just to be safe
+                let target = finalBtn;
+                if (target.tagName.toLowerCase() === 'SPAN' && target.parentElement) {
+                    target = target.parentElement;
+                }
 
-// Coordinate backup for the "Tabba" button
-await page.mouse.click(206, 720).catch(() => {}); 
+                const rect = target.getBoundingClientRect();
+                const x = rect.left + rect.width / 2;
+                const y = rect.top + rect.height / 2;
 
-await page.waitForTimeout(5000);
+                // 1. Standard Mouse Events
+                const evData = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+                ['mousedown', 'mouseup', 'click'].forEach(t => target.dispatchEvent(new MouseEvent(t, evData)));
+
+                // 2. Mobile Touch Events (Bypasses UI locks)
+                try {
+                    const touchObj = new Touch({ identifier: Date.now(), target: target, clientX: x, clientY: y, radiusX: 2.5, radiusY: 2.5, rotationAngle: 10, force: 0.5 });
+                    target.dispatchEvent(new TouchEvent('touchstart', { cancelable: true, bubbles: true, touches: [touchObj], targetTouches: [touchObj], changedTouches: [touchObj] }));
+                    target.dispatchEvent(new TouchEvent('touchend', { cancelable: true, bubbles: true, touches: [], targetTouches: [], changedTouches: [touchObj] }));
+                } catch(e) {}
+                
+                // 3. Standard raw click
+                target.click();
+            }
+        });
+
+        // Phase C: Coordinate backup for the "Tabba" button 
+        // Note: Adjusted X to ~300 because "Tabbatar Cirewa" is on the right side of the modal
+        await page.mouse.click(300, 720).catch(() => {}); 
+        await page.mouse.click(300, 700).catch(() => {}); 
+
+        await page.waitForTimeout(5000);
 
 
         // --- 4. SUCCESS CAPTURE & DELIVERY ---
