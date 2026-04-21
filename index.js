@@ -1643,6 +1643,150 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
 });
 
 
+
+bot.onText(/\/withdraw\s+task/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting Firefox for Secure Withdrawal...`);
+    const videoDir = path.join(__dirname, 'videos');
+    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
+    const videoPath = path.join(videoDir, `withdraw_${Date.now()}.mp4`);
+
+    let browser = null;
+    let context = null;
+
+    try {
+        process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
+
+        browser = await firefox.launch({ 
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+        });
+
+        context = await browser.newContext({
+            userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
+            viewport: { width: 412, height: 915 },
+            recordVideo: { dir: videoDir, size: { width: 412, height: 915 } }
+        });
+
+        const page = await context.newPage();
+
+        // --- THE HUMAN SNIPER (MODAL KILLER) ---
+        await page.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
+            setInterval(() => {
+                const okBtn = Array.from(document.querySelectorAll('*'))
+                    .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
+                if (okBtn) {
+                    const rect = okBtn.getBoundingClientRect();
+                    ['mousedown', 'mouseup', 'click'].forEach(type => {
+                        okBtn.dispatchEvent(new MouseEvent(type, {
+                            view: window, bubbles: true, cancelable: true, 
+                            clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2
+                        }));
+                    });
+                    setTimeout(() => {
+                        const modal = okBtn.closest('div[class*="modal"], div[class*="mask"], div[class*="popup"]');
+                        if (modal) modal.remove();
+                        document.body.style.filter = 'none';
+                        document.body.style.overflow = 'auto';
+                    }, 800);
+                }
+            }, 300);
+        });
+
+        // Step 1: Account Login
+        await bot.editMessageText('[SYSTEM] Navigating to Account...', { chat_id: chatId, message_id: statusMsg.message_id });
+        await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(4000);
+
+        const loginInput = await page.$('input[type="text"], input[type="tel"]');
+        if (loginInput) {
+            await page.fill('input[type="text"], input[type="tel"]', '09163916500');
+            await page.fill('input[type="password"]', 'Emmamama');
+            const loginBtn = page.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last();
+            await loginBtn.dispatchEvent('click');
+            await page.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
+        }
+
+        // Step 2: Detect Balance and Enter Withdrawal Page
+        await page.waitForTimeout(3000);
+        const balanceData = await page.evaluate(() => {
+            const el = Array.from(document.querySelectorAll('*')).find(e => e.innerText?.includes('Saldo da Conta') || e.innerText?.includes('Balance:'));
+            return el ? el.innerText.replace(/[^0-9.]/g, '') : '0';
+        });
+
+        const rawBalance = parseFloat(balanceData) || 0;
+        const tiers = [50000, 26000, 23000, 20000, 18000, 15000, 12000];
+        const targetAmount = tiers.find(t => rawBalance >= t);
+
+        if (!targetAmount) throw new Error(`Balance ${rawBalance} is below minimum withdrawal.`);
+
+        await bot.editMessageText(`[SYSTEM] Balance: ${rawBalance}. Target: ${targetAmount}. Opening Saque...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        
+        // Navigate to withdrawal page directly
+        await page.goto('https://www.wsjobs-ng.com/account/withdraw', { waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(4000);
+
+        // Step 3: Select Amount and Click SACAR AGORA
+        await page.evaluate((amt) => {
+            const chips = Array.from(document.querySelectorAll('div, span, p, button'));
+            const targetChip = chips.find(c => c.innerText?.trim() === amt.toString() && c.offsetHeight > 0);
+            if (targetChip) targetChip.click();
+        }, targetAmount);
+
+        await page.waitForTimeout(2000);
+
+        await page.evaluate(() => {
+            const mainBtn = Array.from(document.querySelectorAll('*')).find(b => 
+                (b.innerText?.includes('SACAR AGORA') || b.innerText?.includes('WITHDRAW NOW')) && b.offsetHeight > 0
+            );
+            if (mainBtn) mainBtn.click();
+        });
+
+        // Step 4: Input Password and Confirm
+        await page.waitForTimeout(3000);
+        const passInput = page.locator('input[type="password"], input[placeholder*="password"], input[placeholder*="senha"]').last();
+        await passInput.fill('Emmamama');
+
+        await page.evaluate(() => {
+            const finalBtn = Array.from(document.querySelectorAll('*')).find(b => 
+                (b.innerText?.includes('Confirm Withdrawal') || b.innerText?.includes('Confirmar')) && b.offsetHeight > 0
+            );
+            if (finalBtn) finalBtn.click();
+        });
+
+        await page.waitForTimeout(5000);
+        
+        const finalSnap = await page.screenshot({ type: 'png' });
+        await bot.sendPhoto(chat_id, finalSnap, { caption: `[SUCCESS] Withdrawal for ${targetAmount} submitted.` });
+
+        // Video Cleanup
+        const video = page.video();
+        await context.close();
+        if (video) {
+            const vPath = await video.path();
+            if (fs.existsSync(vPath)) fs.unlinkSync(vPath);
+        }
+
+    } catch (err) {
+        await bot.sendMessage(chatId, `❌ [WITHDRAW ERROR]: ${err.message}`);
+        if (context) {
+            const video = page?.video();
+            await context.close();
+            if (video) {
+                const vPath = await video.path();
+                await bot.sendVideo(chatId, vPath, { caption: `Diagnostic: Withdrawal Failure\nError: ${err.message}` });
+            }
+        }
+    } finally {
+        if (browser) await browser.close();
+    }
+});
+
+
+
 bot.onText(/\/upscale/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -1710,7 +1854,6 @@ const sweepTutorial = async (targetPage) => {
 
 
 
-
 bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -1756,7 +1899,6 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                     .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
                 
                 if (okBtn) {
-                    // Physical Human Click
                     const rect = okBtn.getBoundingClientRect();
                     const x = rect.left + rect.width / 2;
                     const y = rect.top + rect.height / 2;
@@ -1766,7 +1908,6 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                         }));
                     });
 
-                    // Nuclear Clean-up
                     setTimeout(() => {
                         const modal = okBtn.closest('div[class*="modal"], div[class*="mask"], div[class*="popup"]');
                         if (modal) modal.remove();
@@ -1778,7 +1919,6 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }, 300);
         });
 
-        // --- STEP 1: LOGIN FLOW (SHIGA/ENTRAR SUPPORT) ---
         await updateStatus('[SYSTEM] Accessing Account Portal...');
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await masterPage.waitForTimeout(4000);
@@ -1794,18 +1934,16 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             await masterPage.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
         }
 
-        // --- STEP 2: FETCH BALANCE ---
         await updateStatus('[SYSTEM] Scanning initial balance...');
         const balanceText = await masterPage.evaluate(() => {
-            const el = Array.from(document.querySelectorAll('*')).find(e => e.innerText?.includes('Balance:'));
-            return el ? el.innerText.split(':')[1].trim() : '0';
+            const el = Array.from(document.querySelectorAll('*')).find(e => e.innerText?.includes('Balance:') || e.innerText?.includes('Saldo'));
+            return el ? el.innerText.replace(/[^0-9.]/g, '') : '0';
         });
-        initialBalanceNum = parseFloat(balanceText.replace(/,/g, '')) || 0;
+        initialBalanceNum = parseFloat(balanceText) || 0;
 
-        // --- STEP 3: TARGET ACQUISITION ---
         await updateStatus(`[SYSTEM] Teleporting to Task Page for suffix ${targetSuffix}...`);
         await masterPage.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
-        await masterPage.waitForTimeout(5000); // Wait for "Notice" sniper to work
+        await masterPage.waitForTimeout(5000);
 
         const targetCount = await masterPage.evaluate((suffix) => {
             const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim() === 'SEND');
@@ -1818,7 +1956,6 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
         if (targetCount === 0) throw new Error(`Target ${targetSuffix} not found.`);
 
-        // --- STEP 4: MULTI-TAB SPAWN (Double Strike) ---
         const totalTabs = targetCount * 2;
         await updateStatus(`[SYSTEM] Found ${targetCount} targets. Spawning ${totalTabs} Strike Tabs...`);
         
@@ -1828,7 +1965,6 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             await p.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
         }
 
-        // --- STEP 5: COORDINATED CLICK ---
         await updateStatus('[SYSTEM] ⚡ EXECUTING SIMULTANEOUS SEND ⚡');
         await Promise.all(pages.map(async (p, idx) => {
             const targetIdx = Math.floor(idx / 2);
@@ -1847,27 +1983,25 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }, { suffix: targetSuffix, index: targetIdx });
         }));
 
-        await page.waitForTimeout(3000);
+        await masterPage.waitForTimeout(3000);
 
-        // --- STEP 6: FLASH CONFIRM ---
         await updateStatus('[SYSTEM] ⚡ FLASH CONFIRM ⚡');
         await Promise.all(pages.map(p => p.evaluate(() => {
             const confirm = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.trim().toLowerCase() === 'confirm');
             if (confirm) confirm.click();
         })));
 
-        await masterPage.waitForTimeout(10000); // Cooldown
+        await masterPage.waitForTimeout(10000);
 
-        // --- STEP 7: FINAL CALCULATION ---
         await updateStatus('[SYSTEM] Strike complete. Finalizing...');
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await masterPage.waitForTimeout(3000);
 
         const finalBalanceText = await masterPage.evaluate(() => {
-            const el = Array.from(document.querySelectorAll('*')).find(e => e.innerText?.includes('Balance:'));
-            return el ? el.innerText.split(':')[1].trim() : '0';
+            const el = Array.from(document.querySelectorAll('*')).find(e => e.innerText?.includes('Balance:') || e.innerText?.includes('Saldo'));
+            return el ? el.innerText.replace(/[^0-9.]/g, '') : '0';
         });
-        const finalBalanceNum = parseFloat(finalBalanceText.replace(/,/g, '')) || 0;
+        const finalBalanceNum = parseFloat(finalBalanceText) || 0;
         const profit = (finalBalanceNum - initialBalanceNum).toFixed(2);
 
         const finalSnap = await masterPage.screenshot({ type: 'png' });
@@ -1878,7 +2012,6 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             parse_mode: 'HTML'
         });
 
-        // Cleanup Video if success
         const video = masterPage.video();
         await context.close();
         if (video) {
@@ -1889,18 +2022,22 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     } catch (err) {
         await updateStatus(`❌ [CRASH] Task Failed: ${err.message}`);
         if (context) {
-            const video = pages[0]?.video();
-            await context.close();
+            // FIXED: Reference masterPage instead of page
+            const video = masterPage?.video();
+            await context.close().catch(() => {});
             if (video) {
-                const vPath = await video.path();
-                await bot.sendVideo(chatId, vPath, { caption: `[DIAGNOSTIC] Task Crash Video\nError: ${err.message}` });
+                const vPath = await video.path().catch(() => null);
+                if (vPath && fs.existsSync(vPath)) {
+                    await bot.sendVideo(chatId, vPath, { caption: `[DIAGNOSTIC] Task Crash Video\nError: ${err.message}` }).catch(() => {});
+                    fs.unlinkSync(vPath);
+                }
             }
         }
     } finally {
-        if (browser) await browser.close();
+        if (browser) await browser.close().catch(() => {});
     }
 });
-    
+
 
 
 
