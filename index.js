@@ -335,34 +335,73 @@ async function performM4USignIn(chatId) {
         // Wait 2 seconds for the modal fade-out animation to finish
         await page.waitForTimeout(2000);
 
-        // --- PHASE 3: THE CHECK-IN STRIKE ---
+                // --- PHASE 3: THE CHECK-IN STRIKE (MOBILE UPGRADED) ---
         await updateStatus('[SYSTEM] Attempting "Check in Now!" strike...');
-        const checkInResult = await page.evaluate(() => {
-            const btn = Array.from(document.querySelectorAll('*')).find(el => 
-                (el.innerText?.trim() === 'Check in Now!' || el.innerText?.includes('Check-in')) && el.offsetHeight > 0
-            );
+        
+        let checkInResult = "ATTEMPTING";
+        
+        // 1. Playwright Native Attack (Bypasses most JS traps)
+        try {
+            const checkInBtn = page.locator('text=/Check in Now!/i').last();
+            // Use .tap() instead of .click() for mobile emulation
+            await checkInBtn.tap({ force: true, timeout: 3000 }); 
+            checkInResult = "NATIVE_TAP_EXECUTED";
+        } catch (e) {
+            // 2. JS DOM Strike with Mobile Touch Events
+            checkInResult = await page.evaluate(() => {
+                const elements = Array.from(document.querySelectorAll('div, button, span'));
+                const btn = elements.reverse().find(el => 
+                    (el.innerText?.trim() === 'Check in Now!' || el.innerText?.trim() === 'Check-in') && el.offsetHeight > 0
+                );
 
-            if (btn) {
-                const rect = btn.getBoundingClientRect();
-                const x = rect.left + rect.width / 2;
-                const y = rect.top + rect.height / 2;
-                const evData = { bubbles: true, view: window, clientX: x, clientY: y, buttons: 1 };
-                
-                btn.dispatchEvent(new MouseEvent('mousedown', evData));
-                btn.dispatchEvent(new MouseEvent('mouseup', evData));
-                btn.dispatchEvent(new MouseEvent('click', evData));
-                return "STRIKE_EXECUTED";
-            }
-            return "BUTTON_NOT_FOUND";
-        });
+                if (btn) {
+                    const rect = btn.getBoundingClientRect();
+                    const x = rect.left + rect.width / 2;
+                    const y = rect.top + rect.height / 2;
 
-        await page.waitForTimeout(4000);
+                    // Standard Mouse
+                    const ev = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+                    ['mousedown', 'mouseup', 'click'].forEach(t => btn.dispatchEvent(new MouseEvent(t, ev)));
 
+                    // Mobile Touch (The Framework Breaker)
+                    try {
+                        const touchObj = new Touch({ identifier: Date.now(), target: btn, clientX: x, clientY: y, radiusX: 2.5, radiusY: 2.5, rotationAngle: 10, force: 0.5 });
+                        btn.dispatchEvent(new TouchEvent('touchstart', { cancelable: true, bubbles: true, touches: [touchObj], targetTouches: [touchObj], changedTouches: [touchObj] }));
+                        btn.dispatchEvent(new TouchEvent('touchend', { cancelable: true, bubbles: true, touches: [], targetTouches: [], changedTouches: [touchObj] }));
+                    } catch(err) {}
 
-        // --- PHASE 4: VERIFICATION ---
+                    return "JS_STRIKE_EXECUTED";
+                }
+                return "BUTTON_NOT_FOUND";
+            });
+        }
+
+        // 3. Physical Backup Tap (Center-bottom of the screen based on your image)
+        await page.mouse.click(206, 750).catch(() => {});
+        await page.mouse.click(206, 700).catch(() => {});
+
+        // Wait 5 seconds for the server to process the check-in and update the UI
+        await page.waitForTimeout(5000);
+
+        // --- PHASE 4: VERIFICATION (SMARTER SCANNING) ---
         const finalStatus = await page.evaluate(() => {
-            const txt = document.body.innerText;
-            return (txt.includes('Checked In') || txt.includes('Success') || txt.includes('Already')) ? "SUCCESS" : "FAILED";
+            const txt = document.body.innerText.toLowerCase();
+            
+            // 1. Check for success keywords
+            if (txt.includes('checked in') || txt.includes('success') || txt.includes('already') || txt.includes('completed')) {
+                return "SUCCESS";
+            }
+            
+            // 2. Check button state: If "Check in Now!" is gone or changed text, it means success
+            const btnStillThere = Array.from(document.querySelectorAll('*')).some(el => 
+                el.innerText?.trim() === 'Check in Now!' && el.offsetHeight > 0
+            );
+            
+            if (!btnStillThere) {
+                return "SUCCESS";
+            }
+            
+            return "FAILED";
         });
 
         const finalSnap = await page.screenshot({ type: 'png' });
@@ -379,6 +418,7 @@ async function performM4USignIn(chatId) {
         } else {
             throw new Error(`Check-in failed. Button state: ${checkInResult}`);
         }
+
 
     } catch (err) {
         // --- BULLETPROOF CRASH HANDLER ---
