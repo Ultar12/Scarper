@@ -1373,186 +1373,7 @@ bot.onText(/^\/getfile$/i, async (msg) => {
 
 
 
-// --- WSJOBS SMART WITHDRAWAL (BRAZIL UI UPDATED) ---
-bot.onText(/\/withdraw\s+task/i, async (msg) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
 
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting secure browser for Wsjobs Auto-Withdraw...`);
-    const updateStatus = async (text) => {
-        await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
-    };
-
-    let browser = null;
-    let page = null;
-    let recorder = null;
-    const videoPath = path.join(__dirname, `withdraw_debug_${Date.now()}.mp4`);
-
-    try {
-        if (typeof globalTaskBrowser === 'undefined' || !globalTaskBrowser) {
-            await updateStatus('[SYSTEM] Cold Boot: Launching background Chrome engine...');
-            globalTaskBrowser = await puppeteer.launch({
-                headless: true,
-                executablePath: getChromePath(),
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-            });
-        }
-        browser = globalTaskBrowser;
-
-        page = await browser.newPage();
-        await page.setViewport({ width: 412, height: 915 });
-        await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
-
-        // --- START VIDEO RECORDING ---
-        recorder = new PuppeteerScreenRecorder(page, {
-            fps: 30,
-            videoFrame: { width: 412, height: 915 },
-            aspectRatio: '9:16'
-        });
-        await recorder.start(videoPath);
-
-        // Step 1: Login & Session Recovery
-                await updateStatus('[SYSTEM] Loading session and checking login state...');
-        await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'networkidle2' }); 
-        await loadSessionFromDB('wsjobs_task', page);
-
-        // --- NEW: AGGRESSIVE PRE-LOGIN POPUP KILLER ---
-        // Loops 3 times to catch "Install App" popups that animate in late
-        for (let i = 0; i < 3; i++) {
-            await new Promise(r => setTimeout(r, 2000));
-            const closed = await page.evaluate(() => {
-                const elements = Array.from(document.querySelectorAll('*'));
-                // Kill any visible "OK" button (Install App or generic notice)
-                const okBtn = elements.find(el => 
-                    el.innerText?.trim() === 'OK' && 
-                    el.offsetParent !== null && 
-                    el.tagName !== 'BODY'
-                );
-                if (okBtn) {
-                    okBtn.click();
-                    return true;
-                }
-                return false;
-            });
-            if (closed) console.log('[SYSTEM] Pre-login popup cleared.');
-        }
-
-        const requiresLogin = page.url().includes('login') || await page.$('input[type="password"]') !== null;
-
-        if (requiresLogin) {
-            await updateStatus('[SYSTEM] Session expired. Performing New UI Sign-In...');
-            const allInputs = await page.$$('input');
-            if (allInputs.length >= 2) {
-                // Focus and type into new fields
-                await allInputs[0].click({ clickCount: 3 });
-                await allInputs[0].type('09163916500', { delay: 50 });
-                
-                await allInputs[1].click({ clickCount: 3 });
-                await allInputs[1].type('Emmamama', { delay: 50 });
-                
-                await page.evaluate(() => {
-                    const btns = Array.from(document.querySelectorAll('button, div, span'));
-                    const loginBtn = btns.find(b => b.innerText?.trim() === 'Sign In' && b.offsetParent !== null);
-                    if (loginBtn) loginBtn.click();
-                });
-                await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-            }
-        }
-
-        // --- Step 2: Clear Post-Login "Notice" Popup ---
-        // This clears the dark transparent popup after a successful login
-        await new Promise(r => setTimeout(r, 4000));
-        await page.evaluate(() => {
-            const okBtn = Array.from(document.querySelectorAll('*')).find(el => 
-                el.innerText?.trim() === 'OK' && el.offsetParent !== null
-            );
-            if (okBtn) okBtn.click();
-        });
-
-        // Ensure we are on the Account page for the next steps
-        if (!page.url().includes('/account')) {
-            await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'networkidle2' });
-            await new Promise(r => setTimeout(r, 3000));
-        }
-
-
-        // Step 3: Scan Balance & Select Tier
-        await updateStatus('[SYSTEM] Scanning Account Balance...');
-        const balanceData = await page.evaluate(() => {
-            const match = document.body.innerText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
-            return match ? match[1] : null;
-        });
-
-        if (!balanceData) throw new Error("Could not detect Balance.");
-        const rawBalance = parseFloat(balanceData.replace(/,/g, ''));
-        
-        const tiers = [50000, 26000, 23000, 20000, 18000, 15000, 12000];
-        let targetAmount = tiers.find(t => rawBalance >= t) || 12000;
-
-        // Click the "Account Withdrawal" Card
-        await page.evaluate(() => {
-            const cards = Array.from(document.querySelectorAll('div, span, p'));
-            const withdrawCard = cards.find(el => el.innerText?.trim() === 'Account Withdrawal' && el.offsetParent !== null);
-            if (withdrawCard) withdrawCard.click();
-        });
-        await new Promise(r => setTimeout(r, 4000));
-
-        // Select Amount Chip
-        await page.evaluate((amt) => {
-            const target = amt.toString();
-            const chips = Array.from(document.querySelectorAll('*'));
-            for (let chip of chips) {
-                if (chip.innerText?.replace(/[^0-9]/g, '') === target && chip.offsetParent !== null) {
-                    chip.click();
-                    return true;
-                }
-            }
-        }, targetAmount);
-        await new Promise(r => setTimeout(r, 1500));
-
-        // Step 4: Confirm Withdrawal Flow
-        await updateStatus(`[SYSTEM] Selecting ${targetAmount}. Clicking WITHDRAW NOW...`);
-        await page.evaluate(() => {
-            const btns = Array.from(document.querySelectorAll('button, div, span'));
-            const mainBtn = btns.find(b => b.innerText?.trim() === 'WITHDRAW NOW' && b.offsetParent !== null);
-            if (mainBtn) mainBtn.click();
-        });
-        await new Promise(r => setTimeout(r, 3000));
-
-        // Input Password
-        const pin = 'Emmamama'; // Replace with your actual withdrawal PIN
-        const pwInputs = await page.$$('input');
-        for (let input of pwInputs) {
-            const ph = await page.evaluate(el => el.placeholder || '', input);
-            if (ph.toLowerCase().includes('password')) {
-                await input.click({ clickCount: 3 });
-                await input.type(pin, { delay: 100 });
-                break;
-            }
-        }
-
-        // Final Confirm Strike
-        await page.evaluate(() => {
-            const btns = Array.from(document.querySelectorAll('button, div, span'));
-            const finalBtn = btns.find(b => b.innerText?.trim() === 'Confirm Withdrawal' && b.offsetParent !== null);
-            if (finalBtn) finalBtn.click();
-        });
-        
-        await new Promise(r => setTimeout(r, 5000));
-        await updateStatus('[SUCCESS] Withdrawal sequence finished.');
-        const finalSnap = await page.screenshot({ type: 'png' });
-        await bot.sendPhoto(chatId, finalSnap, { caption: `[FINISH] Withdrawal submitted for ${targetAmount}.` });
-
-        await saveSessionToDB('wsjobs_task', page);
-
-    } catch (err) {
-        await updateStatus(`[ERROR] Withdrawal failed: ${err.message}`);
-    } finally {
-        if (recorder) await recorder.stop().catch(() => {});
-        try { if (fs.existsSync(videoPath)) await bot.sendVideo(chatId, videoPath); } catch (e) {}
-        if (page) await page.close().catch(() => {});
-    }
-});
 
 
                 
@@ -1887,13 +1708,17 @@ const sweepTutorial = async (targetPage) => {
 };
 
 
-// Usage: /task 127
+
+const { firefox } = require('playwright');
+const fs = require('fs');
+const path = require('path');
+
 bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
     const targetSuffix = match[1]; 
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting Multi-Thread Protocol (Video Active)...`);
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting Firefox Multi-Strike Protocol...`);
     const msgId = statusMsg.message_id;
 
     const updateStatus = async (text) => {
@@ -1901,351 +1726,183 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     };
 
     let browser = null;
-    let page1 = null;
-    let pages = []; 
-    let recorder = null;
-    const videoPath = path.join(__dirname, `task_diagnostic_${Date.now()}.mp4`);
+    let context = null;
+    let pages = [];
+    let initialBalanceNum = 0;
+    const videoDir = path.join(__dirname, 'videos');
+    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
 
     try {
-        // --- CLEANUP ---
-        if (taskIdleTimer) clearTimeout(taskIdleTimer);
-        if (activeTaskPages.length > 0) {
-            await updateStatus('[SYSTEM] Closing previous task tabs...');
-            for (let p of activeTaskPages) await p.close().catch(()=>{});
-            activeTaskPages = [];
-        }
+        process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
 
-        // --- ENGINE WARM-UP ---
-        if (!globalTaskBrowser || !globalTaskBrowser.isConnected()) {
-            await updateStatus('[SYSTEM] Launching Chrome Engine...');
-            globalTaskBrowser = await puppeteer.launch({
-                headless: true,
-                executablePath: getChromePath(),
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--js-flags="--max-old-space-size=4096"']
-            });
-        }
-        browser = globalTaskBrowser;
+        browser = await firefox.launch({ 
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+        });
 
+        context = await browser.newContext({
+            userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
+            viewport: { width: 412, height: 915 },
+            recordVideo: { dir: videoDir, size: { width: 412, height: 915 } }
+        });
 
-                // --- STEP 1: INITIALIZE MASTER TAB & START RECORDING ---
-        await updateStatus('[SYSTEM] Opening Master Tab & forcing App Install state...');
-        page1 = await browser.newPage();
-        pages.push(page1);
+        const masterPage = await context.newPage();
+        pages.push(masterPage);
 
-        
-              
-                       // --- STEP 1.5: THE TERMINATOR (PWA SPOOFER & POPUP KILLER) ---
-        await page1.evaluateOnNewDocument(() => {
-            // 1. Lie to the browser events just in case
-            window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); return false; });
+        // --- THE TERMINATOR (HUMAN SNIPER & POPUP KILLER) ---
+        await masterPage.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
             
-            // 2. THE TERMINATOR BACKGROUND LOOP
-            // This runs silently in the background of EVERY page load (Login, Task, User, etc.)
             setInterval(() => {
-                const elements = Array.from(document.querySelectorAll('*'));
-                const popup = elements.find(el => el.innerText && el.innerText.includes('Add to home screen for best experience'));
+                const okBtn = Array.from(document.querySelectorAll('*'))
+                    .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
                 
-                if (popup) {
-                    // Try to click the OK button to satisfy any internal site logic
-                    const okBtn = elements.find(el => el.innerText?.trim() === 'OK' && el.offsetParent !== null);
-                    if (okBtn) {
-                        okBtn.click();
-                    } 
-                    
-                    // Forcefully nuke the popup container from the HTML DOM
-                    let container = popup;
-                    for (let i = 0; i < 5; i++) {
-                        // Traverse up the tree to grab the whole dark overlay, but don't delete the body
-                        if (container.parentElement && container.parentElement.tagName !== 'BODY' && container.parentElement.tagName !== 'HTML') {
-                            container = container.parentElement;
-                        }
-                    }
-                    container.remove();
-                    
-                    // Reset the screen so the bot can click the login fields behind it
-                    document.body.style.filter = 'none';
-                    document.body.style.overflow = 'auto';
-                    document.body.style.pointerEvents = 'auto';
-                }
-            }, 500); // Scans the screen every half-second forever
-        });
-
-        recorder = new PuppeteerScreenRecorder(page1, {
-            fps: 30, videoFrame: { width: 412, height: 915 }, aspectRatio: '9:16'
-        });
-        await recorder.start(videoPath);
-
-        await page1.setViewport({ width: 412, height: 915 }); 
-        await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
-
-        await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
-        await loadSessionFromDB('wsjobs_task', page1);
-
-        // --- STEP 3: LOGIN LOGIC (SHIGA / ENTRAR SUPPORT) ---
-        // (NOTE: The old STEP 2 was removed because the Terminator loop above handles popups automatically now)
-        const requiresLogin = page1.url().includes('login') || await page1.$('input[type="password"]') !== null;
-        if (requiresLogin) {
-            await updateStatus('[SYSTEM] Performing Geometric Sign-In...');
-            const allInputs = await page1.$$('input');
-            if (allInputs.length >= 2) {
-                await allInputs[0].focus();
-                await allInputs[0].type('09163916500', { delay: 50 });
-                await allInputs[1].focus();
-                await allInputs[1].type('Emmamama', { delay: 50 });
-                
-                // Get coordinates for the Shiga/Entrar button
-                const loginCoords = await page1.evaluate(() => {
-                    const btn = Array.from(document.querySelectorAll('*')).find(b => 
-                        ['Shiga', 'Entrar', 'Sign In', 'ENTRAR'].includes(b.innerText?.trim()) && b.offsetParent !== null
-                    );
-                    if (btn) {
-                        const rect = btn.getBoundingClientRect();
-                        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-                    }
-                    return null;
-                });
-
-                if (loginCoords) {
-                    await page1.mouse.click(loginCoords.x, loginCoords.y);
-                } else {
-                    // Fallback to script click if mouse fails
-                    await page1.evaluate(() => {
-                        const btn = Array.from(document.querySelectorAll('*')).find(b => ['Shiga', 'Entrar', 'Sign In'].includes(b.innerText?.trim()));
-                        if (btn) btn.click();
+                if (okBtn) {
+                    // Physical Human Click
+                    const rect = okBtn.getBoundingClientRect();
+                    const x = rect.left + rect.width / 2;
+                    const y = rect.top + rect.height / 2;
+                    ['mousedown', 'mouseup', 'click'].forEach(type => {
+                        okBtn.dispatchEvent(new MouseEvent(type, {
+                            view: window, bubbles: true, cancelable: true, clientX: x, clientY: y
+                        }));
                     });
+
+                    // Nuclear Clean-up
+                    setTimeout(() => {
+                        const modal = okBtn.closest('div[class*="modal"], div[class*="mask"], div[class*="popup"]');
+                        if (modal) modal.remove();
+                        document.body.style.setProperty('filter', 'none', 'important');
+                        document.body.style.setProperty('overflow', 'auto', 'important');
+                        document.body.style.setProperty('pointer-events', 'auto', 'important');
+                    }, 800);
                 }
-                await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-            }
-        }
-
-
-        // 5. THE DIRECT JUMP
-        await updateStatus('[SYSTEM] Jumping directly to Task page...');
-        await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 4000)); 
-
-
-
-                // --- STEP 1.5: FETCH INITIAL BALANCE ---
-        await updateStatus('[SYSTEM] Fetching initial balance before strike...');
-        await page1.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 3000));
-
-        initialBalanceText = await page1.evaluate(() => {
-            const rawText = document.body.textContent || '';
-            const match = rawText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
-            if (match) return match[1];
-            return '0';
+            }, 300);
         });
-        initialBalanceNum = parseFloat(initialBalanceText.replace(/,/g, '')) || 0;
 
-        await updateStatus('[SYSTEM] Teleporting to Task page...');
-        await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 4000));
+        // --- STEP 1: LOGIN FLOW (SHIGA/ENTRAR SUPPORT) ---
+        await updateStatus('[SYSTEM] Accessing Account Portal...');
+        await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        await masterPage.waitForTimeout(4000);
 
+        const loginInput = await masterPage.$('input[type="text"], input[type="tel"]');
+        if (loginInput) {
+            await updateStatus('[SYSTEM] Authenticating (Hausa/Portuguese)...');
+            await masterPage.fill('input[type="text"], input[type="tel"]', '09163916500');
+            await masterPage.fill('input[type="password"]', 'Emmamama');
+            
+            const loginBtn = masterPage.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last();
+            await loginBtn.dispatchEvent('click');
+            await masterPage.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
+        }
 
-        // --- STEP 2: SWEEP MASTER TAB & SAVE PERMANENT CACHE ---
-        await updateStatus('[SYSTEM] Checking tutorials on Master Tab...');
-        await sweepTutorial(page1);
+        // --- STEP 2: FETCH BALANCE ---
+        await updateStatus('[SYSTEM] Scanning initial balance...');
+        const balanceText = await masterPage.evaluate(() => {
+            const el = Array.from(document.querySelectorAll('*')).find(e => e.innerText?.includes('Balance:'));
+            return el ? el.innerText.split(':')[1].trim() : '0';
+        });
+        initialBalanceNum = parseFloat(balanceText.replace(/,/g, '')) || 0;
 
-        // ALWAYS save the cookies + cache after sweeping to lock the "tutorial finished" memory
-        await updateStatus('[SYSTEM] Locking updated cookies/cache into Database...');
-        await saveSessionToDB('wsjobs_task', page1);
+        // --- STEP 3: TARGET ACQUISITION ---
+        await updateStatus(`[SYSTEM] Teleporting to Task Page for suffix ${targetSuffix}...`);
+        await masterPage.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
+        await masterPage.waitForTimeout(5000); // Wait for "Notice" sniper to work
 
-        // --- STEP 3: DYNAMIC TARGET ACQUISITION (2-TO-1 RATIO) ---
-        await updateStatus(`[SYSTEM] Target acquisition phase for: ${targetSuffix}...`);
-        
-        // --- NEW DEEP-NEST TARGET SCRAPER ---
-const targetCount = await page1.evaluate((suffixStr) => {
-    // 1. Find all 'Send' buttons first
-    const allBtns = Array.from(document.querySelectorAll('*')).filter(el => 
-        el.innerText?.trim() === 'Send' && el.offsetParent !== null
-    );
-    
-    let matches = 0;
-    for (let btn of allBtns) {
-        // 2. Look at the surrounding text in the task card
-        let parent = btn.parentElement;
-        let contextText = "";
-        // Check 4 levels up to find the phone number suffix
-        for (let i = 0; i < 4; i++) {
-            if (parent) {
-                contextText += parent.innerText || "";
-                parent = parent.parentElement;
+        const targetCount = await masterPage.evaluate((suffix) => {
+            const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim() === 'SEND');
+            let found = 0;
+            for (let btn of btns) {
+                if (btn.closest('div')?.innerText.includes(suffix)) found++;
             }
-        }
+            return found > 4 ? 4 : found;
+        }, targetSuffix);
+
+        if (targetCount === 0) throw new Error(`Target ${targetSuffix} not found.`);
+
+        // --- STEP 4: MULTI-TAB SPAWN (Double Strike) ---
+        const totalTabs = targetCount * 2;
+        await updateStatus(`[SYSTEM] Found ${targetCount} targets. Spawning ${totalTabs} Strike Tabs...`);
         
-        if (contextText.includes(suffixStr)) {
-            matches++;
-        }
-    }
-    return matches > 4 ? 4 : matches;
-}, targetSuffix);
-
-
-        if (targetCount === 0) throw new Error(`Found 0 numbers ending with ${targetSuffix}.`);
-
-        // MULTIPLIER LOGIC: 1->2, 2->4, 3->6, 4->8
-        // We add +1 only if we need to spawn more tabs than the Master (page1) already represents
-        let totalTabsNeeded = targetCount * 2; 
-        let spawnCount = totalTabsNeeded - 1; // Master is already open
-
-        await updateStatus(`[SYSTEM] Found ${targetCount} targets. Spawning ${spawnCount} double-strike tabs...`);
-
-        for (let i = 0; i < spawnCount; i++) {
-            const newPage = await browser.newPage();
-            pages.push(newPage);
-            await newPage.setViewport({ width: 412, height: 915 }); 
-            await newPage.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+        for (let i = 1; i < totalTabs; i++) {
+            const p = await context.newPage();
+            pages.push(p);
+            await p.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
         }
 
-        if (pages.length > 1) {
-            await Promise.all(pages.slice(1).map(p => p.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' })));
-            await new Promise(r => setTimeout(r, 3000));
-            await Promise.all(pages.slice(1).map(p => clearOnboardingPopups(p, null)));
-        }
-
-        // --- STEP 4: COORDINATED GHOST CLICKS (DOUBLE-TAP MAPPING) ---
-        await updateStatus(`[SYSTEM] Mapping 2 tabs per number for ${targetCount} targets...`);
-        
-        const clickResults = await Promise.all(pages.map((p, index) => {
-            // This math (0&1 -> Target 0, 2&3 -> Target 1) works for any count
-            const matchToClick = Math.floor(index / 2);
-
-            return p.evaluate((suffixStr, targetIdx) => {
-                const sendBtns = Array.from(document.querySelectorAll('*')).filter(el => 
-                    el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null
-                );
-                let matchCount = 0;
-                for (let btn of sendBtns) {
-                    let containerText = btn.parentElement?.parentElement?.innerText || '';
-                    if (containerText.includes(suffixStr)) {
-                        if (matchCount === targetIdx) {
-                            btn.scrollIntoView({ block: 'center', behavior: 'instant' });
-                            const ce = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-                            btn.dispatchEvent(ce); 
-                            btn.click(); 
-                            if (btn.parentElement) btn.parentElement.click();
-                            return true;
+        // --- STEP 5: COORDINATED CLICK ---
+        await updateStatus('[SYSTEM] ⚡ EXECUTING SIMULTANEOUS SEND ⚡');
+        await Promise.all(pages.map(async (p, idx) => {
+            const targetIdx = Math.floor(idx / 2);
+            await p.evaluate(({ suffix, index }) => {
+                const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim() === 'SEND');
+                let matches = 0;
+                for (let btn of btns) {
+                    if (btn.closest('div')?.innerText.includes(suffix)) {
+                        if (matches === index) {
+                            btn.click();
+                            return;
                         }
-                        matchCount++;
+                        matches++;
                     }
                 }
-                return false;
-            }, targetSuffix, matchToClick);
+            }, { suffix: targetSuffix, index: targetIdx });
         }));
 
-        await updateStatus(`[SYSTEM] Initializing popups...`);
-        await new Promise(r => setTimeout(r, 3000));
+        await page.waitForTimeout(3000);
 
-        // --- STEP 5: SYNC COOLDOWN ---
-        await new Promise(r => setTimeout(r, 7000)); 
+        // --- STEP 6: FLASH CONFIRM ---
+        await updateStatus('[SYSTEM] ⚡ FLASH CONFIRM ⚡');
+        await Promise.all(pages.map(p => p.evaluate(() => {
+            const confirm = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.trim().toLowerCase() === 'confirm');
+            if (confirm) confirm.click();
+        })));
 
-        // --- STEP 6: SYNCHRONIZED FLASH CONFIRM STRIKE ---
-        await updateStatus(`[SYSTEM] ⚡ FLASH STRIKE: ALL TABS ⚡`);
-        
-        await Promise.all(pages.map(async (p, idx) => {
-            if (clickResults[idx]) {
-                return p.evaluate(() => {
-                    const confirmBtn = Array.from(document.querySelectorAll('*')).find(el => 
-                        el.innerText && el.innerText.trim() === 'Confirm' && el.offsetParent !== null
-                    );
-                    if (confirmBtn) {
-                        const ce = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-                        confirmBtn.dispatchEvent(ce);
-                        confirmBtn.click();
-                        if (confirmBtn.parentElement) confirmBtn.parentElement.click();
-                    }
-                });
-            }
-        }));
+        await masterPage.waitForTimeout(10000); // Cooldown
 
-        await new Promise(r => setTimeout(r, 15000));
+        // --- STEP 7: FINAL CALCULATION ---
+        await updateStatus('[SYSTEM] Strike complete. Finalizing...');
+        await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        await masterPage.waitForTimeout(3000);
 
+        const finalBalanceText = await masterPage.evaluate(() => {
+            const el = Array.from(document.querySelectorAll('*')).find(e => e.innerText?.includes('Balance:'));
+            return el ? el.innerText.split(':')[1].trim() : '0';
+        });
+        const finalBalanceNum = parseFloat(finalBalanceText.replace(/,/g, '')) || 0;
+        const profit = (finalBalanceNum - initialBalanceNum).toFixed(2);
 
-                                        // --- STEP 7: FETCH PROFIT, BALANCE & FINAL OUTPUT ---
-        await updateStatus(`[SYSTEM] Strike complete. Calculating final profit...`);
-        
-        // 1. Capture the Task Page (proving buttons are gone)
-        const finalTaskSnap = await pages[0].screenshot({ type: 'png' });
-
-        let currentBalanceText = "Unknown";
-        let earnedDisplay = "Unknown";
-        
-        try {
-            // 2. Peek at User page in background for the math and balance
-            await pages[0].goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
-            await new Promise(r => setTimeout(r, 3000)); 
-            
-            currentBalanceText = await pages[0].evaluate(() => {
-                const rawText = document.body.textContent || '';
-                const match = rawText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
-                if (match) return match[1];
-                return 'Unknown';
-            });
-            
-            let finalBalanceNum = parseFloat(currentBalanceText.replace(/,/g, ''));
-            if (!isNaN(initialBalanceNum) && !isNaN(finalBalanceNum)) {
-                earnedDisplay = `+${(finalBalanceNum - initialBalanceNum).toFixed(2)}`;
-            }
-            
-            // 3. Return to Task page for next cycle
-            await pages[0].goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
-        } catch (e) {}
-
-        // 4. Delete the status message to keep the chat clean
+        const finalSnap = await masterPage.screenshot({ type: 'png' });
         await bot.deleteMessage(chatId, msgId).catch(() => {});
-
-        // 5. Send the photo with Profit and current Balance
-        await bot.sendPhoto(chatId, finalTaskSnap, { 
-            caption: `Profit: <code>${earnedDisplay}</code>\nBalance: <code>${currentBalanceText}</code>`,
+        
+        await bot.sendPhoto(chatId, finalSnap, { 
+            caption: `Profit: <code>+${profit}</code>\nBalance: <code>${finalBalanceText}</code>`,
             parse_mode: 'HTML'
         });
 
-
-
-
-                // --- STEP 8: KEEP TABS OPEN & ARM IDLE TIMER ---
-        activeTaskPages = pages; 
-
-        // IF SUCCESS: Stop and cleanup video (don't send it if it didn't crash)
-        if (recorder) {
-            await recorder.stop().catch(() => {});
-            if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
+        // Cleanup Video if success
+        const video = masterPage.video();
+        await context.close();
+        if (video) {
+            const vPath = await video.path();
+            if (fs.existsSync(vPath)) fs.unlinkSync(vPath);
         }
-
-        taskIdleTimer = setTimeout(async () => {
-            bot.sendMessage(chatId, '[SYSTEM] 1 hour idle timeout reached. Closing inactive task tabs to save RAM.').catch(()=>{});
-            for (let p of activeTaskPages) await p.close().catch(()=>{});
-            activeTaskPages = [];
-        }, 60 * 60 * 1000); 
 
     } catch (err) {
-        // --- UPDATED ERROR LOGIC: SEND VIDEO PROOF ---
-        await updateStatus(`[ERROR] Sequence failed: ${err.message}`);
-        
-        if (recorder) await recorder.stop().catch(() => {});
-        
-        // 1. Send the Diagnostic Video if it exists
-        if (fs.existsSync(videoPath)) {
-            await bot.sendVideo(chatId, videoPath, { 
-                caption: `[DIAGNOSTIC] Task Crash Video\nError: ${err.message}` 
-            }).catch(() => {});
-            fs.unlinkSync(videoPath);
+        await updateStatus(`❌ [CRASH] Task Failed: ${err.message}`);
+        if (context) {
+            const video = pages[0]?.video();
+            await context.close();
+            if (video) {
+                const vPath = await video.path();
+                await bot.sendVideo(chatId, vPath, { caption: `[DIAGNOSTIC] Task Crash Video\nError: ${err.message}` });
+            }
         }
-
-        // 2. Fallback: Send a static screenshot if video failed
-        if (pages.length > 0) {
-            try {
-                const errBuffer = await pages[0].screenshot({ type: 'png' });
-                await bot.sendPhoto(chatId, errBuffer, { caption: '[DIAGNOSTIC] State of Master Tab at crash.' });
-            } catch (snapErr) {}
-        }
-        
-        // Safety cleanup of tabs on crash
-        for (let p of pages) await p.close().catch(()=>{});
+    } finally {
+        if (browser) await browser.close();
     }
 });
+    
 
 
 
