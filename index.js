@@ -1831,8 +1831,8 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
         await page.waitForTimeout(3000);
 
-        // --- 4. PASSWORD & FINAL CONFIRM ---
-        const        // --- STEP 4: PASSWORD & FINAL CONFIRM ---
+    
+           // --- STEP 4: PASSWORD & FINAL CONFIRM ---
         const passInput = page.locator('input[type="password"], .modal-body input, [placeholder*="password"], [placeholder*="senha"]').last();
         
         // 1. Wait for modal visibility
