@@ -1789,15 +1789,13 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
 
 
-        await bot.editMessageText(`[SYSTEM] Target Acquired: ${targetAmount}. Proceeding to Saque...`, { 
-            chat_id: chatId, 
+                await bot.editMessageText(`[SYSTEM] Target Acquired: ${targetAmount}. Proceeding to Saque...`, { 
+            chat_id: chatId, // Parameter must be chat_id for this API method
             message_id: statusMsg.message_id 
-        });
+        }).catch(() => {});
 
-        
         // Go to withdrawal page
         await page.goto('https://www.wsjobs-ng.com/account/withdraw', { waitUntil: 'domcontentloaded' });
-
         await page.waitForTimeout(4000);
 
         // Step 3: Select Amount and Click SACAR AGORA
@@ -1816,19 +1814,16 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             if (mainBtn) mainBtn.click();
         });
 
-                // Step 4: Input Password and Confirm
+        // Step 4: Input Password and Confirm
         await updateStatus('[SYSTEM] Waiting for Withdrawal Popup...');
         
-        // Targeted locator for the password field inside the confirm modal
         const passInput = page.locator('input[type="password"], .modal-body input, [placeholder*="password"], [placeholder*="senha"]').last();
         
-        // Wait up to 10s for the popup to actually be visible before typing
         await passInput.waitFor({ state: 'visible', timeout: 10000 });
         await passInput.fill('Emmamama');
 
         await updateStatus('[SYSTEM] Submitting Final Confirmation...');
         await page.evaluate(() => {
-            // Find the specific 'Confirm Withdrawal' or 'Confirmar' button inside the green/dark modal
             const buttons = Array.from(document.querySelectorAll('button, div, span'));
             const finalBtn = buttons.find(b => 
                 (b.innerText?.includes('Confirm Withdrawal') || b.innerText?.includes('Confirmar')) && 
@@ -1838,24 +1833,28 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             if (finalBtn) finalBtn.click();
         });
 
-
         await page.waitForTimeout(5000);
         
         const finalSnap = await page.screenshot({ type: 'png' });
-        await bot.sendPhoto(chat_id, finalSnap, { caption: `[SUCCESS] Withdrawal for ${targetAmount} submitted.` });
+        
+        // Fixed: Used chatId variable and added filename to prevent EFATAL
+        await bot.sendPhoto(chatId, finalSnap, 
+            { caption: `[SUCCESS] Withdrawal for ${targetAmount} submitted.` },
+            { filename: 'withdraw_final.png' }
+        );
 
         // Video Cleanup
         const video = page.video();
         await context.close();
         if (video) {
-            const vPath = await video.path();
-            if (fs.existsSync(vPath)) fs.unlinkSync(vPath);
+            const vPath = await video.path().catch(() => null);
+            if (vPath && fs.existsSync(vPath)) fs.unlinkSync(vPath);
         }
 
-        } catch (err) {
+    } catch (err) {
         console.log(`[WITHDRAW ERROR]: ${err.message}`);
-        // Ensure you use chatId (no underscore)
-        await bot.sendMessage(chatId, `[WITHDRAW ERROR]: ${err.message}`); 
+        // Fixed: Using chatId (camelCase) consistent with variable definition
+        await bot.sendMessage(chatId, `[WITHDRAW ERROR]: ${err.message}`).catch(() => {}); 
         
         if (context) {
             const video = page?.video();
@@ -1863,19 +1862,21 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             if (video) {
                 const vPath = await video.path().catch(() => null);
                 if (vPath && fs.existsSync(vPath)) {
-                    // Changed chat_id to chatId here too
                     await bot.sendVideo(chatId, vPath, { 
                         caption: `Diagnostic: Withdrawal Failure\nError: ${err.message}` 
                     }).catch(() => {});
-                    fs.unlinkSync(vPath);
+                    if (fs.existsSync(vPath)) fs.unlinkSync(vPath);
                 }
             }
         }
     } finally {
         if (browser) await browser.close().catch(() => {});
     }
-});
 
+    
+
+        
+        
 
 bot.onText(/\/upscale/i, async (msg) => {
     const chatId = msg.chat.id.toString();
