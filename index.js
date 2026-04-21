@@ -318,7 +318,7 @@ async function performM4USignIn(chatId) {
 
         await page.waitForTimeout(4000);
 
-        // 5. VERIFY & SEND
+                // 5. VERIFY & SEND
         const finalStatus = await page.evaluate(() => {
             const txt = document.body.innerText;
             return (txt.includes('Checked In') || txt.includes('Success')) ? "SUCCESS" : "IDLE";
@@ -326,17 +326,16 @@ async function performM4USignIn(chatId) {
 
         const finalSnap = await page.screenshot({ type: 'png' });
         
-        // If it worked, we don't need the video taking up space
         const video = page.video();
         await context.close(); 
         const vPath = await video.path().catch(() => null);
 
+        // FIX: Changed all chat_id to chatId
         if (finalStatus === "SUCCESS") {
-            await bot.sendPhoto(chat_id, finalSnap, { caption: "M4U Check-in Success." }, { filename: 'success.png' });
+            await bot.sendPhoto(chatId, finalSnap, { caption: "M4U Check-in Success." }, { filename: 'success.png' });
             if (vPath && fs.existsSync(vPath)) fs.unlinkSync(vPath);
         } else {
-            // FAILURE: Send screenshot AND the video record to see why it didn't fill
-            await bot.sendPhoto(chat_id, finalSnap, { caption: "Check-in failed. Sending video record..." }, { filename: 'failed.png' });
+            await bot.sendPhoto(chatId, finalSnap, { caption: "Check-in failed. Sending video record..." }, { filename: 'failed.png' });
             if (vPath && fs.existsSync(vPath)) {
                 await bot.sendVideo(chatId, vPath, { caption: "M4U Diagnostic Video" });
                 setTimeout(() => { if (fs.existsSync(vPath)) fs.unlinkSync(vPath); }, 5000);
@@ -345,11 +344,13 @@ async function performM4USignIn(chatId) {
 
     } catch (err) {
         if (context) await context.close().catch(() => {});
-        await bot.sendMessage(chat_id, `M4U Crash: ${err.message}`);
+        // FIX: Changed chat_id to chatId on line 348
+        await bot.sendMessage(chatId, `M4U Crash: ${err.message}`);
     } finally {
         if (browser) await browser.close();
     }
 }
+
 
 
 // --- 4. TELEGRAM COMMAND LISTENERS ---
