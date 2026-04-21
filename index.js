@@ -1832,23 +1832,46 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await page.waitForTimeout(3000);
 
         // --- 4. PASSWORD & FINAL CONFIRM ---
+        const        // --- STEP 4: PASSWORD & FINAL CONFIRM ---
         const passInput = page.locator('input[type="password"], .modal-body input, [placeholder*="password"], [placeholder*="senha"]').last();
         
-        // Wait up to 15s for the modal to be fully visible
+        // 1. Wait for modal visibility
         await passInput.waitFor({ state: 'visible', timeout: 15000 });
-        await passInput.fill('111111');
+        
+        // 2. Click and Type (More reliable than .fill() for triggering button activation)
+        await passInput.click();
+        await passInput.type('111111', { delay: 100 }); 
 
+        await page.waitForTimeout(1000);
+
+        // 3. GEOMETRIC STRIKE ON CONFIRM BUTTON
         await page.evaluate(() => {
-            const buttons = Array.from(document.querySelectorAll('button, div, span'));
+            const buttons = Array.from(document.querySelectorAll('button, div, span, p'));
+            
+            // Added 'Tabbatar Cirewa' to the search criteria
             const finalBtn = buttons.find(b => 
-                (b.innerText?.includes('Confirm') || b.innerText?.includes('Confirmar')) && 
+                (b.innerText?.includes('Tabbatar Cirewa') || 
+                 b.innerText?.includes('Confirm') || 
+                 b.innerText?.includes('Confirmar')) && 
                 b.offsetHeight > 0 && 
                 window.getComputedStyle(b).display !== 'none'
             );
+
             if (finalBtn) {
-                // Same geometric strike for the confirmation button
                 const rect = finalBtn.getBoundingClientRect();
-                const evData = { bubbles: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+                const x = rect.left + rect.width / 2;
+                const y = rect.top + rect.height / 2;
+
+                // Human-style event sequence (Firefox Compatible)
+                const evData = {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window,
+                    clientX: x,
+                    clientY: y,
+                    buttons: 1
+                };
+
                 finalBtn.dispatchEvent(new MouseEvent('mousedown', evData));
                 finalBtn.dispatchEvent(new MouseEvent('mouseup', evData));
                 finalBtn.dispatchEvent(new MouseEvent('click', evData));
@@ -1856,6 +1879,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         });
 
         await page.waitForTimeout(5000);
+
         
         const finalSnap = await page.screenshot({ type: 'png' });
         
@@ -2010,13 +2034,32 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             await masterPage.goto('https://www.wsjobs-ng.com/account');
         }
 
-        // --- 3. PRECISION BALANCE SCRAPER (FIXED) ---
+          // --- 3. YELLOW-PRIORITY BALANCE SCRAPER (INITIAL) ---
+        await updateStatus('[SYSTEM] Scanning Yellow Balance Layer...');
         initialBalanceNum = await masterPage.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('div, span, p, b, h1, h2'));
+            
+            // 1. Target the exact Wsjob Yellow (rgb 255, 235, 59)
+            const yellowEl = elements.find(el => {
+                const style = window.getComputedStyle(el);
+                const isYellow = style.color === 'rgb(255, 235, 59)' || style.color === 'yellow';
+                return isYellow && /\d/.test(el.innerText) && el.offsetHeight > 0;
+            });
+
+            if (yellowEl) {
+                // Clean the string: remove commas/symbols, keep numbers and dots
+                return parseFloat(yellowEl.innerText.replace(/[^0-9.]/g, '')) || 0;
+            }
+
+            // 2. Fallback: If yellow scan fails, hunt for decimals but ignore the phone number
             const allText = document.body.innerText;
-            const decimalMatches = allText.match(/\d+\.\d{2}/g);
-            if (decimalMatches) {
-                const nums = decimalMatches.map(n => parseFloat(n));
-                return Math.max(...nums);
+            const matches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
+            if (matches) {
+                const nums = matches
+                    .map(n => n.replace(/,/g, ''))
+                    .map(n => parseFloat(n))
+                    .filter(n => n > 0 && n < 100000); // Kills phone number interference
+                return nums.length > 0 ? Math.max(...nums) : 0;
             }
             return 0;
         });
@@ -2096,64 +2139,45 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         })));
 
-                // --- 7. ACCURATE MATH (YELLOW-PRIORITY SCRAPER) ---
-        await masterPage.waitForTimeout(6000);
-        const finalTaskSnap = await masterPage.screenshot({ type: 'png' });
-
+                 // --- 7. YELLOW-PRIORITY BALANCE SCRAPER (FINAL) ---
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await masterPage.waitForTimeout(4000);
 
         const finalBalanceNum = await masterPage.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('div, span, p, b'));
-            
-            // 1. Target the Yellow Balance (Most accurate for 996.00 or 14,450.00)
             const yellowEl = elements.find(el => {
                 const style = window.getComputedStyle(el);
-                return (style.color === 'rgb(255, 235, 59)' || style.color === 'yellow') && 
-                       /\d/.test(el.innerText);
+                return (style.color === 'rgb(255, 235, 59)' || style.color === 'yellow') && /\d/.test(el.innerText);
             });
 
             if (yellowEl) {
-                const val = yellowEl.innerText.replace(/[^0-9.]/g, '');
-                return parseFloat(val) || 0;
-            }
-
-            // 2. Fallback: Scan text but ignore phone numbers (>100,000)
-            const allText = document.body.innerText;
-            const matches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
-            if (matches) {
-                const nums = matches
-                    .map(n => n.replace(/,/g, ''))
-                    .map(n => parseFloat(n))
-                    .filter(n => n > 0 && n < 100000); // Strict filter to kill phone number interference
-                
-                return nums.length > 0 ? Math.max(...nums) : 0;
+                return parseFloat(yellowEl.innerText.replace(/[^0-9.]/g, '')) || 0;
             }
             return 0;
         });
 
-        // Calculate profit (Final - Initial)
-        const profit = (finalBalanceNum - initialBalanceNum).toFixed(2);
+                // --- MATH EXECUTION ---
+        const diff = finalBalanceNum - initialBalanceNum;
+        const profitText = diff > 0 ? diff.toFixed(2) : "0.00";
         
-        // Ensure profit doesn't show weird negatives if the initial scan failed
-        const displayProfit = parseFloat(profit) < 0 ? "0.00" : profit;
-
         await bot.deleteMessage(chatId, msgId).catch(() => {});
+        
+        // ADDED: filename option to prevent EFATAL buffer error
         await bot.sendPhoto(chatId, finalTaskSnap, { 
-            caption: `Profit: <code>+${displayProfit}</code>\nBalance: <code>${finalBalanceNum.toLocaleString(undefined, {minimumFractionDigits: 2})}</code>`,
+            caption: `Profit: <code>+${profitText}</code>\nBalance: <code>${finalBalanceNum.toLocaleString(undefined, {minimumFractionDigits: 2})}</code>`,
             parse_mode: 'HTML'
-        });
+        }, { filename: 'task_result.png' });
 
     } catch (err) {
+        // Using chatId consistent with your variable definition
         await bot.sendMessage(chatId, `[STRIKE FAILED]: ${err.message}`);
     } finally {
-        // Close context to free RAM but keep globalTaskBrowser alive for next strike
         if (context) {
             await context.close().catch(() => {});
         }
     }
+}); // Properly closes the bot.onText listener
 
-    });
 
 
 
