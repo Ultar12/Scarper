@@ -1709,9 +1709,7 @@ const sweepTutorial = async (targetPage) => {
 
 
 
-const { firefox } = require('playwright');
-const fs = require('fs');
-const path = require('path');
+
 
 bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
