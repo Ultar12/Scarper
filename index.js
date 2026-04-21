@@ -232,6 +232,147 @@ async function clearOnboardingPopups(page, updateStatus) {
 
 
 
+// --- GLOBAL VARIABLES FOR TIMESMS SPY MODE ---
+const seenTimesmsNumbers = new Set();
+let spyIntervalTimer = null;
+let isSpying = false;
+
+// Initialize the secondary bot once globally to save RAM
+const SPY_BOT_TOKEN = '8424082135:AAGc73Ztzkb49dZd4hHEx99QFlMMwS5MONw';
+const spyMessageBot = new TelegramBot(SPY_BOT_TOKEN, { polling: false });
+const SPY_TARGET_ID = '7518619353';
+
+
+// --- THE AUTO-SCRAPER FUNCTION ---
+async function scrapeRecentOTPNumbers() {
+    let browser = null;
+    let page = null;
+
+    try {
+        console.log('[SYSTEM] Executing TimeSMS Spy Sweep...');
+        browser = await puppeteer.launch({
+            headless: true,
+            executablePath: getChromePath(),
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        });
+
+        page = await browser.newPage();
+        await page.setViewport({ width: 1280, height: 800 });
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+        // --- 1. LOGIN LOGIC ---
+        await page.goto('https://timesms.org/login', { waitUntil: 'networkidle2' });
+
+        const captchaAnswer = await page.evaluate(() => {
+            const bodyText = document.body.innerText || '';
+            const match = bodyText.match(/What is\s*(\d+)\s*([\+\-\*])\s*(\d+)/i);
+            if (match) {
+                const num1 = parseInt(match[1]);
+                const op = match[2];
+                const num2 = parseInt(match[3]);
+                if (op === '+') return (num1 + num2).toString();
+                if (op === '-') return (num1 - num2).toString();
+                if (op === '*') return (num1 * num2).toString();
+            }
+            return null;
+        });
+
+        if (!captchaAnswer) throw new Error("Captcha failed.");
+
+        const inputs = await page.$$('input');
+        for (let input of inputs) {
+            const type = await page.evaluate(el => el.type, input);
+            const placeholder = await page.evaluate(el => (el.placeholder || '').toLowerCase(), input);
+            if (type === 'text' && placeholder.includes('username')) {
+                await input.type('Ultarscny', { delay: 50 });
+            } else if (type === 'password' || placeholder.includes('password')) {
+                await input.type('Ultarscny', { delay: 50 });
+            } else if (placeholder.includes('answer')) {
+                await input.type(captchaAnswer, { delay: 50 });
+            }
+        }
+
+        await new Promise(r => setTimeout(r, 1000));
+        
+        await page.evaluate(() => {
+            const btns = Array.from(document.querySelectorAll('button'));
+            for (let btn of btns) {
+                if ((btn.innerText || '').trim().toLowerCase() === 'login') {
+                    btn.click();
+                    return;
+                }
+            }
+        });
+
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+
+        // --- 2. TELEPORT TO SMS REPORTS ---
+        await page.goto('https://timesms.org/client/SMSCDRStats', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 3000));
+
+        // --- 3. SELECT 100 RECORDS ---
+        await page.evaluate(() => {
+            const selects = Array.from(document.querySelectorAll('select'));
+            for (let select of selects) {
+                const options = Array.from(select.options);
+                const targetOpt = options.find(opt => opt.text.trim() === '100');
+                if (targetOpt) {
+                    select.value = targetOpt.value;
+                    select.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                }
+            }
+            return false;
+        });
+
+        // Wait exactly 5 seconds for the table data to adjust and render
+        await new Promise(r => setTimeout(r, 5000));
+
+        // --- 4. EXTRACT TABLE DATA ---
+        const scrapedNumbers = await page.evaluate(() => {
+            const numbers = [];
+            const rows = document.querySelectorAll('table tbody tr');
+            for (let row of rows) {
+                const cells = row.querySelectorAll('td');
+                // Ensure the row has enough columns (Date, Range, Number, CLI...)
+                if (cells && cells.length >= 4) {
+                    const numText = cells[2].innerText.trim();
+                    // Strip non-digits and verify it has a valid length
+                    const cleanNum = numText.replace(/\D/g, '');
+                    if (cleanNum.length >= 8) {
+                        numbers.push(cleanNum);
+                    }
+                }
+            }
+            return numbers;
+        });
+
+        // --- 5. FILTER DUPLICATES & SEND ---
+        const newNumbers = [];
+        for (let num of scrapedNumbers) {
+            if (!seenTimesmsNumbers.has(num)) {
+                newNumbers.push(num);
+                seenTimesmsNumbers.add(num); 
+            }
+        }
+
+        if (newNumbers.length > 0) {
+            const textToSend = `[NEW OTP NUMBERS DETECTED]\n\n${newNumbers.join('\n')}`;
+            await spyMessageBot.sendMessage(SPY_TARGET_ID, textToSend);
+            console.log(`[SYSTEM] Sent ${newNumbers.length} new numbers to target ID.`);
+        } else {
+            console.log('[SYSTEM] Zero new numbers found in this cycle.');
+        }
+
+    } catch (err) {
+        console.error(`[ERROR] TimeSMS Scraper crashed: ${err.message}`);
+    } finally {
+        if (browser) await browser.close().catch(() => {});
+    }
+}
+
+
+
 
 async function performM4USignIn(chatId) {
     let browser = null;
@@ -786,6 +927,41 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
 });
 
 
+// --- TOGGLE COMMAND: /spy on | /spy off ---
+bot.onText(/^\/spy\s+(on|off)$/i, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    const command = match[1].toLowerCase();
+
+    if (command === 'on') {
+        if (isSpying) {
+            return bot.sendMessage(chatId, '[SYSTEM] Spy Mode is already running in the background.');
+        }
+
+        isSpying = true;
+        bot.sendMessage(chatId, '[ACTIVE] Spy Mode Initiated. Scraping TimeSMS every 30 minutes.');
+
+        // Trigger the first sweep immediately
+        scrapeRecentOTPNumbers();
+
+        // Lock in the 30-minute repeating cycle
+        spyIntervalTimer = setInterval(() => {
+            scrapeRecentOTPNumbers();
+        }, 30 * 60 * 1000); 
+
+    } else if (command === 'off') {
+        if (!isSpying) {
+            return bot.sendMessage(chatId, '[SYSTEM] Spy Mode is already inactive.');
+        }
+
+        isSpying = false;
+        if (spyIntervalTimer) clearInterval(spyIntervalTimer);
+        spyIntervalTimer = null;
+        
+        bot.sendMessage(chatId, '[INACTIVE] Spy Mode Deactivated. Background engine stopped.');
+    }
+});
 
 
 // Usage: /record
