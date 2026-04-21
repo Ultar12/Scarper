@@ -256,8 +256,9 @@ async function performM4USignIn(chatId) {
 
         const needsLogin = await page.evaluate(() => !!document.querySelector('input[placeholder*="phone number"]'));
 
+                // --- PHASE 1: LOGIN WITH GEOMETRIC STRIKE ---
         if (needsLogin) {
-            // Use human-like typing to trigger validation
+            await updateStatus('[SYSTEM] Injecting credentials...');
             const phoneInput = page.locator('input[placeholder*="phone number"]');
             await phoneInput.click();
             await phoneInput.type('Staring', { delay: 100 });
@@ -268,58 +269,51 @@ async function performM4USignIn(chatId) {
 
             await page.waitForTimeout(1000);
 
-            // GEOMETRIC STRIKE ON LOGIN BUTTON
+            // THE CRITICAL FIX: Physically strike the Login button center
             await page.evaluate(() => {
                 const btn = Array.from(document.querySelectorAll('*')).find(el => 
                     el.innerText?.trim() === 'Login' && el.offsetHeight > 0
                 );
+                
                 if (btn) {
                     const rect = btn.getBoundingClientRect();
                     const x = rect.left + rect.width / 2;
                     const y = rect.top + rect.height / 2;
-                    
+
                     const evData = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, buttons: 1 };
                     btn.dispatchEvent(new MouseEvent('mousedown', evData));
                     btn.dispatchEvent(new MouseEvent('mouseup', evData));
                     btn.dispatchEvent(new MouseEvent('click', evData));
                 }
             });
-            
+
+            // WAIT for the site to confirm login and redirect to home
             await page.waitForURL('**/home', { timeout: 15000 }).catch(() => {});
-            await page.waitForTimeout(5000); 
+            await page.waitForTimeout(6000); 
         }
 
-        // 2. AD SNIPER
-        await page.evaluate(() => {
-            const closeBtn = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.trim() === 'Close' && el.offsetHeight > 0);
-            if (closeBtn) closeBtn.click();
-            document.querySelectorAll('.van-overlay, .van-popup, .van-modal, [class*="mask"]').forEach(el => el.remove());
-            document.body.style.setProperty('pointer-events', 'auto', 'important');
-        });
-
-        await page.waitForTimeout(2000);
-
-        // 3. TELEPORT TO SIGN-IN
+        // --- PHASE 2: THE TELEPORT ---
+        await updateStatus('[SYSTEM] Login verified. Teleporting to Sign-in page...');
         await page.goto('https://taskm4u.com/#/signIn', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(5000);
 
-        // 4. COORDINATE STRIKE ON CHECK-IN
-        const strikeResult = await page.evaluate(async () => {
+        // --- PHASE 3: THE CHECK-IN STRIKE ---
+        await page.evaluate(() => {
+            // Find and strike the Check-in button
             const btn = Array.from(document.querySelectorAll('*')).find(el => 
                 el.innerText?.trim() === 'Check in Now!' && el.offsetHeight > 0
             );
 
-            if (!btn) return "NOT_FOUND";
+            if (btn) {
+                const rect = btn.getBoundingClientRect();
+                const x = rect.left + rect.width / 2;
+                const y = rect.top + rect.height / 2;
 
-            const rect = btn.getBoundingClientRect();
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-
-            const evData = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, buttons: 1 };
-            btn.dispatchEvent(new MouseEvent('mousedown', evData));
-            btn.dispatchEvent(new MouseEvent('mouseup', evData));
-            btn.dispatchEvent(new MouseEvent('click', evData));
-            return "STRIKE_EXECUTED";
+                const evData = { bubbles: true, view: window, clientX: x, clientY: y, buttons: 1 };
+                btn.dispatchEvent(new MouseEvent('mousedown', evData));
+                btn.dispatchEvent(new MouseEvent('mouseup', evData));
+                btn.dispatchEvent(new MouseEvent('click', evData));
+            }
         });
 
         await page.waitForTimeout(4000);
