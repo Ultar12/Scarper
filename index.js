@@ -461,35 +461,42 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
         await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(5000); 
 
-        const loginInput = await page.$('input[type="text"], input[type="tel"]');
+                const loginInput = await page.$('input[type="text"], input[type="tel"], input[placeholder*="asusu"], input[placeholder*="Conta"]');
         if (loginInput) {
             await updateStatus('[SYSTEM] Filling credentials...');
-            await loginInput.fill('09163916500');
+            
+            // Using broad selectors to ensure fields are populated regardless of language
+            await page.fill('input[type="text"], input[type="tel"]', '09163916500');
             await page.fill('input[type="password"]', 'Emmamama');
             
             await updateStatus('[SYSTEM] Attempting to click Login...');
             
             try {
-                // Try clicking with a shorter timeout to trigger diagnostic screenshot faster
-                const loginBtn = page.locator('text=/LOGIN|SIGN IN|SHIGA/i').first();
-                await loginBtn.click({ timeout: 8000 });
+                // Updated Regex to include ENTRAR (Portuguese) found in your screenshot
+                // Using .last() because the submit button is usually below the tab switcher
+                const loginBtn = page.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last();
+                
+                // dispatchEvent bypasses visibility/overlay checks that usually cause timeouts
+                await loginBtn.dispatchEvent('click', { timeout: 8000 });
             } catch (clickErr) {
-                // --- DIAGNOSTIC SCREENSHOT ON FAILURE ---
+                // Diagnostic screenshot if the primary click fails
                 const diagBuffer = await page.screenshot({ fullPage: false });
                 await bot.sendPhoto(chatId, diagBuffer, { 
-                    caption: `⚠️ [DIAGNOSTIC] Login click failed.\nError: ${clickErr.message}\n\nChecking if popup blocked the click...` 
+                    caption: `[DIAGNOSTIC] Primary click failed. Error: ${clickErr.message}. Executing fallback...` 
                 });
                 
-                // Emergency Fallback: Force click via JavaScript
+                // Emergency Fallback: Force click every element matching the login keywords
                 await page.evaluate(() => {
-                    const btn = Array.from(document.querySelectorAll('button, div, span, input'))
-                        .find(el => /LOGIN|SIGN IN|SHIGA/i.test(el.innerText || el.value || ''));
-                    if (btn) btn.click();
+                    const targets = Array.from(document.querySelectorAll('button, div, span, input, a'))
+                        .filter(el => /LOGIN|SIGN IN|SHIGA|ENTRAR/i.test(el.innerText || el.value || ''));
+                    targets.forEach(t => t.click());
                 });
             }
             
-            await page.waitForLoadState('networkidle').catch(() => {});
+            // Wait for the URL to change to the dashboard
+            await page.waitForURL('**/user', { timeout: 10000 }).catch(() => {});
         }
+
 
         await updateStatus('[SYSTEM] Verifying dashboard...');
         await page.goto('https://www.wsjobs-ng.com/user');
@@ -513,90 +520,6 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
     }
 });
 
-
-
-bot.onText(/^\/testlogin$/i, async (msg) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
-
-    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Initializing Playwright Firefox...');
-    
-    const updateStatus = async (text) => {
-        await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
-    };
-
-    let browser = null;
-    try {
-        // Playwright is smart enough to find its own Firefox binary
-                // Tell the code to look in node_modules instead of the default .cache
-        process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
-
-        browser = await firefox.launch({ 
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
-
-        
-                // 2. Create a clean context (Stealth Mode)
-        const context = await browser.newContext({
-            // Firefox uses the User-Agent and Viewport to determine mobile layout
-            userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
-            viewport: { width: 412, height: 915 },
-            // isMobile and hasTouch removed to fix the Firefox error
-        });
-
-
-        const page = await context.newPage();
-
-        // THE SNIPER & STEALTH
-        await page.addInitScript(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => false });
-            
-            setInterval(() => {
-                const okBtn = Array.from(document.querySelectorAll('*'))
-                    .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
-                if (okBtn) {
-                    okBtn.click();
-                    document.body.style.filter = 'none';
-                    document.body.style.overflow = 'auto';
-                    document.body.style.pointerEvents = 'auto';
-                }
-            }, 250);
-        });
-
-        await updateStatus('[SYSTEM] Navigating to wsjobs-ng...');
-        await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(5000); // Wait for popup
-
-        // LOGIN LOGIC
-        const loginInput = await page.$('input[type="text"], input[type="tel"]');
-        if (loginInput) {
-            await updateStatus('[SYSTEM] Filling credentials...');
-            await loginInput.fill('09163916500');
-            await page.fill('input[type="password"]', 'Emmamama');
-            
-            const loginBtn = page.locator('text=/LOGIN|SIGN IN|SHIGA/i').first();
-            await loginBtn.click();
-            await page.waitForLoadState('networkidle');
-        }
-
-        await updateStatus('[SYSTEM] Verifying dashboard...');
-        await page.goto('https://www.wsjobs-ng.com/user');
-        await page.waitForTimeout(4000);
-        
-        const buffer = await page.screenshot({ fullPage: false });
-        
-        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-        await bot.sendPhoto(chatId, buffer, { 
-            caption: '[SUCCESS] Firefox Login Complete\n\nEngine: Playwright Firefox\nPopup: Bypassed via DOM Sniper' 
-        });
-
-    } catch (err) {
-        await updateStatus(`[ERROR] Playwright Session Failed: ${err.message}`);
-    } finally {
-        if (browser) await browser.close();
-    }
-});
 
 
 
