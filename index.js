@@ -2141,32 +2141,23 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             await masterPage.goto('https://www.wsjobs-ng.com/account');
         }
 
-          // --- 3. YELLOW-PRIORITY BALANCE SCRAPER (INITIAL) ---
-        await updateStatus('[SYSTEM] Scanning Yellow Balance Layer...');
+
+                // --- 3. PRECISION BALANCE SCRAPER (INITIAL) ---
+        await updateStatus('[SYSTEM] Scanning Initial Balance...');
         initialBalanceNum = await masterPage.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('div, span, p, b, h1, h2'));
-            
-            // 1. Target the exact Wsjob Yellow (rgb 255, 235, 59)
-            const yellowEl = elements.find(el => {
-                const style = window.getComputedStyle(el);
-                const isYellow = style.color === 'rgb(255, 235, 59)' || style.color === 'yellow';
-                return isYellow && /\d/.test(el.innerText) && el.offsetHeight > 0;
-            });
-
-            if (yellowEl) {
-                // Clean the string: remove commas/symbols, keep numbers and dots
-                return parseFloat(yellowEl.innerText.replace(/[^0-9.]/g, '')) || 0;
-            }
-
-            // 2. Fallback: If yellow scan fails, hunt for decimals but ignore the phone number
             const allText = document.body.innerText;
-            const matches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
-            if (matches) {
-                const nums = matches
+            const decimalMatches = allText.match(/\d+\.\d{2}/g);
+            if (decimalMatches) {
+                const nums = decimalMatches.map(n => parseFloat(n));
+                return Math.max(...nums);
+            }
+            const generalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
+            if (generalMatches) {
+                const numbers = generalMatches
                     .map(n => n.replace(/,/g, ''))
                     .map(n => parseFloat(n))
-                    .filter(n => n > 0 && n < 100000); // Kills phone number interference
-                return nums.length > 0 ? Math.max(...nums) : 0;
+                    .filter(n => n > 100 && n < 100000); 
+                return numbers.length > 0 ? Math.max(...numbers) : 0;
             }
             return 0;
         });
@@ -2196,7 +2187,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             await p.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
         }
 
-                // --- 5. SYNCHRONIZED STRIKE ---
+        // --- 5. SYNCHRONIZED STRIKE ---
         await updateStatus('[SYSTEM] EXECUTE SIMULTANEOUS SEND...');
         await Promise.all(pages.map(async (p, idx) => {
             const targetIdx = Math.floor(idx / 2);
@@ -2219,17 +2210,15 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         // --- 6. COORDINATED "MODAL-AWARE" CONFIRM ---
         await updateStatus('[SYSTEM] COORDINATED CONFIRM');
         await Promise.all(pages.map(p => p.evaluate(() => {
-            // 1. Find the modal container (the dark box with the white bottom)
             const modal = Array.from(document.querySelectorAll('div')).find(el => 
                 (el.innerText?.includes('confirm') || el.innerText?.includes('confirmar')) && 
                 el.offsetHeight > 100 && el.offsetHeight < 400
             );
 
             if (modal) {
-                // 2. Target the 'confirm' side specifically (the right 50% of the button area)
                 const rect = modal.getBoundingClientRect();
-                const x = rect.left + (rect.width * 0.75); // Click 75% across the width
-                const y = rect.top + (rect.height - 30);    // Click near the bottom
+                const x = rect.left + (rect.width * 0.75); 
+                const y = rect.top + (rect.height - 30);   
 
                 const evData = { view: window, bubbles: true, clientX: x, clientY: y };
                 const clickTarget = document.elementFromPoint(x, y) || modal;
@@ -2238,7 +2227,6 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                     clickTarget.dispatchEvent(new MouseEvent(t, evData))
                 );
             } else {
-                // Fallback: If no modal, hunt for any clickable element with the text
                 const btn = Array.from(document.querySelectorAll('*')).find(el => 
                     /confirm|confirmar/i.test(el.innerText) && el.offsetHeight > 0
                 );
@@ -2246,47 +2234,55 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         })));
 
+        await masterPage.waitForTimeout(3000);
 
-        const finalSnap = await page.screenshot({ type: 'png' });
+        // FIX: Changed 'page' to 'masterPage' to resolve undefined crash
+        const finalTaskSnap = await masterPage.screenshot({ type: 'png' });
 
-                 // --- 7. YELLOW-PRIORITY BALANCE SCRAPER (FINAL) ---
+        // --- 7. PRECISION BALANCE SCRAPER (FINAL) ---
+        await updateStatus('[SYSTEM] Fetching Final Balance...');
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-        await masterPage.waitForTimeout(4000);
+        
+        // Wait 5 seconds to let the server update the visual balance
+        await masterPage.waitForTimeout(5000);
 
         const finalBalanceNum = await masterPage.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('div, span, p, b'));
-            const yellowEl = elements.find(el => {
-                const style = window.getComputedStyle(el);
-                return (style.color === 'rgb(255, 235, 59)' || style.color === 'yellow') && /\d/.test(el.innerText);
-            });
-
-            if (yellowEl) {
-                return parseFloat(yellowEl.innerText.replace(/[^0-9.]/g, '')) || 0;
+            const allText = document.body.innerText;
+            const decimalMatches = allText.match(/\d+\.\d{2}/g);
+            if (decimalMatches) {
+                const nums = decimalMatches.map(n => parseFloat(n));
+                return Math.max(...nums);
+            }
+            const generalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
+            if (generalMatches) {
+                const numbers = generalMatches
+                    .map(n => n.replace(/,/g, ''))
+                    .map(n => parseFloat(n))
+                    .filter(n => n > 100 && n < 100000); 
+                return numbers.length > 0 ? Math.max(...numbers) : 0;
             }
             return 0;
         });
 
-                // --- MATH EXECUTION ---
+        // --- MATH EXECUTION ---
         const diff = finalBalanceNum - initialBalanceNum;
         const profitText = diff > 0 ? diff.toFixed(2) : "0.00";
         
         await bot.deleteMessage(chatId, msgId).catch(() => {});
         
-        // ADDED: filename option to prevent EFATAL buffer error
         await bot.sendPhoto(chatId, finalTaskSnap, { 
             caption: `Profit: <code>+${profitText}</code>\nBalance: <code>${finalBalanceNum.toLocaleString(undefined, {minimumFractionDigits: 2})}</code>`,
             parse_mode: 'HTML'
         }, { filename: 'task_result.png' });
 
     } catch (err) {
-        // Using chatId consistent with your variable definition
         await bot.sendMessage(chatId, `[STRIKE FAILED]: ${err.message}`);
     } finally {
         if (context) {
             await context.close().catch(() => {});
         }
     }
-}); // Properly closes the bot.onText listener
+});
 
 
 
