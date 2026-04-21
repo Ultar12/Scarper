@@ -415,17 +415,19 @@ bot.onText(/\/m4usign/i, (msg) => {
 });
 
 
+
 bot.onText(/^\/testlogin$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Initializing Playwright Firefox...');
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Initializing Firefox with Screen Recording...');
     
     const updateStatus = async (text) => {
         await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
     };
 
     let browser = null;
+    let context = null;
     try {
         process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
 
@@ -434,17 +436,20 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
             args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
 
-        const context = await browser.newContext({
+        // 1. Setup Context with Video Recording
+        context = await browser.newContext({
             userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
             viewport: { width: 412, height: 915 },
+            recordVideo: {
+                dir: 'videos/', // Files will be saved here
+                size: { width: 412, height: 915 }
+            }
         });
 
         const page = await context.newPage();
 
         await page.addInitScript(() => {
             Object.defineProperty(navigator, 'webdriver', { get: () => false });
-            
-            // Accelerated Sniper (150ms) to ensure popup dies fast
             setInterval(() => {
                 const okBtn = Array.from(document.querySelectorAll('*'))
                     .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
@@ -452,69 +457,52 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
                     okBtn.click();
                     document.body.style.filter = 'none';
                     document.body.style.overflow = 'auto';
-                    document.body.style.pointerEvents = 'auto';
                 }
             }, 150);
         });
 
-        await updateStatus('[SYSTEM] Navigating to wsjobs-ng...');
+        await updateStatus('[SYSTEM] Recording started. Navigating...');
         await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(5000); 
 
-                const loginInput = await page.$('input[type="text"], input[type="tel"], input[placeholder*="asusu"], input[placeholder*="Conta"]');
+        const loginInput = await page.$('input[type="text"], input[type="tel"], input[placeholder*="asusu"], input[placeholder*="Conta"]');
         if (loginInput) {
             await updateStatus('[SYSTEM] Filling credentials...');
-            
-            // Using broad selectors to ensure fields are populated regardless of language
             await page.fill('input[type="text"], input[type="tel"]', '09163916500');
             await page.fill('input[type="password"]', 'Emmamama');
             
-            await updateStatus('[SYSTEM] Attempting to click Login...');
-            
             try {
-                // Updated Regex to include ENTRAR (Portuguese) found in your screenshot
-                // Using .last() because the submit button is usually below the tab switcher
                 const loginBtn = page.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last();
-                
-                // dispatchEvent bypasses visibility/overlay checks that usually cause timeouts
                 await loginBtn.dispatchEvent('click', { timeout: 8000 });
             } catch (clickErr) {
-                // Diagnostic screenshot if the primary click fails
-                const diagBuffer = await page.screenshot({ fullPage: false });
-                await bot.sendPhoto(chatId, diagBuffer, { 
-                    caption: `[DIAGNOSTIC] Primary click failed. Error: ${clickErr.message}. Executing fallback...` 
-                });
-                
-                // Emergency Fallback: Force click every element matching the login keywords
-                await page.evaluate(() => {
-                    const targets = Array.from(document.querySelectorAll('button, div, span, input, a'))
-                        .filter(el => /LOGIN|SIGN IN|SHIGA|ENTRAR/i.test(el.innerText || el.value || ''));
-                    targets.forEach(t => t.click());
-                });
+                // Diagnostic screenshot inside the video flow
+                await page.screenshot({ path: 'debug.png' });
             }
             
-            // Wait for the URL to change to the dashboard
-            await page.waitForURL('**/user', { timeout: 10000 }).catch(() => {});
+            await page.waitForURL('**/user', { timeout: 15000 }).catch(() => {});
         }
 
+        await updateStatus('[SYSTEM] Finalizing recording...');
+        await page.goto('https://www.wsjobs-ng.com/user').catch(() => {});
+        await page.waitForTimeout(5000); // Record a few extra seconds of the dashboard
 
-        await updateStatus('[SYSTEM] Verifying dashboard...');
-        await page.goto('https://www.wsjobs-ng.com/user');
-        await page.waitForTimeout(4000);
+        // 2. IMPORTANT: Close context to flush the video file to disk
+        const video = page.video();
+        await context.close(); 
         
-        const buffer = await page.screenshot({ fullPage: false });
-        
+        if (video) {
+            const videoPath = await video.path();
+            await bot.sendVideo(chatId, videoPath, { 
+                caption: 'Session Recording: Firefox Login Attempt' 
+            });
+            // Clean up the file after sending
+            if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
+        }
+
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-        await bot.sendPhoto(chatId, buffer, { 
-            caption: '[SUCCESS] Firefox Login Process Finished.\n\nCheck the image above for final state.' 
-        });
 
     } catch (err) {
-        await updateStatus(`[ERROR] Playwright Session Failed: ${err.message}`);
-        if (page) {
-            const crashSnap = await page.screenshot().catch(() => null);
-            if (crashSnap) await bot.sendPhoto(chatId, crashSnap, { caption: 'Crash State Screenshot' });
-        }
+        await updateStatus(`[ERROR] Session Failed: ${err.message}`);
     } finally {
         if (browser) await browser.close();
     }
