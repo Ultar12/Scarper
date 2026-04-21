@@ -447,26 +447,52 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
         const page = await context.newPage();
 
         // THE GLOBAL SNIPER: Targets the "OK" button on ANY page (Login or Homepage)
+                // THE HUMAN MOUSE SNIPER
         await page.addInitScript(() => {
             Object.defineProperty(navigator, 'webdriver', { get: () => false });
             
             setInterval(() => {
-                // Find the OK button
+                // 1. Find the OK button
                 const okBtn = Array.from(document.querySelectorAll('*'))
                     .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
                 
                 if (okBtn) {
-                    okBtn.click();
-                    // Force remove blurs or overlays that block the dashboard
-                    document.body.style.setProperty('filter', 'none', 'important');
-                    document.body.style.setProperty('overflow', 'auto', 'important');
-                    
-                    // Specific fix for the "Notice" popup overlay if it lingers
-                    const overlays = document.querySelectorAll('[class*="mask"], [class*="overlay"], [class*="modal"]');
-                    overlays.forEach(over => over.style.display = 'none');
+                    // 2. HUMAN-STYLE CLICK: Trigger a sequence of real pointer events
+                    const rect = okBtn.getBoundingClientRect();
+                    const x = rect.left + rect.width / 2;
+                    const y = rect.top + rect.height / 2;
+
+                    // Simulate a physical touch/mouse sequence
+                    const events = ['mousedown', 'mouseup', 'click'];
+                    events.forEach(type => {
+                        okBtn.dispatchEvent(new MouseEvent(type, {
+                            view: window,
+                            bubbles: true,
+                            cancelable: true,
+                            clientX: x,
+                            clientY: y
+                        }));
+                    });
+
+                    // 3. NUCLEAR OPTION: If the button is still there after 1 second, 
+                    // just delete the entire ad from the website's memory.
+                    setTimeout(() => {
+                        const modal = okBtn.closest('div[class*="modal"], div[class*="mask"], div[class*="popup"]');
+                        if (modal) modal.remove();
+                        
+                        // Clean up the blurred background
+                        document.body.style.setProperty('filter', 'none', 'important');
+                        document.body.style.setProperty('overflow', 'auto', 'important');
+                        document.body.style.setProperty('pointer-events', 'auto', 'important');
+                        
+                        // Remove any dark overlays
+                        const overlays = document.querySelectorAll('[class*="mask"], [class*="overlay"]');
+                        overlays.forEach(o => o.remove());
+                    }, 1000);
                 }
-            }, 200); 
+            }, 500); // Check every half-second
         });
+
 
         await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(4000); 
