@@ -420,14 +420,13 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Initializing Firefox with Screen Recording...');
-    
-    const updateStatus = async (text) => {
-        await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
-    };
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Starting Firefox recording...');
+    const videoDir = path.join(__dirname, 'videos');
+    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
 
     let browser = null;
     let context = null;
+
     try {
         process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
 
@@ -436,73 +435,75 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
             args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
 
-        // 1. Setup Context with Video Recording
         context = await browser.newContext({
             userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
             viewport: { width: 412, height: 915 },
             recordVideo: {
-                dir: 'videos/', // Files will be saved here
+                dir: videoDir,
                 size: { width: 412, height: 915 }
             }
         });
 
         const page = await context.newPage();
 
+        // THE GLOBAL SNIPER: Targets the "OK" button on ANY page (Login or Homepage)
         await page.addInitScript(() => {
             Object.defineProperty(navigator, 'webdriver', { get: () => false });
+            
             setInterval(() => {
+                // Find the OK button
                 const okBtn = Array.from(document.querySelectorAll('*'))
                     .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
+                
                 if (okBtn) {
                     okBtn.click();
-                    document.body.style.filter = 'none';
-                    document.body.style.overflow = 'auto';
+                    // Force remove blurs or overlays that block the dashboard
+                    document.body.style.setProperty('filter', 'none', 'important');
+                    document.body.style.setProperty('overflow', 'auto', 'important');
+                    
+                    // Specific fix for the "Notice" popup overlay if it lingers
+                    const overlays = document.querySelectorAll('[class*="mask"], [class*="overlay"], [class*="modal"]');
+                    overlays.forEach(over => over.style.display = 'none');
                 }
-            }, 150);
+            }, 200); 
         });
 
-        await updateStatus('[SYSTEM] Recording started. Navigating...');
         await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(5000); 
+        await page.waitForTimeout(4000); 
 
-        const loginInput = await page.$('input[type="text"], input[type="tel"], input[placeholder*="asusu"], input[placeholder*="Conta"]');
+        // LOGIN PROCESS
+        const loginInput = await page.$('input[type="text"], input[type="tel"]');
         if (loginInput) {
-            await updateStatus('[SYSTEM] Filling credentials...');
             await page.fill('input[type="text"], input[type="tel"]', '09163916500');
             await page.fill('input[type="password"]', 'Emmamama');
             
-            try {
-                const loginBtn = page.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last();
-                await loginBtn.dispatchEvent('click', { timeout: 8000 });
-            } catch (clickErr) {
-                // Diagnostic screenshot inside the video flow
-                await page.screenshot({ path: 'debug.png' });
-            }
+            const loginBtn = page.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last();
+            await loginBtn.dispatchEvent('click');
             
+            // Wait for navigation to complete
             await page.waitForURL('**/user', { timeout: 15000 }).catch(() => {});
         }
 
-        await updateStatus('[SYSTEM] Finalizing recording...');
-        await page.goto('https://www.wsjobs-ng.com/user').catch(() => {});
-        await page.waitForTimeout(5000); // Record a few extra seconds of the dashboard
+        // HOMEPAGE CHECK
+        // The sniper will work here automatically as the "Notice" appears
+        await page.waitForTimeout(6000); 
 
-        // 2. IMPORTANT: Close context to flush the video file to disk
+        // Finalize Video
         const video = page.video();
         await context.close(); 
         
         if (video) {
             const videoPath = await video.path();
             await bot.sendVideo(chatId, videoPath, { 
-                caption: 'Session Recording: Firefox Login Attempt' 
+                caption: 'Session Video: Login + Homepage Sniper Check' 
             });
-            // Clean up the file after sending
-            if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
+            setTimeout(() => { if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath); }, 5000);
         }
 
-        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+        await bot.deleteMessage(chat_id, statusMsg.message_id).catch(() => {});
 
     } catch (err) {
-        await updateStatus(`[ERROR] Session Failed: ${err.message}`);
+        await bot.sendMessage(chatId, `[ERROR]: ${err.message}`);
     } finally {
         if (browser) await browser.close();
     }
