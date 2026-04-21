@@ -231,16 +231,14 @@ async function clearOnboardingPopups(page, updateStatus) {
 
 
 
-    
-
-   async function performM4USignIn(chatId) {
+async function performM4USignIn(chatId) {
     let browser = null;
     let context = null;
     let page = null;
     const videoDir = path.join(__dirname, 'videos');
     if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
 
-    // Helper to update status safely within this function's scope
+    // Helper to update status
     const updateStatus = async (text) => {
         console.log(text);
         return await bot.sendMessage(chatId, text).catch(() => {});
@@ -249,7 +247,6 @@ async function clearOnboardingPopups(page, updateStatus) {
     try {
         process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
         
-        // Launching Firefox (as per your specific setup for Heroku/Playwright)
         browser = await firefox.launch({ 
             headless: true, 
             args: ['--no-sandbox', '--disable-setuid-sandbox'] 
@@ -263,7 +260,7 @@ async function clearOnboardingPopups(page, updateStatus) {
         
         page = await context.newPage();
 
-        // --- PHASE 1: LOGIN (VUE-SAFE INJECTION) ---
+        // --- PHASE 1: LOGIN (THE VIDEO-PROVEN METHOD) ---
         await updateStatus('[SYSTEM] Navigating to M4U Login...');
         await page.goto('https://taskm4u.com/#/login', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(5000);
@@ -271,45 +268,49 @@ async function clearOnboardingPopups(page, updateStatus) {
         const needsLogin = await page.evaluate(() => !!document.querySelector('input[placeholder*="phone number"]'));
 
         if (needsLogin) {
-            await updateStatus('[SYSTEM] Injecting credentials (Vue-Safe)...');
+            await updateStatus('[SYSTEM] Injecting credentials...');
             
-            // 1. Playwright's native .fill() perfectly triggers Vue's internal state updates
+            // Reverted to your exact .type() method that successfully bypassed the UI in your video
             const phoneInput = page.locator('input[placeholder*="phone number"]').first();
-            await phoneInput.fill('Staring');
-            await page.waitForTimeout(500);
+            await phoneInput.click();
+            await phoneInput.type('Staring', { delay: 100 });
 
             const passInput = page.locator('input[placeholder*="password"]').first();
-            await passInput.fill('Emmama');
-            await page.waitForTimeout(500);
+            await passInput.click();
+            await passInput.type('Emmama', { delay: 100 });
 
-            // 2. Playwright Force Click
-            try {
-                const loginBtn = page.locator('button, div, span').filter({ hasText: /^Login$/ }).first();
-                await loginBtn.click({ force: true, delay: 150 });
-            } catch (e) {
-                await page.evaluate(() => {
-                    const btn = Array.from(document.querySelectorAll('button, div, span')).find(el => el.innerText?.trim() === 'Login');
-                    if(btn) btn.click();
+            await page.waitForTimeout(1000);
+
+            // The exact broadcast click from your original code
+            await page.evaluate(() => {
+                Array.from(document.querySelectorAll('*')).forEach(el => {
+                    if (el.innerText && el.innerText.trim() === 'Login' && el.offsetHeight > 0) {
+                        el.click();
+                        // Backup dispatch
+                        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                    }
                 });
+            });
+
+            // --- THE TOKEN WAITING ROOM ---
+            await updateStatus('[SYSTEM] Login clicked. Waiting for server to authenticate...');
+            
+            try {
+                // Wait up to 15 seconds for the login boxes to disappear (meaning success)
+                await page.waitForFunction(() => {
+                    return !document.querySelector('input[placeholder*="phone number"]');
+                }, { timeout: 15000 });
+            } catch (e) {
+                // If the boxes are still there after 15 seconds, the login failed
+                throw new Error("Site rejected the credentials or the server is unresponsive.");
             }
 
-            // 3. The Token Waiting Room
-            await updateStatus('[SYSTEM] Waiting for server authentication token to save...');
-            await page.waitForFunction(() => !document.querySelector('input[placeholder*="phone number"]'), { timeout: 15000 }).catch(() => {});
-            
-            const stillOnLogin = await page.evaluate(() => !!document.querySelector('input[placeholder*="phone number"]'));
-            
-            if (stillOnLogin) {
-                // Throwing an error here triggers the catch block which WILL SEND THE VIDEO
-                throw new Error("Site rejected the login credentials or blocked the click. Cannot proceed to check-in.");
-            }
-
-            // Lock the auth token into localStorage before teleporting
-            await page.waitForTimeout(4000); 
+            // Give the browser 3 extra seconds to lock the auth cookie into memory
+            await page.waitForTimeout(3000); 
         }
 
         // --- PHASE 2: TELEPORT TO SIGN-IN ---
-        await updateStatus('[SYSTEM] Teleporting to Check-in page...');
+        await updateStatus('[SYSTEM] Authentication confirmed. Teleporting to Check-in page...');
         await page.goto('https://taskm4u.com/#/signIn', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(5000);
 
@@ -343,44 +344,46 @@ async function clearOnboardingPopups(page, updateStatus) {
         });
 
         const finalSnap = await page.screenshot({ type: 'png' });
-        const video = page.video();
-        const vPath = video ? await video.path().catch(() => null) : null;
+        
+        let vPath = null;
+        if (page && page.video()) {
+            vPath = await page.video().path().catch(() => null);
+        }
 
         if (finalStatus === "SUCCESS") {
             await bot.sendPhoto(chatId, finalSnap, { caption: "✅ M4U Check-in Success." });
             await context.close();
             if (vPath && fs.existsSync(vPath)) fs.unlinkSync(vPath);
         } else {
-            // Throw error to push to catch block for unified error handling
             throw new Error(`Check-in failed. Button state: ${checkInResult}`);
         }
 
     } catch (err) {
-        // --- GLOBAL CRASH HANDLER (NOW GUARANTEES VIDEO) ---
+        // --- BULLETPROOF CRASH HANDLER ---
         await updateStatus(`⚠️ M4U Crash: ${err.message}`);
         
         let vPath = null;
         let crashSnap = null;
 
         if (page) {
-            try {
-                crashSnap = await page.screenshot({ type: 'png' });
-                if (page.video()) vPath = await page.video().path().catch(() => null);
-            } catch(e) {}
+            try { crashSnap = await page.screenshot({ type: 'png' }); } catch(e) {}
+            try { if (page.video()) vPath = await page.video().path().catch(() => null); } catch(e) {}
         }
 
-        // CRITICAL: You MUST close the context for Playwright to finish writing the MP4 file to disk
+        // 1. MUST close the context so Playwright finalizes and saves the MP4 file
         if (context) await context.close().catch(() => {});
 
-        // Send Screenshot
+        // 2. Wait 2 full seconds for the OS to release the file lock
+        await new Promise(r => setTimeout(r, 2000));
+
+        // 3. Send Screenshot
         if (crashSnap) {
             await bot.sendPhoto(chatId, crashSnap, { caption: `[DIAGNOSTIC] Screen at moment of failure.` }).catch(() => {});
         }
 
-        // Send Video
+        // 4. Send Video safely
         if (vPath && fs.existsSync(vPath)) {
             await bot.sendVideo(chatId, vPath, { caption: `[DIAGNOSTIC VIDEO] Session Recording` }).catch(() => {});
-            // Clean up Heroku memory
             setTimeout(() => { if (fs.existsSync(vPath)) fs.unlinkSync(vPath); }, 5000);
         }
 
@@ -388,6 +391,7 @@ async function clearOnboardingPopups(page, updateStatus) {
         if (browser) await browser.close().catch(() => {});
     }
 }
+
  
 
 // --- 4. TELEGRAM COMMAND LISTENERS ---
