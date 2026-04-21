@@ -1810,7 +1810,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         // 2. IMPORTANT: Wait for the selection animation to finish and button to stabilize
         await page.waitForTimeout(3000);
 
-        // 3. NUCLEAR BUTTON STRIKE
+                // --- 3. NUCLEAR BUTTON STRIKE (FIREFOX COMPATIBLE) ---
         await page.evaluate(() => {
             const mainBtn = Array.from(document.querySelectorAll('*')).find(b => 
                 (b.innerText?.includes('WITHDRAW NOW') || b.innerText?.includes('SACAR AGORA')) && 
@@ -1819,51 +1819,70 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             );
 
             if (mainBtn) {
-                // Get fresh coordinates of the button's center
                 const rect = mainBtn.getBoundingClientRect();
                 const x = rect.left + rect.width / 2;
                 const y = rect.top + rect.height / 2;
 
-                // Execute a geometric touch sequence (Bypasses most blockers)
-                const events = ['touchstart', 'touchend', 'mousedown', 'mouseup', 'click'];
-                events.forEach(name => {
-                    const ev = (name.includes('touch')) 
-                        ? new TouchEvent(name, { bubbles: true, touches: [{ clientX: x, clientY: y }] })
-                        : new MouseEvent(name, { bubbles: true, clientX: x, clientY: y, view: window });
-                    mainBtn.dispatchEvent(ev);
+                // Fire coordinate-based MouseEvents (Works on Firefox/Mobile)
+                const createEvent = (type) => new MouseEvent(type, {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window,
+                    clientX: x,
+                    clientY: y,
+                    buttons: 1
                 });
+
+                // Human sequence: Press down, release, then click
+                mainBtn.dispatchEvent(createEvent('mousedown'));
+                mainBtn.dispatchEvent(createEvent('mouseup'));
+                mainBtn.dispatchEvent(createEvent('click'));
+                
+                return "STRIKE_EXECUTED";
             } else {
                 throw new Error("Withdraw button not found in DOM");
             }
         });
 
-        await page.waitForTimeout(2000);
+        // Physical Mouse Backup (Safe for Firefox)
+        await page.mouse.click(206, 320).catch(() => {}); 
 
+        await page.waitForTimeout(3000);
 
-        // Step 4: Password & Final Confirm
+        // --- 4. PASSWORD & FINAL CONFIRM ---
         const passInput = page.locator('input[type="password"], .modal-body input, [placeholder*="password"], [placeholder*="senha"]').last();
-        await passInput.waitFor({ state: 'visible', timeout: 10000 });
+        
+        // Wait up to 15s for the modal to be fully visible
+        await passInput.waitFor({ state: 'visible', timeout: 15000 });
         await passInput.fill('Emmamama');
 
         await page.evaluate(() => {
             const buttons = Array.from(document.querySelectorAll('button, div, span'));
             const finalBtn = buttons.find(b => 
-                (b.innerText?.includes('Confirm Withdrawal') || b.innerText?.includes('Confirmar')) && 
+                (b.innerText?.includes('Confirm') || b.innerText?.includes('Confirmar')) && 
                 b.offsetHeight > 0 && 
                 window.getComputedStyle(b).display !== 'none'
             );
-            if (finalBtn) finalBtn.click();
+            if (finalBtn) {
+                // Same geometric strike for the confirmation button
+                const rect = finalBtn.getBoundingClientRect();
+                const evData = { bubbles: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+                finalBtn.dispatchEvent(new MouseEvent('mousedown', evData));
+                finalBtn.dispatchEvent(new MouseEvent('mouseup', evData));
+                finalBtn.dispatchEvent(new MouseEvent('click', evData));
+            }
         });
 
         await page.waitForTimeout(5000);
         
         const finalSnap = await page.screenshot({ type: 'png' });
         
-        // FIXED: Using chatId (no underscore) and providing a filename
+        // Final Delivery
         await bot.sendPhoto(chatId, finalSnap, 
             { caption: `[SUCCESS] Withdrawal for ${targetAmount} submitted.` },
             { filename: 'withdraw_final.png' }
         );
+
 
         const video = page.video();
         await context.close();
