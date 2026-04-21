@@ -230,8 +230,7 @@ async function clearOnboardingPopups(page, updateStatus) {
 
 
 
-
-        async function performM4USignIn(chatId) {
+async function performM4USignIn(chatId) {
     let browser = null;
     let context = null;
     let page = null;
@@ -251,64 +250,74 @@ async function clearOnboardingPopups(page, updateStatus) {
 
         page = await context.newPage();
 
-        // THE SNIPER: Auto-kills "Close" buttons on news popups
-        await page.addInitScript(() => {
-            setInterval(() => {
-                const closeBtn = Array.from(document.querySelectorAll('*'))
-                    .find(el => el.innerText?.trim() === 'Close' && el.offsetHeight > 0);
-                if (closeBtn) closeBtn.click();
-            }, 500);
-        });
-
-        // 1. LOGIN
+        // 1. LOGIN PHASE
         await page.goto('https://taskm4u.com/#/login', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(5000);
+        await page.waitForTimeout(4000);
 
-        const loginInput = await page.$('input[type="text"], input[type="tel"]');
-        if (loginInput) {
-            await page.fill('input[type="text"]', 'Staring');
-            await page.fill('input[type="password"]', 'Emmama');
-            // Click Login using the text locator
+        const isLoginPage = await page.$('input[placeholder*="phone number"]');
+        if (isLoginPage) {
+            await page.fill('input[placeholder*="phone number"]', 'Staring');
+            await page.fill('input[placeholder*="password"]', 'Emmama');
             await page.locator('text=/Login/i').first().click();
-            await page.waitForTimeout(5000);
+            
+            // Wait for dashboard to load
+            await page.waitForURL('**/home', { timeout: 15000 }).catch(() => {});
         }
 
-        // 2. NAVIGATE TO CHECK-IN PAGE
-        // Instead of clicking the banner, we teleport directly to the check-in sub-route
-        await page.goto('https://taskm4u.com/#/signIn', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(6000);
+        // 2. THE WELCOME AD SNIPER
+        // Specifically targets the "Close" button on the Daily Rebate popup from your photo
+        await page.waitForTimeout(3000); // Give ad time to spawn
+        await page.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('*'));
+            const closeBtn = elements.find(el => 
+                el.innerText?.trim() === 'Close' && el.offsetHeight > 0
+            );
+            if (closeBtn) {
+                closeBtn.click();
+                // Remove the modal and mask immediately to unblock the page
+                const modal = closeBtn.closest('div[class*="modal"], div[class*="mask"], div[class*="van-popup"]');
+                if (modal) modal.remove();
+                const overlays = document.querySelectorAll('.van-overlay');
+                overlays.forEach(o => o.remove());
+            }
+        });
 
-        // 3. THE HUMAN STRIKE ON "CHECK IN NOW!"
+        await page.waitForTimeout(2000);
+
+        // 3. TELEPORT TO SIGN-IN
+        await page.goto('https://taskm4u.com/#/signIn', { waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(5000);
+
+        // 4. THE HUMAN STRIKE ON "CHECK IN NOW!"
         const checkInResult = await page.evaluate(async () => {
             const btn = Array.from(document.querySelectorAll('*'))
-                .find(el => (el.innerText?.includes('Check in Now') || el.innerText?.includes('Checked In')) && el.offsetHeight > 0);
+                .find(el => (el.innerText?.trim() === 'Check in Now!') && el.offsetHeight > 0);
 
-            if (!btn) return "NOT_FOUND";
-            if (btn.innerText.includes('Checked In')) return "ALREADY_DONE";
+            if (!btn) {
+                const already = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.includes('Checked In'));
+                return already ? "ALREADY_DONE" : "NOT_FOUND";
+            }
 
-            // Geometric click calculation
             const rect = btn.getBoundingClientRect();
             const x = rect.left + rect.width / 2;
             const y = rect.top + rect.height / 2;
 
-            // Dispatch sequence to mimic real touch
-            const events = ['touchstart', 'touchend', 'mousedown', 'mouseup', 'click'];
-            events.forEach(name => {
+            ['touchstart', 'touchend', 'mousedown', 'mouseup', 'click'].forEach(name => {
                 const ev = (name.includes('touch')) 
                     ? new TouchEvent(name, { bubbles: true, touches: [{ clientX: x, clientY: y }] })
                     : new MouseEvent(name, { bubbles: true, clientX: x, clientY: y });
                 btn.dispatchEvent(ev);
             });
 
-            return "CLICKED";
+            return "STRIKE_FIRED";
         });
 
-        await page.waitForTimeout(4000);
+        await page.waitForTimeout(3000);
 
-        // 4. VERIFICATION AND CAPTURE
+        // 5. VERIFICATION
         const finalStatus = await page.evaluate(() => {
             const txt = document.body.innerText;
-            if (txt.includes('Checked In')) return "SUCCESS";
+            if (txt.includes('Checked In') || txt.includes('Success')) return "SUCCESS";
             if (txt.includes('completing the task')) return "TASK_LOCKED";
             return "IDLE";
         });
@@ -316,22 +325,24 @@ async function clearOnboardingPopups(page, updateStatus) {
         const finalSnap = await page.screenshot({ type: 'png' });
 
         if (finalStatus === "SUCCESS" || checkInResult === "ALREADY_DONE") {
-            await bot.sendPhoto(chatId, finalSnap, { caption: "[VERIFIED] M4U Check-in Success." });
+            await bot.sendPhoto(chatId, finalSnap, { caption: "M4U Check-in Success." });
         } else if (finalStatus === "TASK_LOCKED") {
-            await bot.sendPhoto(chatId, finalSnap, { caption: "[LOCKED] M4U: Task not verified by site." });
+            await bot.sendPhoto(chatId, finalSnap, { caption: "M4U: Task not verified by site." });
         } else {
-            await bot.sendPhoto(chatId, finalSnap, { caption: "[FAILED] Check-in button did not respond to strike." });
+            await bot.sendPhoto(chatId, finalSnap, { caption: "Check-in button did not respond." });
         }
 
     } catch (err) {
         if (page) {
             const errSnap = await page.screenshot().catch(() => null);
-            await bot.sendPhoto(chatId, errSnap || Buffer.alloc(0), { caption: `[CRITICAL] M4U Failed: ${err.message}` });
+            await bot.sendPhoto(chatId, errSnap || Buffer.alloc(0), { caption: `M4U Failed: ${err.message}` });
         }
     } finally {
         if (browser) await browser.close();
     }
 }
+
+
 
 
 // --- 4. TELEGRAM COMMAND LISTENERS ---
