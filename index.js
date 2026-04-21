@@ -1676,6 +1676,15 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
 });
 
 
+const updateStatus = async (text) => {
+    await bot.editMessageText(text, { 
+        chat_id: chatId, 
+        message_id: statusMsg.message_id 
+    }).catch(() => {});
+};
+
+
+
 
 bot.onText(/\/withdraw\s+task/i, async (msg) => {
     const chatId = msg.chat.id.toString();
@@ -1777,7 +1786,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             return 0;
         });
 
-        const tiers = [50000, 26000, 23000, 20000, 18000, 15000, 12000];
+        const tiers = [50000, 26000, 23000, 20000, 18000, 15000];
         const targetAmount = tiers.find(t => rawBalance >= t);
 
         if (!targetAmount) {
