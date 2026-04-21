@@ -1826,30 +1826,28 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await page.waitForTimeout(3000);
 
     
-           // --- STEP 4: PASSWORD & FINAL CONFIRM ---
+                   // --- STEP 4: PASSWORD & FINAL CONFIRM (UPDATED) ---
         const passInput = page.locator('input[type="password"], .modal-body input, [placeholder*="password"], [placeholder*="senha"]').last();
         
         // 1. Wait for modal visibility
         await passInput.waitFor({ state: 'visible', timeout: 15000 });
         
-        // 2. Click and Type (More reliable than .fill() for triggering button activation)
+        // 2. Click and Type to ensure the site registers keypress events
         await passInput.click();
         await passInput.type('111111', { delay: 100 }); 
 
-        await page.waitForTimeout(1000);
+        await page.waitForTimeout(1500);
 
+        // 3. NUCLEAR CONFIRMATION STRIKE
+        await page.evaluate(async () => {
+            // A. DELETE BLOCKERS: Remove invisible "Glass Walls" (Overlays/Masks)
+            const blockers = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"], [class*="overlay"]');
+            blockers.forEach(el => el.remove());
 
-
-
-// 3. GEOMETRIC STRIKE ON CONFIRM BUTTON
-        await page.evaluate(() => {
-            const buttons = Array.from(document.querySelectorAll('button, div, span, p'));
-            
-            // Added 'Tabbatar Cirewa' to the search criteria
-            const finalBtn = buttons.find(b => 
-                (b.innerText?.includes('Tabbatar Cirewa') || 
-                 b.innerText?.includes('Confirm') || 
-                 b.innerText?.includes('Confirmar')) && 
+            // B. TARGET ACQUISITION: Find the green 'Tabbatar Cirewa' button
+            const elements = Array.from(document.querySelectorAll('button, div, span, p'));
+            const finalBtn = elements.find(b => 
+                (b.innerText?.includes('Tabbatar Cirewa') || b.innerText?.includes('Confirm')) && 
                 b.offsetHeight > 0 && 
                 window.getComputedStyle(b).display !== 'none'
             );
@@ -1859,31 +1857,35 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                 const x = rect.left + rect.width / 2;
                 const y = rect.top + rect.height / 2;
 
-                // Human-style event sequence (Firefox Compatible)
-                const evData = {
-                    bubbles: true,
-                    cancelable: true,
-                    view: window,
-                    clientX: x,
-                    clientY: y,
-                    buttons: 1
-                };
-
-                finalBtn.dispatchEvent(new MouseEvent('mousedown', evData));
-                finalBtn.dispatchEvent(new MouseEvent('mouseup', evData));
-                finalBtn.dispatchEvent(new MouseEvent('click', evData));
+                // C. EVENT BOMBARDMENT: Fire every possible event to force registration
+                const eventTypes = ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click'];
+                eventTypes.forEach(type => {
+                    const ev = new MouseEvent(type, {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window,
+                        clientX: x,
+                        clientY: y,
+                        buttons: 1
+                    });
+                    finalBtn.dispatchEvent(ev);
+                });
             }
         });
 
+        // 4. PHYSICAL BACKUP: Coordinates strike for 412x915 viewport
+        await page.mouse.click(300, 700).catch(() => {}); 
+        
         await page.waitForTimeout(5000);
 
-        
+        // 5. CAPTURE FINAL SCREENSHOT
         const finalSnap = await page.screenshot({ type: 'png' });
         
         await bot.sendPhoto(chatId, finalSnap, 
             { caption: `[SUCCESS] Withdrawal for ${targetAmount} submitted.` },
-            { filename: 'withdraw_final.png' } // MANDATORY to prevent EFATAL
+            { filename: 'withdraw_final.png' } 
         );
+
 
 
 
