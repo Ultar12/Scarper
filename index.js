@@ -309,10 +309,31 @@ async function performM4USignIn(chatId) {
             await page.waitForTimeout(3000); 
         }
 
-        // --- PHASE 2: TELEPORT TO SIGN-IN ---
+        /        // --- PHASE 2: TELEPORT TO SIGN-IN ---
         await updateStatus('[SYSTEM] Authentication confirmed. Teleporting to Check-in page...');
         await page.goto('https://taskm4u.com/#/signIn', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(5000);
+        
+        // Wait 4 seconds to let the page load AND the event modal to pop up
+        await page.waitForTimeout(4000);
+
+        // --- 2.5: POPUP SWEEPER (NEW) ---
+        await updateStatus('[SYSTEM] Sweeping welcome ads and overlays...');
+        await page.evaluate(() => {
+            // 1. Hunt down and click the "Close" button
+            Array.from(document.querySelectorAll('button, div, span, a')).forEach(el => {
+                if (el.innerText && el.innerText.trim() === 'Close' && el.offsetHeight > 0) {
+                    el.click();
+                    el.dispatchEvent(new MouseEvent('click', { bubbles: true, view: window }));
+                }
+            });
+
+            // 2. Annihilate the dark background masks just in case the click missed
+            const blockers = document.querySelectorAll('.van-overlay, .van-mask, [class*="mask"], [class*="overlay"]');
+            blockers.forEach(o => o.remove());
+        });
+        
+        // Wait 2 seconds for the modal fade-out animation to finish
+        await page.waitForTimeout(2000);
 
         // --- PHASE 3: THE CHECK-IN STRIKE ---
         await updateStatus('[SYSTEM] Attempting "Check in Now!" strike...');
@@ -336,6 +357,7 @@ async function performM4USignIn(chatId) {
         });
 
         await page.waitForTimeout(4000);
+
 
         // --- PHASE 4: VERIFICATION ---
         const finalStatus = await page.evaluate(() => {
