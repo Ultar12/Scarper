@@ -2144,25 +2144,41 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         }
 
 
-                // --- 3. PRECISION BALANCE SCRAPER (INITIAL) ---
+                        // --- 3. YELLOW-PRIORITY BALANCE SCRAPER (INITIAL) ---
         await updateStatus('[SYSTEM] Scanning Initial Balance...');
+        
+        // Force hard refresh to bypass browser cache
+        await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'networkidle2' });
+        await masterPage.waitForTimeout(2000); 
+
         initialBalanceNum = await masterPage.evaluate(() => {
-            const allText = document.body.innerText;
-            const decimalMatches = allText.match(/\d+\.\d{2}/g);
-            if (decimalMatches) {
-                const nums = decimalMatches.map(n => parseFloat(n));
-                return Math.max(...nums);
+            const elements = Array.from(document.querySelectorAll('div, span, p, b, h1, h2'));
+            
+            // 1. Target the exact Wsjob Yellow (rgb 255, 235, 59)
+            const yellowEl = elements.find(el => {
+                const style = window.getComputedStyle(el);
+                const isYellow = style.color === 'rgb(255, 235, 59)' || style.color === 'yellow';
+                return isYellow && /\d/.test(el.innerText) && el.offsetHeight > 0;
+            });
+
+            if (yellowEl) {
+                // Clean the string: remove commas/symbols, keep numbers and dots
+                return parseFloat(yellowEl.innerText.replace(/[^0-9.]/g, '')) || 0;
             }
-            const generalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
-            if (generalMatches) {
-                const numbers = generalMatches
+
+            // 2. Fallback: If yellow scan fails, hunt for decimals but ignore the phone number
+            const allText = document.body.innerText;
+            const matches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
+            if (matches) {
+                const nums = matches
                     .map(n => n.replace(/,/g, ''))
                     .map(n => parseFloat(n))
-                    .filter(n => n > 100 && n < 100000); 
-                return numbers.length > 0 ? Math.max(...numbers) : 0;
+                    .filter(n => n > 0 && n < 100000); 
+                return nums.length > 0 ? Math.max(...nums) : 0;
             }
             return 0;
         });
+
 
         await updateStatus(`[SYSTEM] Teleporting to Task Page...`);
         await masterPage.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
@@ -2236,7 +2252,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         })));
 
-        await masterPage.waitForTimeout(3000);
+        await masterPage.waitForTimeout(10000);
 
         // FIX: Changed 'page' to 'masterPage' to resolve undefined crash
         const finalTaskSnap = await masterPage.screenshot({ type: 'png' });
