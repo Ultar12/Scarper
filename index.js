@@ -1,3 +1,5 @@
+process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
+
 const fs = require('fs');
 const { execSync } = require('child_process');
 const express = require('express');
