@@ -2138,8 +2138,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await bot.sendMessage(chatId, `[STRIKE FAILED]: ${err.message}`);
     } finally {
         if (context) await context.close().catch(() => {});
-    }
-}); // Only one closing brace and parenthesis needed to close the listener
+    } // Only one closing brace and parenthesis needed to close the listener
  
 
 
