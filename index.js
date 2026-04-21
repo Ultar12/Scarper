@@ -1931,14 +1931,13 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     let initialBalanceNum = 0;
 
     try {
-        // --- 1. SMART ENGINE RECOVERY ---
+        // --- 1. ENGINE RECOVERY ---
         if (!browser || !browser.isConnected()) {
             process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
             browser = await firefox.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
             globalTaskBrowser = browser;
         }
 
-        // Reuse context if possible, or create fresh
         context = await browser.newContext({
             userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
             viewport: { width: 412, height: 915 }
@@ -1947,7 +1946,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         masterPage = await context.newPage();
         pages.push(masterPage);
 
-        // --- THE HUMAN SNIPER ---
+        // --- THE HUMAN SNIPER (MODAL KILLER) ---
         await masterPage.addInitScript(() => {
             setInterval(() => {
                 const okBtn = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
@@ -1964,12 +1963,11 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }, 300);
         });
 
-        // --- 2. FAST REFRESH LOGIC ---
+        // --- 2. PRE-STRIKE BALANCE SCAN ---
         await updateStatus('[SYSTEM] Synchronizing Account State...');
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await masterPage.waitForTimeout(3000);
 
-        // Check if login is needed
         if (await masterPage.$('input[type="password"]')) {
             await masterPage.fill('input[type="text"]', '09163916500');
             await masterPage.fill('input[type="password"]', 'Emmamama');
@@ -1978,44 +1976,21 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             await masterPage.goto('https://www.wsjobs-ng.com/account');
         }
 
-                // --- 3. YELLOW-PRIORITY BALANCE SCRAPER (FIXED) ---
         initialBalanceNum = await masterPage.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('div, span, p, b, h1, h2'));
-            
-            // 1. Target the Yellow Balance (rgb 255, 235, 59)
-            // This is the most accurate way because only the balance is yellow.
             const yellowEl = elements.find(el => {
                 const style = window.getComputedStyle(el);
-                const isYellow = style.color === 'rgb(255, 235, 59)' || style.color === 'yellow';
-                return isYellow && /\d/.test(el.innerText) && el.offsetHeight > 0;
+                return (style.color === 'rgb(255, 235, 59)' || style.color === 'yellow') && /\d/.test(el.innerText) && el.offsetHeight > 0;
             });
-
-            if (yellowEl) {
-                // Remove commas and currency symbols, keep only numbers and dots
-                const val = yellowEl.innerText.replace(/[^0-9.]/g, '');
-                return parseFloat(val) || 0;
-            }
-
-            // 2. FALLBACK: If yellow fails, look for money-like numbers but ignore phone numbers
-            const allText = document.body.innerText;
-            const matches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
-            if (matches) {
-                const numbers = matches
-                    .map(n => n.replace(/,/g, ''))
-                    .map(n => parseFloat(n))
-                    .filter(n => n > 0 && n < 100000); // Filter out phone numbers (>100k)
-                
-                return numbers.length > 0 ? Math.max(...numbers) : 0;
-            }
+            if (yellowEl) return parseFloat(yellowEl.innerText.replace(/[^0-9.]/g, '')) || 0;
             return 0;
         });
 
-
+        // --- 3. TARGET SCAN & TAB SPAWNING ---
         await updateStatus(`[SYSTEM] Teleporting to Task Page...`);
         await masterPage.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
         await masterPage.waitForTimeout(4000);
 
-        // --- 4. TARGET SCAN & TAB SPAWNING ---
         const targetCount = await masterPage.evaluate((suffix) => {
             const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim() === 'SEND');
             let found = 0;
@@ -2025,7 +2000,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             return found > 4 ? 4 : found;
         }, targetSuffix);
 
-        if (targetCount === 0) throw new Error(`Target ${targetSuffix} not found on page.`);
+        if (targetCount === 0) throw new Error(`Target ${targetSuffix} not found.`);
 
         const totalTabs = targetCount * 2;
         await updateStatus(`[SYSTEM] Found ${targetCount} targets. Launching ${totalTabs} Strike Tabs...`);
@@ -2036,14 +2011,11 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             await p.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
         }
 
-                // --- 5. SYNCHRONIZED STRIKE ---
-        await updateStatus('[SYSTEM] EXECUTE SIMULTANEOUS SEND...');
+        // --- 4. EXECUTE SIMULTANEOUS SEND ---
         await Promise.all(pages.map(async (p, idx) => {
             const targetIdx = Math.floor(idx / 2);
             await p.evaluate(({ suffix, index }) => {
-                const btns = Array.from(document.querySelectorAll('*')).filter(el => 
-                    el.innerText?.trim().toUpperCase() === 'SEND' && el.offsetHeight > 0
-                );
+                const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim().toUpperCase() === 'SEND' && el.offsetHeight > 0);
                 let matches = 0;
                 for (let btn of btns) {
                     if (btn.closest('div')?.innerText.includes(suffix)) {
@@ -2056,37 +2028,22 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
         await masterPage.waitForTimeout(3500);
 
-        // --- 6. COORDINATED "MODAL-AWARE" CONFIRM ---
-        await updateStatus('[SYSTEM] COORDINATED CONFIRM');
+        // --- 5. COORDINATED CONFIRM ---
         await Promise.all(pages.map(p => p.evaluate(() => {
-            // 1. Find the modal container (the dark box with the white bottom)
-            const modal = Array.from(document.querySelectorAll('div')).find(el => 
-                (el.innerText?.includes('confirm') || el.innerText?.includes('confirmar')) && 
-                el.offsetHeight > 100 && el.offsetHeight < 400
-            );
-
+            const modal = Array.from(document.querySelectorAll('div')).find(el => (el.innerText?.includes('confirm') || el.innerText?.includes('confirmar')) && el.offsetHeight > 100 && el.offsetHeight < 400);
             if (modal) {
-                // 2. Target the 'confirm' side specifically (the right 50% of the button area)
                 const rect = modal.getBoundingClientRect();
-                const x = rect.left + (rect.width * 0.75); // Click 75% across the width
-                const y = rect.top + (rect.height - 30);    // Click near the bottom
-
-                const evData = { view: window, bubbles: true, clientX: x, clientY: y };
+                const x = rect.left + (rect.width * 0.75);
+                const y = rect.top + (rect.height - 30);
                 const clickTarget = document.elementFromPoint(x, y) || modal;
-                
-                ['mousedown', 'mouseup', 'click'].forEach(t => 
-                    clickTarget.dispatchEvent(new MouseEvent(t, evData))
-                );
+                ['mousedown', 'mouseup', 'click'].forEach(t => clickTarget.dispatchEvent(new MouseEvent(t, { view: window, bubbles: true, clientX: x, clientY: y })));
             } else {
-                // Fallback: If no modal, hunt for any clickable element with the text
-                const btn = Array.from(document.querySelectorAll('*')).find(el => 
-                    /confirm|confirmar/i.test(el.innerText) && el.offsetHeight > 0
-                );
+                const btn = Array.from(document.querySelectorAll('*')).find(el => /confirm|confirmar/i.test(el.innerText) && el.offsetHeight > 0);
                 if (btn) btn.click();
             }
         })));
 
-                   // --- 7. ACCURATE MATH (YELLOW-PRIORITY SCRAPER) ---
+        // --- 6. POST-STRIKE MATH ---
         await masterPage.waitForTimeout(6000);
         const finalTaskSnap = await masterPage.screenshot({ type: 'png' });
 
@@ -2095,50 +2052,30 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
         const finalBalanceNum = await masterPage.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('div, span, p, b'));
-            
-            // 1. Target the Yellow Balance (Most accurate for 996.00 or 14,450.00)
             const yellowEl = elements.find(el => {
                 const style = window.getComputedStyle(el);
-                return (style.color === 'rgb(255, 235, 59)' || style.color === 'yellow') && 
-                       /\d/.test(el.innerText);
+                return (style.color === 'rgb(255, 235, 59)' || style.color === 'yellow') && /\d/.test(el.innerText);
             });
-
-            if (yellowEl) {
-                const val = yellowEl.innerText.replace(/[^0-9.]/g, '');
-                return parseFloat(val) || 0;
-            }
-
-            // 2. Fallback: Scan text but ignore phone numbers (>100,000)
-            const allText = document.body.innerText;
-            const matches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
-            if (matches) {
-                const nums = matches
-                    .map(n => n.replace(/,/g, ''))
-                    .map(n => parseFloat(n))
-                    .filter(n => n > 0 && n < 100000); 
-                
-                return nums.length > 0 ? Math.max(...nums) : 0;
-            }
+            if (yellowEl) return parseFloat(yellowEl.innerText.replace(/[^0-9.]/g, '')) || 0;
             return 0;
         });
 
-        // --- MATH EXECUTION ---
         const diff = finalBalanceNum - initialBalanceNum;
         const profitText = diff > 0 ? diff.toFixed(2) : "0.00";
         
         await bot.deleteMessage(chatId, msgId).catch(() => {});
-        
         await bot.sendPhoto(chatId, finalTaskSnap, { 
             caption: `Profit: <code>+${profitText}</code>\nBalance: <code>${finalBalanceNum.toLocaleString(undefined, {minimumFractionDigits: 2})}</code>`,
             parse_mode: 'HTML'
         }, { filename: 'task_result.png' });
 
     } catch (err) {
-        // Use chatId (camelCase) to match your variable definition
         await bot.sendMessage(chatId, `[STRIKE FAILED]: ${err.message}`);
     } finally {
         if (context) await context.close().catch(() => {});
-    } // Only one closing brace and parenthesis needed to close the listener
+    }
+});
+
  
 
 
