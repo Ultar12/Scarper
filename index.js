@@ -232,7 +232,7 @@ async function clearOnboardingPopups(page, updateStatus) {
 
 
         
-async function performM4USignIn(chat_id) {
+async function performM4USignIn(chatId) {
     let browser = null;
     let context = null;
     let page = null;
@@ -318,7 +318,7 @@ async function performM4USignIn(chat_id) {
 
         await page.waitForTimeout(4000);
 
-                // 5. VERIFY & SEND
+        // 5. VERIFY & SEND
         const finalStatus = await page.evaluate(() => {
             const txt = document.body.innerText;
             return (txt.includes('Checked In') || txt.includes('Success')) ? "SUCCESS" : "IDLE";
@@ -326,15 +326,16 @@ async function performM4USignIn(chat_id) {
 
         const finalSnap = await page.screenshot({ type: 'png' });
         
+        // If it worked, we don't need the video taking up space
         const video = page.video();
         await context.close(); 
         const vPath = await video.path().catch(() => null);
 
-        // FIX: Changed all chat_id to chatId
         if (finalStatus === "SUCCESS") {
             await bot.sendPhoto(chatId, finalSnap, { caption: "M4U Check-in Success." }, { filename: 'success.png' });
             if (vPath && fs.existsSync(vPath)) fs.unlinkSync(vPath);
         } else {
+            // FAILURE: Send screenshot AND the video record to see why it didn't fill
             await bot.sendPhoto(chatId, finalSnap, { caption: "Check-in failed. Sending video record..." }, { filename: 'failed.png' });
             if (vPath && fs.existsSync(vPath)) {
                 await bot.sendVideo(chatId, vPath, { caption: "M4U Diagnostic Video" });
@@ -344,13 +345,11 @@ async function performM4USignIn(chat_id) {
 
     } catch (err) {
         if (context) await context.close().catch(() => {});
-        // FIX: Changed chat_id to chatId on line 348
-        await bot.sendMessage(chatId, `M4U Crash: ${err.message}`);
+        await bot.sendMessage(chatId, `⚠️ M4U Crash: ${err.message}`);
     } finally {
         if (browser) await browser.close();
     }
 }
-
 
 
 // --- 4. TELEGRAM COMMAND LISTENERS ---
@@ -1784,70 +1783,72 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             }
         }, targetAmount);
 
-                // --- STEP 3: THE PROFESSIONAL WITHDRAWAL STRIKE ---
-        await page.waitForTimeout(3000); // Wait for amount selection to settle
+        // 2. IMPORTANT: Wait for the selection animation to finish and button to stabilize
+        await page.waitForTimeout(3000);
 
+                // --- 3. NUCLEAR BUTTON STRIKE (FIREFOX COMPATIBLE) ---
         await page.evaluate(() => {
-            // 1. CLEAR BLOCKERS: Kill any invisible masks or loading overlays
-            const overlays = document.querySelectorAll('.van-overlay, [class*="mask"], [class*="loading"]');
-            overlays.forEach(el => el.remove());
-
-            // 2. TARGET: Find the big green button
-            const btn = Array.from(document.querySelectorAll('*')).find(b => 
+            const mainBtn = Array.from(document.querySelectorAll('*')).find(b => 
                 (b.innerText?.includes('WITHDRAW NOW') || b.innerText?.includes('SACAR AGORA')) && 
-                b.offsetHeight > 0
+                b.offsetHeight > 0 && 
+                window.getComputedStyle(b).display !== 'none'
             );
 
-            if (btn) {
-                const rect = btn.getBoundingClientRect();
+            if (mainBtn) {
+                const rect = mainBtn.getBoundingClientRect();
                 const x = rect.left + rect.width / 2;
                 const y = rect.top + rect.height / 2;
 
-                // 3. PRECISION BOMBARDMENT: Fire Pointer and Mouse events
-                const events = ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click'];
-                events.forEach(type => {
-                    const ev = new MouseEvent(type, {
-                        bubbles: true,
-                        cancelable: true,
-                        view: window,
-                        clientX: x,
-                        clientY: y,
-                        buttons: 1
-                    });
-                    btn.dispatchEvent(ev);
+                // Fire coordinate-based MouseEvents (Works on Firefox/Mobile)
+                const createEvent = (type) => new MouseEvent(type, {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window,
+                    clientX: x,
+                    clientY: y,
+                    buttons: 1
                 });
+
+                // Human sequence: Press down, release, then click
+                mainBtn.dispatchEvent(createEvent('mousedown'));
+                mainBtn.dispatchEvent(createEvent('mouseup'));
+                mainBtn.dispatchEvent(createEvent('click'));
+                
+                return "STRIKE_EXECUTED";
+            } else {
+                throw new Error("Withdraw button not found in DOM");
             }
         });
 
-        // 4. COORDINATE FALLBACK: Direct tap on the button's center point
-        await page.mouse.click(206, 365).catch(() => {}); 
-
+        // Physical Mouse Backup (Safe for Firefox)
+        await page.mouse.click(206, 320).catch(() => {}); 
 
         await page.waitForTimeout(3000);
 
     
-                   // --- STEP 4: PASSWORD & FINAL CONFIRM (UPDATED) ---
+           // --- STEP 4: PASSWORD & FINAL CONFIRM ---
         const passInput = page.locator('input[type="password"], .modal-body input, [placeholder*="password"], [placeholder*="senha"]').last();
         
         // 1. Wait for modal visibility
         await passInput.waitFor({ state: 'visible', timeout: 15000 });
         
-        // 2. Click and Type to ensure the site registers keypress events
+        // 2. Click and Type (More reliable than .fill() for triggering button activation)
         await passInput.click();
         await passInput.type('111111', { delay: 100 }); 
 
-        await page.waitForTimeout(1500);
+        await page.waitForTimeout(1000);
 
-        // 3. NUCLEAR CONFIRMATION STRIKE
-        await page.evaluate(async () => {
-            // A. DELETE BLOCKERS: Remove invisible "Glass Walls" (Overlays/Masks)
+                // --- 3. NUCLEAR BUTTON STRIKE (WITH OVERLAY SNIPER) ---
+        await page.evaluate(() => {
+            // Physically remove any invisible "Glass Walls"
             const blockers = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"], [class*="overlay"]');
             blockers.forEach(el => el.remove());
-
-            // B. TARGET ACQUISITION: Find the green 'Tabbatar Cirewa' button
-            const elements = Array.from(document.querySelectorAll('button, div, span, p'));
-            const finalBtn = elements.find(b => 
-                (b.innerText?.includes('Tabbatar Cirewa') || b.innerText?.includes('Confirm')) && 
+            
+            const buttons = Array.from(document.querySelectorAll('button, div, span, p'));
+            const finalBtn = buttons.find(b => 
+                (b.innerText?.includes('Tabbatar Cirewa') || 
+                 b.innerText?.includes('Confirm') || 
+                 b.innerText?.includes('Confirmar')) && 
                 b.offsetHeight > 0 && 
                 window.getComputedStyle(b).display !== 'none'
             );
@@ -1857,35 +1858,35 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                 const x = rect.left + rect.width / 2;
                 const y = rect.top + rect.height / 2;
 
-                // C. EVENT BOMBARDMENT: Fire every possible event to force registration
-                const eventTypes = ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click'];
-                eventTypes.forEach(type => {
-                    const ev = new MouseEvent(type, {
-                        bubbles: true,
-                        cancelable: true,
-                        view: window,
-                        clientX: x,
-                        clientY: y,
-                        buttons: 1
-                    });
-                    finalBtn.dispatchEvent(ev);
-                });
+                const evData = {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window,
+                    clientX: x,
+                    clientY: y,
+                    buttons: 1
+                };
+
+                // Fire human-style sequence
+                finalBtn.dispatchEvent(new MouseEvent('mousedown', evData));
+                finalBtn.dispatchEvent(new MouseEvent('mouseup', evData));
+                finalBtn.dispatchEvent(new MouseEvent('click', evData));
             }
         });
 
-        // 4. PHYSICAL BACKUP: Coordinates strike for 412x915 viewport
+        // Physical backup tap at the expected coordinates
         await page.mouse.click(300, 700).catch(() => {}); 
         
         await page.waitForTimeout(5000);
 
-        // 5. CAPTURE FINAL SCREENSHOT
+        // --- 4. SUCCESS CAPTURE & DELIVERY ---
+        // Variable defined here so it exists for the sendPhoto call
         const finalSnap = await page.screenshot({ type: 'png' });
         
         await bot.sendPhoto(chatId, finalSnap, 
             { caption: `[SUCCESS] Withdrawal for ${targetAmount} submitted.` },
-            { filename: 'withdraw_final.png' } 
+            { filename: 'withdraw_final.png' } // MANDATORY to prevent EFATAL
         );
-
 
 
 
@@ -2139,52 +2140,46 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         })));
 
 
-                // 1. Take the screenshot on the Task Page BEFORE navigating away
-        const finalTaskSnap = await masterPage.screenshot({ type: 'png' });
+        const finalSnap = await page.screenshot({ type: 'png' });
 
-        // 2. --- 7. YELLOW-PRIORITY BALANCE SCRAPER (FINAL) ---
-        await updateStatus('[SYSTEM] Finalizing Math...');
+                 // --- 7. YELLOW-PRIORITY BALANCE SCRAPER (FINAL) ---
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await masterPage.waitForTimeout(4000);
 
         const finalBalanceNum = await masterPage.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('div, span, p, b'));
-            // Target the specific yellow color used on Wsjobs for balance
             const yellowEl = elements.find(el => {
                 const style = window.getComputedStyle(el);
                 return (style.color === 'rgb(255, 235, 59)' || style.color === 'yellow') && /\d/.test(el.innerText);
             });
 
             if (yellowEl) {
-                // Remove commas and other non-numeric chars except the decimal dot
                 return parseFloat(yellowEl.innerText.replace(/[^0-9.]/g, '')) || 0;
             }
             return 0;
         });
 
-        // --- MATH EXECUTION ---
+                // --- MATH EXECUTION ---
         const diff = finalBalanceNum - initialBalanceNum;
         const profitText = diff > 0 ? diff.toFixed(2) : "0.00";
         
         await bot.deleteMessage(chatId, msgId).catch(() => {});
         
-        // --- FINAL DELIVERY (Fixed Variable Name and Added Filename) ---
+        // ADDED: filename option to prevent EFATAL buffer error
         await bot.sendPhoto(chatId, finalTaskSnap, { 
             caption: `Profit: <code>+${profitText}</code>\nBalance: <code>${finalBalanceNum.toLocaleString(undefined, {minimumFractionDigits: 2})}</code>`,
             parse_mode: 'HTML'
         }, { filename: 'task_result.png' });
 
     } catch (err) {
-        // Log to Heroku console and send to Telegram
-        console.log(`[TASK ERROR]: ${err.message}`);
-        await bot.sendMessage(chatId, `[STRIKE FAILED]: ${err.message}`).catch(() => {});
+        // Using chatId consistent with your variable definition
+        await bot.sendMessage(chatId, `[STRIKE FAILED]: ${err.message}`);
     } finally {
-        // Cleanly close the browser context to free RAM
         if (context) {
             await context.close().catch(() => {});
         }
     }
-});
+}); // Properly closes the bot.onText listener
 
 
 
