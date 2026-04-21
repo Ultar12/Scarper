@@ -649,7 +649,6 @@ bot.on('message', async (msg) => {
 });
 
 
-const { firefox } = require('playwright');
 
 bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
