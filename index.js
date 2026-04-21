@@ -440,12 +440,14 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
         });
 
         
+                // 2. Create a clean context (Stealth Mode)
         const context = await browser.newContext({
+            // Firefox uses the User-Agent and Viewport to determine mobile layout
             userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
             viewport: { width: 412, height: 915 },
-            isMobile: true,
-            hasTouch: true
+            // isMobile and hasTouch removed to fix the Firefox error
         });
+
 
         const page = await context.newPage();
 
