@@ -1749,22 +1749,28 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         // TELEPORT: Force navigation to account page again to ensure balance is visible
         await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(5000); // Give sniper time to kill the "Notice" ad
-
-                        // --- STEP 2: AGGRESSIVE BALANCE SCRAPER (FIXED) ---
+        // --- STEP 2: PRECISION BALANCE SCRAPER ---
         await page.waitForTimeout(4000);
         
         const rawBalance = await page.evaluate(() => {
             const allText = document.body.innerText;
             
-            // Finds numbers like 14450.00 or 14,450
-            const matches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?|\d+(\.\d+)?/g);
+            // 1. Specifically look for numbers with decimals first (e.g., 14450.00)
+            const decimalMatches = allText.match(/\d+\.\d{2}/g);
             
-            // REMOVED 'context' check here as it's not needed inside the browser
-            if (matches) {
-                const numbers = matches
-                    .map(n => n.replace(/,/g, '')) 
-                    .map(n => parseFloat(n))       
-                    .filter(n => n < 1000000 && n > 0); 
+            if (decimalMatches) {
+                // Convert all decimal finds to numbers and pick the largest
+                const nums = decimalMatches.map(n => parseFloat(n));
+                return Math.max(...nums);
+            }
+
+            // 2. Fallback: If no decimals found, look for large integers but ignore phone-like sequences
+            const generalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
+            if (generalMatches) {
+                const numbers = generalMatches
+                    .map(n => n.replace(/,/g, ''))
+                    .map(n => parseFloat(n))
+                    .filter(n => n > 100 && n < 100000); // Only keep realistic balance ranges
                 
                 return numbers.length > 0 ? Math.max(...numbers) : 0;
             }
@@ -1777,10 +1783,11 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         if (!targetAmount) {
             const errSnap = await page.screenshot();
             await bot.sendPhoto(chatId, errSnap, { 
-                caption: `[DIAGNOSTIC] Detected Balance: ${rawBalance}. No tier match.` 
+                caption: `[DIAGNOSTIC] Detected Balance: ${rawBalance}. (Targeted decimals specifically)` 
             });
             throw new Error(`Balance ${rawBalance} is too low.`);
         }
+
 
 
         await bot.editMessageText(`[SYSTEM] Target Acquired: ${targetAmount}. Proceeding to Saque...`, { 
