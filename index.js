@@ -1511,62 +1511,91 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
     let wsjobsBal = '0.00';
     let m4uBal = '0.00';
 
-    // --- 1. Wsjobs Balance Fetch ---
+        // --- 1. Wsjobs Balance Fetch (Firefox Engine) ---
     try {
-        let wBrowser = globalTaskBrowser;
-        let shouldCloseW = false;
-
-        if (!wBrowser) {
-            wBrowser = await puppeteer.launch({
+        let wBrowser = null;
+        let wContext = null;
+        
+        // Use existing browser if available, else launch new
+        if (globalTaskBrowser && globalTaskBrowser.isConnected()) {
+            wBrowser = globalTaskBrowser;
+        } else {
+            process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
+            wBrowser = await firefox.launch({
                 headless: true,
-                executablePath: getChromePath(),
-                userDataDir: './wsjobs_auth_session',
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+                args: ['--no-sandbox', '--disable-setuid-sandbox']
             });
-            shouldCloseW = true;
+            globalTaskBrowser = wBrowser;
         }
 
-        const wPage = await wBrowser.newPage();
-        await wPage.setViewport({ width: 412, height: 915 });
+        wContext = await wBrowser.newContext({
+            userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
+            viewport: { width: 412, height: 915 }
+        });
 
-        await wPage.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 4000));
+        const wPage = await wContext.newPage();
 
-        if (await wPage.$('input[type="password"]')) {
-            const allInputs = await wPage.$$('input');
-            const vis = [];
-            for (let i of allInputs) {
-                if (await i.evaluate(e => e.offsetParent !== null)) vis.push(i);
-            }
-            if (vis.length >= 2) {
-                await vis[0].evaluate(el => el.value = '');
-                await vis[0].type('09163916311', { delay: 50 });
-                await vis[1].evaluate(el => el.value = '');
-                await vis[1].type('Emmamama', { delay: 50 });
-                await new Promise(r => setTimeout(r, 1000));
-
-                await wPage.evaluate(() => {
-                    Array.from(document.querySelectorAll('*')).forEach(el => {
-                        if (el.innerText && el.innerText.trim() === 'Login' && el.offsetParent !== null) el.click();
+        // --- THE HUMAN SNIPER (MODAL KILLER) ---
+        await wPage.addInitScript(() => {
+            setInterval(() => {
+                const okBtn = Array.from(document.querySelectorAll('*'))
+                    .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
+                if (okBtn) {
+                    const rect = okBtn.getBoundingClientRect();
+                    ['mousedown', 'mouseup', 'click'].forEach(type => {
+                        okBtn.dispatchEvent(new MouseEvent(type, {
+                            view: window, bubbles: true, cancelable: true, 
+                            clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2
+                        }));
                     });
-                });
+                    // Forcefully clear blur
+                    setTimeout(() => {
+                        const modal = okBtn.closest('div[class*="modal"], div[class*="mask"]');
+                        if (modal) modal.remove();
+                        document.body.style.filter = 'none';
+                        document.body.style.overflow = 'auto';
+                    }, 800);
+                }
+            }, 300);
+        });
 
-                await wPage.waitForNavigation({waitUntil:'networkidle2', timeout: 15000}).catch(()=>{});
-                await wPage.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
-                await new Promise(r => setTimeout(r, 4000));
-            }
+        await wPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        await wPage.waitForTimeout(4000);
+
+        // --- LOGIN LOGIC (SHIGA / ENTRAR) ---
+        const loginInput = await wPage.$('input[type="text"], input[type="tel"]');
+        if (loginInput) {
+            await wPage.fill('input[type="text"], input[type="tel"]', '09163916311');
+            await wPage.fill('input[type="password"]', 'Emmamama');
+            
+            // Clicks the last visible login button (handles translations)
+            const loginBtn = wPage.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last();
+            await loginBtn.dispatchEvent('click');
+            
+            await wPage.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
+            // Teleport back to account page to ensure we land on the dashboard
+            await wPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+            await wPage.waitForTimeout(5000);
         }
 
+        // --- ROBUST BALANCE DETECTION ---
         wsjobsBal = await wPage.evaluate(() => {
-            const rawText = document.body.textContent || '';
-            const match = rawText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
-            if (match) return match[1];
+            const elements = Array.from(document.querySelectorAll('div, span, p, h1, h2'));
+            const balanceMatches = elements
+                .map(el => el.innerText?.replace(/,/g, '').trim())
+                .filter(text => /^\d+\.\d{2}$/.test(text)); // Regex for 0000.00
+
+            if (balanceMatches.length > 0) {
+                const numbers = balanceMatches.map(n => parseFloat(n));
+                const maxNum = Math.max(...numbers);
+                return maxNum.toLocaleString(undefined, { minimumFractionDigits: 2 });
+            }
             return '0.00';
         });
 
-        await wPage.close().catch(() => {});
-        if (shouldCloseW) await wBrowser.close();
+        await wContext.close().catch(() => {});
     } catch(e) {
+        console.log(`[BALANCE ERROR]: ${e.message}`);
         wsjobsBal = 'Error';
     }
 
