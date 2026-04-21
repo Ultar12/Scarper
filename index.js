@@ -238,10 +238,14 @@ async function performM4USignIn(chatId) {
     const videoDir = path.join(__dirname, 'videos');
     if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
 
-    // Helper to update status
+    // --- ANTI-SPAM: Send one anchor message ---
+    let statusMsg = await bot.sendMessage(chatId, '⚙️ [SYSTEM] Booting M4U Check-in Sequence...');
+    const msgId = statusMsg.message_id;
+
+    // --- ANTI-SPAM: Helper now EDITS the existing message ---
     const updateStatus = async (text) => {
         console.log(text);
-        return await bot.sendMessage(chatId, text).catch(() => {});
+        await bot.editMessageText(text, { chat_id: chatId, message_id: msgId }).catch(() => {});
     };
 
     try {
@@ -261,16 +265,15 @@ async function performM4USignIn(chatId) {
         page = await context.newPage();
 
         // --- PHASE 1: LOGIN (THE VIDEO-PROVEN METHOD) ---
-        await updateStatus('[SYSTEM] Navigating to M4U Login...');
+        await updateStatus('🔄 [SYSTEM] Navigating to M4U Login...');
         await page.goto('https://taskm4u.com/#/login', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(5000);
 
         const needsLogin = await page.evaluate(() => !!document.querySelector('input[placeholder*="phone number"]'));
 
         if (needsLogin) {
-            await updateStatus('[SYSTEM] Injecting credentials...');
+            await updateStatus('🔑 [SYSTEM] Injecting credentials...');
             
-            // Reverted to your exact .type() method that successfully bypassed the UI in your video
             const phoneInput = page.locator('input[placeholder*="phone number"]').first();
             await phoneInput.click();
             await phoneInput.type('Staring', { delay: 100 });
@@ -281,45 +284,36 @@ async function performM4USignIn(chatId) {
 
             await page.waitForTimeout(1000);
 
-            // The exact broadcast click from your original code
             await page.evaluate(() => {
                 Array.from(document.querySelectorAll('*')).forEach(el => {
                     if (el.innerText && el.innerText.trim() === 'Login' && el.offsetHeight > 0) {
                         el.click();
-                        // Backup dispatch
                         el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
                     }
                 });
             });
 
-            // --- THE TOKEN WAITING ROOM ---
-            await updateStatus('[SYSTEM] Login clicked. Waiting for server to authenticate...');
+            await updateStatus('⏳ [SYSTEM] Login clicked. Waiting for server to authenticate...');
             
             try {
-                // Wait up to 15 seconds for the login boxes to disappear (meaning success)
                 await page.waitForFunction(() => {
                     return !document.querySelector('input[placeholder*="phone number"]');
                 }, { timeout: 15000 });
             } catch (e) {
-                // If the boxes are still there after 15 seconds, the login failed
                 throw new Error("Site rejected the credentials or the server is unresponsive.");
             }
 
-            // Give the browser 3 extra seconds to lock the auth cookie into memory
             await page.waitForTimeout(3000); 
         }
 
-               // --- PHASE 2: TELEPORT TO SIGN-IN ---
-        await updateStatus('[SYSTEM] Authentication confirmed. Teleporting to Check-in page...');
+        // --- PHASE 2: TELEPORT TO SIGN-IN ---
+        await updateStatus('🚀 [SYSTEM] Authentication confirmed. Teleporting to Check-in page...');
         await page.goto('https://taskm4u.com/#/signIn', { waitUntil: 'domcontentloaded' });
-        
-        // Wait 4 seconds to let the page load AND the event modal to pop up
         await page.waitForTimeout(4000);
 
-        // --- 2.5: POPUP SWEEPER (NEW) ---
-        await updateStatus('[SYSTEM] Sweeping welcome ads and overlays...');
+        // --- 2.5: POPUP SWEEPER ---
+        await updateStatus('🧹 [SYSTEM] Sweeping welcome ads and overlays...');
         await page.evaluate(() => {
-            // 1. Hunt down and click the "Close" button
             Array.from(document.querySelectorAll('button, div, span, a')).forEach(el => {
                 if (el.innerText && el.innerText.trim() === 'Close' && el.offsetHeight > 0) {
                     el.click();
@@ -327,27 +321,22 @@ async function performM4USignIn(chatId) {
                 }
             });
 
-            // 2. Annihilate the dark background masks just in case the click missed
             const blockers = document.querySelectorAll('.van-overlay, .van-mask, [class*="mask"], [class*="overlay"]');
             blockers.forEach(o => o.remove());
         });
         
-        // Wait 2 seconds for the modal fade-out animation to finish
         await page.waitForTimeout(2000);
 
-                // --- PHASE 3: THE CHECK-IN STRIKE (MOBILE UPGRADED) ---
-        await updateStatus('[SYSTEM] Attempting "Check in Now!" strike...');
+        // --- PHASE 3: THE CHECK-IN STRIKE (MOBILE UPGRADED) ---
+        await updateStatus('🎯 [SYSTEM] Attempting "Check in Now!" strike...');
         
         let checkInResult = "ATTEMPTING";
         
-        // 1. Playwright Native Attack (Bypasses most JS traps)
         try {
             const checkInBtn = page.locator('text=/Check in Now!/i').last();
-            // Use .tap() instead of .click() for mobile emulation
             await checkInBtn.tap({ force: true, timeout: 3000 }); 
             checkInResult = "NATIVE_TAP_EXECUTED";
         } catch (e) {
-            // 2. JS DOM Strike with Mobile Touch Events
             checkInResult = await page.evaluate(() => {
                 const elements = Array.from(document.querySelectorAll('div, button, span'));
                 const btn = elements.reverse().find(el => 
@@ -359,11 +348,9 @@ async function performM4USignIn(chatId) {
                     const x = rect.left + rect.width / 2;
                     const y = rect.top + rect.height / 2;
 
-                    // Standard Mouse
                     const ev = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
                     ['mousedown', 'mouseup', 'click'].forEach(t => btn.dispatchEvent(new MouseEvent(t, ev)));
 
-                    // Mobile Touch (The Framework Breaker)
                     try {
                         const touchObj = new Touch({ identifier: Date.now(), target: btn, clientX: x, clientY: y, radiusX: 2.5, radiusY: 2.5, rotationAngle: 10, force: 0.5 });
                         btn.dispatchEvent(new TouchEvent('touchstart', { cancelable: true, bubbles: true, touches: [touchObj], targetTouches: [touchObj], changedTouches: [touchObj] }));
@@ -376,31 +363,21 @@ async function performM4USignIn(chatId) {
             });
         }
 
-        // 3. Physical Backup Tap (Center-bottom of the screen based on your image)
         await page.mouse.click(206, 750).catch(() => {});
         await page.mouse.click(206, 700).catch(() => {});
 
-        // Wait 5 seconds for the server to process the check-in and update the UI
         await page.waitForTimeout(5000);
 
-        // --- PHASE 4: VERIFICATION (SMARTER SCANNING) ---
+        // --- PHASE 4: VERIFICATION ---
         const finalStatus = await page.evaluate(() => {
             const txt = document.body.innerText.toLowerCase();
-            
-            // 1. Check for success keywords
             if (txt.includes('checked in') || txt.includes('success') || txt.includes('already') || txt.includes('completed')) {
                 return "SUCCESS";
             }
-            
-            // 2. Check button state: If "Check in Now!" is gone or changed text, it means success
             const btnStillThere = Array.from(document.querySelectorAll('*')).some(el => 
                 el.innerText?.trim() === 'Check in Now!' && el.offsetHeight > 0
             );
-            
-            if (!btnStillThere) {
-                return "SUCCESS";
-            }
-            
+            if (!btnStillThere) return "SUCCESS";
             return "FAILED";
         });
 
@@ -411,6 +388,9 @@ async function performM4USignIn(chatId) {
             vPath = await page.video().path().catch(() => null);
         }
 
+        // Clean up the status text message so only the photo remains
+        await bot.deleteMessage(chatId, msgId).catch(() => {});
+
         if (finalStatus === "SUCCESS") {
             await bot.sendPhoto(chatId, finalSnap, { caption: "✅ M4U Check-in Success." });
             await context.close();
@@ -419,10 +399,9 @@ async function performM4USignIn(chatId) {
             throw new Error(`Check-in failed. Button state: ${checkInResult}`);
         }
 
-
     } catch (err) {
         // --- BULLETPROOF CRASH HANDLER ---
-        await updateStatus(`⚠️ M4U Crash: ${err.message}`);
+        await updateStatus(`⚠️ M4U Crash: ${err.message}`); // Leaves the error text on screen
         
         let vPath = null;
         let crashSnap = null;
@@ -432,18 +411,13 @@ async function performM4USignIn(chatId) {
             try { if (page.video()) vPath = await page.video().path().catch(() => null); } catch(e) {}
         }
 
-        // 1. MUST close the context so Playwright finalizes and saves the MP4 file
         if (context) await context.close().catch(() => {});
-
-        // 2. Wait 2 full seconds for the OS to release the file lock
         await new Promise(r => setTimeout(r, 2000));
 
-        // 3. Send Screenshot
         if (crashSnap) {
             await bot.sendPhoto(chatId, crashSnap, { caption: `[DIAGNOSTIC] Screen at moment of failure.` }).catch(() => {});
         }
 
-        // 4. Send Video safely
         if (vPath && fs.existsSync(vPath)) {
             await bot.sendVideo(chatId, vPath, { caption: `[DIAGNOSTIC VIDEO] Session Recording` }).catch(() => {});
             setTimeout(() => { if (fs.existsSync(vPath)) fs.unlinkSync(vPath); }, 5000);
@@ -453,8 +427,6 @@ async function performM4USignIn(chatId) {
         if (browser) await browser.close().catch(() => {});
     }
 }
-
- 
 
 // --- 4. TELEGRAM COMMAND LISTENERS ---
 
