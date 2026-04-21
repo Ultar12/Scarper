@@ -232,7 +232,7 @@ async function clearOnboardingPopups(page, updateStatus) {
 
 
         
-async function performM4USignIn(chatId) {
+async function performM4USignIn(chat_id) {
     let browser = null;
     let context = null;
     let page = null;
