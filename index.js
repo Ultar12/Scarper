@@ -261,7 +261,7 @@ async function clearOnboardingPopups(page, updateStatus) {
         
         page = await context.newPage();
 
-        // --- PHASE 1: LOGIN ---
+                // --- PHASE 1: LOGIN ---
         await updateStatus('[SYSTEM] Navigating to M4U Login...');
         await page.goto('https://taskm4u.com/#/login', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(5000);
@@ -270,31 +270,56 @@ async function clearOnboardingPopups(page, updateStatus) {
 
         if (needsLogin) {
             await updateStatus('[SYSTEM] Injecting credentials...');
+            
+            // 1. Phone Input (Clear, Type, Blur)
             const phoneInput = page.locator('input[placeholder*="phone number"]');
             await phoneInput.click();
+            await page.evaluate(el => el.value = '', await phoneInput.elementHandle()); 
             await phoneInput.type('Staring', { delay: 100 });
 
+            // 2. Password Input (Clear, Type, Blur)
             const passInput = page.locator('input[placeholder*="password"]');
             await passInput.click();
+            await page.evaluate(el => el.value = '', await passInput.elementHandle());
             await passInput.type('Emmama', { delay: 100 });
 
-            await page.waitForTimeout(1000);
+            // 3. Force state update in the UI framework
+            await page.keyboard.press('Tab');
+            await page.waitForTimeout(1500);
 
-            // Precision login strike
+            // 4. Mobile Touch Login Strike
             await page.evaluate(() => {
-                const btn = Array.from(document.querySelectorAll('*')).find(el => 
+                const btn = Array.from(document.querySelectorAll('button, div, span')).find(el => 
                     el.innerText?.trim() === 'Login' && el.offsetHeight > 0
                 );
+                
                 if (btn) {
                     const rect = btn.getBoundingClientRect();
-                    const ev = { bubbles: true, view: window, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+                    const x = rect.left + rect.width / 2;
+                    const y = rect.top + rect.height / 2;
+
+                    // Standard Mouse Events
+                    const ev = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
                     ['mousedown', 'mouseup', 'click'].forEach(t => btn.dispatchEvent(new MouseEvent(t, ev)));
+                    
+                    // Mobile Touch Events (Bypasses Vant UI locks)
+                    try {
+                        const touchObj = new Touch({ identifier: Date.now(), target: btn, clientX: x, clientY: y, radiusX: 2.5, radiusY: 2.5, rotationAngle: 10, force: 0.5 });
+                        btn.dispatchEvent(new TouchEvent('touchstart', { cancelable: true, bubbles: true, touches: [touchObj], targetTouches: [touchObj], changedTouches: [touchObj] }));
+                        btn.dispatchEvent(new TouchEvent('touchend', { cancelable: true, bubbles: true, touches: [], targetTouches: [], changedTouches: [touchObj] }));
+                    } catch(e) {}
                 }
             });
 
-            await page.waitForURL('**/home', { timeout: 15000 }).catch(() => {});
-            await page.waitForTimeout(4000); 
+            // 5. Wait to see if login actually worked
+            await page.waitForTimeout(5000); 
+            
+            const stillOnLogin = await page.evaluate(() => !!document.querySelector('input[placeholder*="phone number"]'));
+            if (stillOnLogin) {
+                throw new Error("Site rejected the login credentials or blocked the click. Cannot proceed to check-in.");
+            }
         }
+
 
         // --- PHASE 2: TELEPORT TO SIGN-IN ---
         await updateStatus('[SYSTEM] Teleporting to Check-in page...');
