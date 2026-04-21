@@ -1838,13 +1838,14 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
         await page.waitForTimeout(1000);
 
-                // --- 3. NUCLEAR BUTTON STRIKE (WITH OVERLAY SNIPER) ---
+
+
+
+// 3. GEOMETRIC STRIKE ON CONFIRM BUTTON
         await page.evaluate(() => {
-            // Physically remove any invisible "Glass Walls"
-            const blockers = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"], [class*="overlay"]');
-            blockers.forEach(el => el.remove());
-            
             const buttons = Array.from(document.querySelectorAll('button, div, span, p'));
+            
+            // Added 'Tabbatar Cirewa' to the search criteria
             const finalBtn = buttons.find(b => 
                 (b.innerText?.includes('Tabbatar Cirewa') || 
                  b.innerText?.includes('Confirm') || 
@@ -1858,6 +1859,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                 const x = rect.left + rect.width / 2;
                 const y = rect.top + rect.height / 2;
 
+                // Human-style event sequence (Firefox Compatible)
                 const evData = {
                     bubbles: true,
                     cancelable: true,
@@ -1867,20 +1869,15 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                     buttons: 1
                 };
 
-                // Fire human-style sequence
                 finalBtn.dispatchEvent(new MouseEvent('mousedown', evData));
                 finalBtn.dispatchEvent(new MouseEvent('mouseup', evData));
                 finalBtn.dispatchEvent(new MouseEvent('click', evData));
             }
         });
 
-        // Physical backup tap at the expected coordinates
-        await page.mouse.click(300, 700).catch(() => {}); 
-        
         await page.waitForTimeout(5000);
 
-        // --- 4. SUCCESS CAPTURE & DELIVERY ---
-        // Variable defined here so it exists for the sendPhoto call
+        
         const finalSnap = await page.screenshot({ type: 'png' });
         
         await bot.sendPhoto(chatId, finalSnap, 
@@ -2140,46 +2137,52 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         })));
 
 
-        const finalSnap = await page.screenshot({ type: 'png' });
+                // 1. Take the screenshot on the Task Page BEFORE navigating away
+        const finalTaskSnap = await masterPage.screenshot({ type: 'png' });
 
-                 // --- 7. YELLOW-PRIORITY BALANCE SCRAPER (FINAL) ---
+        // 2. --- 7. YELLOW-PRIORITY BALANCE SCRAPER (FINAL) ---
+        await updateStatus('[SYSTEM] Finalizing Math...');
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await masterPage.waitForTimeout(4000);
 
         const finalBalanceNum = await masterPage.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('div, span, p, b'));
+            // Target the specific yellow color used on Wsjobs for balance
             const yellowEl = elements.find(el => {
                 const style = window.getComputedStyle(el);
                 return (style.color === 'rgb(255, 235, 59)' || style.color === 'yellow') && /\d/.test(el.innerText);
             });
 
             if (yellowEl) {
+                // Remove commas and other non-numeric chars except the decimal dot
                 return parseFloat(yellowEl.innerText.replace(/[^0-9.]/g, '')) || 0;
             }
             return 0;
         });
 
-                // --- MATH EXECUTION ---
+        // --- MATH EXECUTION ---
         const diff = finalBalanceNum - initialBalanceNum;
         const profitText = diff > 0 ? diff.toFixed(2) : "0.00";
         
         await bot.deleteMessage(chatId, msgId).catch(() => {});
         
-        // ADDED: filename option to prevent EFATAL buffer error
+        // --- FINAL DELIVERY (Fixed Variable Name and Added Filename) ---
         await bot.sendPhoto(chatId, finalTaskSnap, { 
             caption: `Profit: <code>+${profitText}</code>\nBalance: <code>${finalBalanceNum.toLocaleString(undefined, {minimumFractionDigits: 2})}</code>`,
             parse_mode: 'HTML'
         }, { filename: 'task_result.png' });
 
     } catch (err) {
-        // Using chatId consistent with your variable definition
-        await bot.sendMessage(chatId, `[STRIKE FAILED]: ${err.message}`);
+        // Log to Heroku console and send to Telegram
+        console.log(`[TASK ERROR]: ${err.message}`);
+        await bot.sendMessage(chatId, `[STRIKE FAILED]: ${err.message}`).catch(() => {});
     } finally {
+        // Cleanly close the browser context to free RAM
         if (context) {
             await context.close().catch(() => {});
         }
     }
-}); // Properly closes the bot.onText listener
+});
 
 
 
