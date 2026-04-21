@@ -1904,51 +1904,68 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await page.waitForTimeout(3000);
 
     
-           // --- STEP 4: PASSWORD & FINAL CONFIRM ---
+                   // --- STEP 4: PASSWORD & FINAL CONFIRM ---
         const passInput = page.locator('input[type="password"], .modal-body input, [placeholder*="password"], [placeholder*="senha"]').last();
         
         // 1. Wait for modal visibility
         await passInput.waitFor({ state: 'visible', timeout: 15000 });
         
-        // 2. Click and Type (More reliable than .fill() for triggering button activation)
+        // 2. High-Precision Input & Force Blur
         await passInput.click();
+        await page.evaluate(el => el.value = '', await passInput.elementHandle()); 
         await passInput.type('111111', { delay: 100 }); 
+        await page.keyboard.press('Tab'); // CRITICAL: Forces the framework to lock in the PIN
+        await page.waitForTimeout(1500);
 
-        await page.waitForTimeout(1000);
+        // --- 3. FINAL NUCLEAR STRIKE (TABBATAR CIREWA) ---
+        
+        // Phase A: Native Playwright Tap (Mobile emulation)
+        try {
+            const confirmBtn = page.locator('text=/Tabbatar Cirewa|Confirm|Confirmar/i').last();
+            await confirmBtn.tap({ force: true, delay: 150, timeout: 3000 });
+        } catch (e) {}
 
-        // 3. GEOMETRIC STRIKE ON CONFIRM BUTTON
+        // Phase B: JS Mobile Touch Strike
         await page.evaluate(() => {
-            const buttons = Array.from(document.querySelectorAll('button, div, span, p'));
-            
-            // Added 'Tabbatar Cirewa' to the search criteria
-            const finalBtn = buttons.find(b => 
-                (b.innerText?.includes('Tabbatar Cirewa') || 
-                 b.innerText?.includes('Confirm') || 
-                 b.innerText?.includes('Confirmar')) && 
-                b.offsetHeight > 0 && 
-                window.getComputedStyle(b).display !== 'none'
+            // Annihilate transparent modal traps
+            const modalBlockers = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"]');
+            modalBlockers.forEach(el => el.remove());
+
+            // Reverse search to grab the deepest element
+            const elements = Array.from(document.querySelectorAll('button, div, span'));
+            const finalBtn = elements.reverse().find(b => 
+                (b.innerText?.includes('Tabbatar Cirewa') || b.innerText?.includes('Confirm')) && 
+                b.offsetHeight > 0
             );
 
             if (finalBtn) {
-                const rect = finalBtn.getBoundingClientRect();
+                // Ascend to parent if it's just a span inside the button
+                let target = finalBtn;
+                if (target.tagName.toLowerCase() === 'SPAN' && target.parentElement) {
+                    target = target.parentElement;
+                }
+
+                const rect = target.getBoundingClientRect();
                 const x = rect.left + rect.width / 2;
                 const y = rect.top + rect.height / 2;
 
-                // Human-style event sequence (Firefox Compatible)
-                const evData = {
-                    bubbles: true,
-                    cancelable: true,
-                    view: window,
-                    clientX: x,
-                    clientY: y,
-                    buttons: 1
-                };
+                const evData = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+                ['mousedown', 'mouseup', 'click'].forEach(t => target.dispatchEvent(new MouseEvent(t, evData)));
 
-                finalBtn.dispatchEvent(new MouseEvent('mousedown', evData));
-                finalBtn.dispatchEvent(new MouseEvent('mouseup', evData));
-                finalBtn.dispatchEvent(new MouseEvent('click', evData));
+                // Mobile Touch (Bypasses UI locks)
+                try {
+                    const touchObj = new Touch({ identifier: Date.now(), target: target, clientX: x, clientY: y, radiusX: 2.5, radiusY: 2.5, rotationAngle: 10, force: 0.5 });
+                    target.dispatchEvent(new TouchEvent('touchstart', { cancelable: true, bubbles: true, touches: [touchObj], targetTouches: [touchObj], changedTouches: [touchObj] }));
+                    target.dispatchEvent(new TouchEvent('touchend', { cancelable: true, bubbles: true, touches: [], targetTouches: [], changedTouches: [touchObj] }));
+                } catch(e) {}
+                
+                target.click();
             }
         });
+
+        // Phase C: Physical Backup Tap (Targeting right-side coordinates of the modal)
+        await page.mouse.click(300, 720).catch(() => {}); 
+        await page.mouse.click(300, 700).catch(() => {}); 
 
         await page.waitForTimeout(5000);
 
