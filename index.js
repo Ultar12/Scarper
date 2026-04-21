@@ -1717,23 +1717,38 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             await page.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
         }
 
-                // --- Step 2: Accurate Balance & Amount Selection ---
+                        // --- STEP 2: ROBUST BALANCE DETECTION ---
         await page.waitForTimeout(3000);
         
         const rawBalance = await page.evaluate(() => {
-            // Find the large yellow balance text (the one that says 13890.00)
-            const elements = Array.from(document.querySelectorAll('div, span, p'));
-            const balanceEl = elements.find(el => 
-                /^\d+\.\d{2}$/.test(el.innerText?.trim()) && 
-                window.getComputedStyle(el).color === 'rgb(255, 235, 59)' // Checks for yellow color
-            );
-            return balanceEl ? parseFloat(balanceEl.innerText.replace(/,/g, '')) : 0;
+            // 1. Get all text elements on the page
+            const elements = Array.from(document.querySelectorAll('div, span, p, h1, h2'));
+            
+            // 2. Filter for elements that look like a currency balance (e.g., 13890.00)
+            const balanceMatches = elements
+                .map(el => el.innerText?.replace(/,/g, '').trim())
+                .filter(text => /^\d+\.\d{2}$/.test(text)); // Must be digits.digits
+
+            if (balanceMatches.length > 0) {
+                // 3. Pick the largest number found (to avoid mistaking small UI numbers)
+                const numbers = balanceMatches.map(n => parseFloat(n));
+                return Math.max(...numbers);
+            }
+            return 0;
         });
 
         const tiers = [50000, 26000, 23000, 20000, 18000, 15000, 12000];
         const targetAmount = tiers.find(t => rawBalance >= t);
 
-        if (!targetAmount) throw new Error(`Balance ${rawBalance} is too low.`);
+        if (!targetAmount) {
+            // Diagnostic screenshot to see what went wrong
+            const errSnap = await page.screenshot();
+            await bot.sendPhoto(chatId, errSnap, { 
+                caption: `[DIAGNOSTIC] Failed to find tier. Detected Balance: ${rawBalance}` 
+            });
+            throw new Error(`Balance ${rawBalance} is too low for available tiers.`);
+        }
+
 
         // Use bot.editMessageText directly to avoid "updateStatus undefined"
         await bot.editMessageText(`[SYSTEM] Balance: ${rawBalance}. Target: ${targetAmount}.`, { 
