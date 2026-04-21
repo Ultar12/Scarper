@@ -1791,37 +1791,69 @@ await page.evaluate((amt) => {
     }
 }, targetAmount);
 
-await page.waitForTimeout(2000);
+        // 2. IMPORTANT: Wait for the selection animation to finish and button to stabilize
+        await page.waitForTimeout(3000);
 
-// 2. THE NUCLEAR "WITHDRAW NOW" STRIKE
-await page.evaluate(() => {
-    // Kill any transparent overlays that might be blocking the main button
-    const overlays = document.querySelectorAll('.van-overlay, .van-mask, [class*="mask"]');
-    overlays.forEach(o => o.remove());
+        // --- 3. NUCLEAR BUTTON STRIKE (MOBILE TOUCH UPGRADE) ---
+        await page.evaluate(() => {
+            // Kill any transparent overlays blocking the touch
+            const overlays = document.querySelectorAll('.van-overlay, .van-mask, [class*="mask"]');
+            overlays.forEach(o => o.remove());
 
-    const mainBtn = Array.from(document.querySelectorAll('*')).find(b => 
-        (b.innerText?.includes('WITHDRAW NOW') || b.innerText?.includes('SACAR AGORA')) && 
-        b.offsetHeight > 0
-    );
+            // Grab the specific button (searching backwards to get the deepest element)
+            const elements = Array.from(document.querySelectorAll('button, div, span'));
+            const mainBtn = elements.reverse().find(b => 
+                (b.innerText?.includes('WITHDRAW NOW') || b.innerText?.includes('SACAR AGORA')) && 
+                b.offsetHeight > 0
+            );
 
-    if (mainBtn) {
-        const rect = mainBtn.getBoundingClientRect();
-        const x = rect.left + rect.width / 2;
-        const y = rect.top + rect.height / 2;
+            if (mainBtn) {
+                const rect = mainBtn.getBoundingClientRect();
+                const x = rect.left + rect.width / 2;
+                const y = rect.top + rect.height / 2;
 
-        const evData = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, buttons: 1 };
-        
-        // Fire Triple-Threat Click Sequence
-        mainBtn.dispatchEvent(new MouseEvent('mousedown', evData));
-        mainBtn.dispatchEvent(new MouseEvent('mouseup', evData));
-        mainBtn.dispatchEvent(new MouseEvent('click', evData));
-    }
-});
+                // 1. Desktop fallback events
+                const evData = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+                mainBtn.dispatchEvent(new MouseEvent('mousedown', evData));
+                mainBtn.dispatchEvent(new MouseEvent('mouseup', evData));
+                mainBtn.dispatchEvent(new MouseEvent('click', evData));
 
-// 3. PHYSICAL BACKUP (Force click the exact center of the green button area)
-await page.mouse.click(206, 365).catch(() => {}); 
+                // 2. CRITICAL FIX: Simulate Mobile Touch Events
+                try {
+                    const touchObj = new Touch({
+                        identifier: Date.now(),
+                        target: mainBtn,
+                        clientX: x,
+                        clientY: y,
+                        radiusX: 2.5,
+                        radiusY: 2.5,
+                        rotationAngle: 10,
+                        force: 0.5,
+                    });
 
-await page.waitForTimeout(3000);
+                    mainBtn.dispatchEvent(new TouchEvent('touchstart', {
+                        cancelable: true, bubbles: true, touches: [touchObj], targetTouches: [touchObj], changedTouches: [touchObj]
+                    }));
+                    mainBtn.dispatchEvent(new TouchEvent('touchend', {
+                        cancelable: true, bubbles: true, touches: [], targetTouches: [], changedTouches: [touchObj]
+                    }));
+                } catch(e) {
+                    // Ignore if Touch API isn't supported in this specific headless context
+                }
+            }
+        });
+
+        // 3. PHYSICAL BACKUP: Use Playwright's native mobile tap feature
+        try {
+            const withdrawLocator = page.locator('text=/WITHDRAW NOW|SACAR AGORA/i').last();
+            await withdrawLocator.tap({ timeout: 2000, force: true }); 
+        } catch (e) {
+            // Absolute last resort physical click (Y-coordinate adjusted down for typical screen ratio)
+            await page.mouse.click(206, 450).catch(() => {}); 
+        }
+
+        await page.waitForTimeout(3000);
+
 
 // --- STEP 4: PASSWORD & FINAL CONFIRM ---
 const passInput = page.locator('input[type="password"], .modal-body input, [placeholder*="password"]').last();
