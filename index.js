@@ -539,15 +539,6 @@ bot.onText(/^\/testlogin$/i, async (msg) => {
 
 
 
-// Usage: /appurl [send apk file after]
-bot.onText(/\/appurl/i, async (msg) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
-
-    userState[chatId] = 'WAITING_FOR_APK';
-    bot.sendMessage(chatId, '[SYSTEM] Uploading mode active. Please send the whatsapp.apk file as a Document.');
-});
-
 // Listener for the actual file
 bot.on('document', async (msg) => {
     const chatId = msg.chat.id.toString();
@@ -658,7 +649,8 @@ bot.on('message', async (msg) => {
 });
 
 
-// Usage: /screenshot https://google.com
+const { firefox } = require('playwright');
+
 bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -668,32 +660,49 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
         targetUrl = 'https://' + targetUrl;
     }
 
-    const statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Processing...');
+    const statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Initializing Firefox Snapshot...');
 
-    let tempBrowser = null;
+    let browser = null;
     try {
-        tempBrowser = await puppeteer.launch({
+        process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
+
+        browser = await firefox.launch({
             headless: true,
-            executablePath: getChromePath(),
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
 
-        const page = await tempBrowser.newPage();
-        const viewWidth = 1280;
-        const viewHeight = 800;
-        await page.setViewport({ width: viewWidth, height: viewHeight });
-        
-        await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+        const context = await browser.newContext({
+            viewport: { width: 1280, height: 800 },
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:115.0) Gecko/20100101 Firefox/115.0'
+        });
 
-        // Get total height of the page
+        const page = await context.newPage();
+
+        // --- INTEGRATED SNIPER (Clears popups before screenshot) ---
+        await page.addInitScript(() => {
+            setInterval(() => {
+                const okBtn = Array.from(document.querySelectorAll('*'))
+                    .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
+                if (okBtn) {
+                    okBtn.click();
+                    document.body.style.setProperty('filter', 'none', 'important');
+                    document.body.style.setProperty('overflow', 'auto', 'important');
+                }
+            }, 300);
+        });
+
+        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        
+        // Give time for popups to trigger and sniper to kill them
+        await page.waitForTimeout(4000);
+
+        // Get total height
         const fullHeight = await page.evaluate(() => document.body.scrollHeight);
 
-        // If the page is standard size (less than 2.5x the screen height), send one shot
         if (fullHeight < 2000) {
-            const screenshotBuffer = await page.screenshot({ fullPage: true });
-            await bot.sendPhoto(chatId, screenshotBuffer, { caption: `[SUCCESS] Captured: ${targetUrl}` });
+            const buffer = await page.screenshot({ fullPage: true });
+            await bot.sendPhoto(chatId, buffer, { caption: `[SUCCESS] Captured: ${targetUrl}` });
         } else {
-            // If the page is long, slice it into chunks of 1000px
             await bot.editMessageText('[SYSTEM] Page is long. Slicing into readable chunks...', {
                 chat_id: chatId,
                 message_id: statusMsg.message_id
@@ -703,11 +712,10 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
             const mediaGroup = [];
             
             for (let y = 0; y < fullHeight; y += sliceHeight) {
-                // Ensure we don't go past the bottom
                 const currentHeight = Math.min(sliceHeight, fullHeight - y);
                 
                 const partBuffer = await page.screenshot({
-                    clip: { x: 0, y: y, width: viewWidth, height: currentHeight }
+                    clip: { x: 0, y: y, width: 1280, height: currentHeight }
                 });
 
                 mediaGroup.push({
@@ -716,17 +724,13 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
                     caption: y === 0 ? `[SUCCESS] Full page slices for: ${targetUrl}` : ''
                 });
 
-                // Telegram limits albums to 10 images at a time
                 if (mediaGroup.length === 10) break; 
             }
 
             await bot.sendMediaGroup(chatId, mediaGroup);
         }
 
-        await bot.editMessageText(`[SUCCESS] Snapshot delivered for: ${targetUrl}`, {
-            chat_id: chatId,
-            message_id: statusMsg.message_id
-        });
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
 
     } catch (err) {
         await bot.editMessageText(`[ERROR] Screenshot failed: ${err.message}`, {
@@ -734,9 +738,10 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
             message_id: statusMsg.message_id
         });
     } finally {
-        if (tempBrowser) await tempBrowser.close();
+        if (browser) await browser.close();
     }
 });
+
 
 
 
@@ -1745,17 +1750,28 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             if (mainBtn) mainBtn.click();
         });
 
-        // Step 4: Input Password and Confirm
-        await page.waitForTimeout(3000);
-        const passInput = page.locator('input[type="password"], input[placeholder*="password"], input[placeholder*="senha"]').last();
+                // Step 4: Input Password and Confirm
+        await updateStatus('[SYSTEM] Waiting for Withdrawal Popup...');
+        
+        // Targeted locator for the password field inside the confirm modal
+        const passInput = page.locator('input[type="password"], .modal-body input, [placeholder*="password"], [placeholder*="senha"]').last();
+        
+        // Wait up to 10s for the popup to actually be visible before typing
+        await passInput.waitFor({ state: 'visible', timeout: 10000 });
         await passInput.fill('Emmamama');
 
+        await updateStatus('[SYSTEM] Submitting Final Confirmation...');
         await page.evaluate(() => {
-            const finalBtn = Array.from(document.querySelectorAll('*')).find(b => 
-                (b.innerText?.includes('Confirm Withdrawal') || b.innerText?.includes('Confirmar')) && b.offsetHeight > 0
+            // Find the specific 'Confirm Withdrawal' or 'Confirmar' button inside the green/dark modal
+            const buttons = Array.from(document.querySelectorAll('button, div, span'));
+            const finalBtn = buttons.find(b => 
+                (b.innerText?.includes('Confirm Withdrawal') || b.innerText?.includes('Confirmar')) && 
+                b.offsetHeight > 0 && 
+                window.getComputedStyle(b).display !== 'none'
             );
             if (finalBtn) finalBtn.click();
         });
+
 
         await page.waitForTimeout(5000);
         
@@ -1833,24 +1849,6 @@ bot.onText(/\/upscale/i, async (msg) => {
 });
 
 
-const sweepTutorial = async (targetPage) => {
-    await new Promise(r => setTimeout(r, 2000)); 
-    const didSweep = await targetPage.evaluate(() => {
-        const elements = Array.from(document.querySelectorAll('*'));
-        // Updated for the new Brazil UI "OK" and "Install" buttons
-        const btn = elements.find(el => 
-            (el.innerText?.trim() === 'OK' || el.innerText?.trim() === 'Install') && 
-            el.offsetParent !== null
-        );
-        if (btn) {
-            btn.click();
-            return true;
-        }
-        return false;
-    });
-    return didSweep;
-};
-
 
 
 
@@ -1866,8 +1864,10 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await bot.editMessageText(text, { chat_id: chatId, message_id: msgId }).catch(() => {});
     };
 
+    // Define variables outside try/catch so they are accessible everywhere
     let browser = null;
     let context = null;
+    let masterPage = null; 
     let pages = [];
     let initialBalanceNum = 0;
     const videoDir = path.join(__dirname, 'videos');
@@ -1887,61 +1887,57 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             recordVideo: { dir: videoDir, size: { width: 412, height: 915 } }
         });
 
-        const masterPage = await context.newPage();
+        masterPage = await context.newPage();
         pages.push(masterPage);
 
-        // --- THE TERMINATOR (HUMAN SNIPER & POPUP KILLER) ---
+        // --- THE TERMINATOR (HUMAN SNIPER) ---
         await masterPage.addInitScript(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => false });
-            
             setInterval(() => {
                 const okBtn = Array.from(document.querySelectorAll('*'))
                     .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
-                
                 if (okBtn) {
                     const rect = okBtn.getBoundingClientRect();
-                    const x = rect.left + rect.width / 2;
-                    const y = rect.top + rect.height / 2;
                     ['mousedown', 'mouseup', 'click'].forEach(type => {
                         okBtn.dispatchEvent(new MouseEvent(type, {
-                            view: window, bubbles: true, cancelable: true, clientX: x, clientY: y
+                            view: window, bubbles: true, cancelable: true, 
+                            clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2
                         }));
                     });
-
                     setTimeout(() => {
                         const modal = okBtn.closest('div[class*="modal"], div[class*="mask"], div[class*="popup"]');
                         if (modal) modal.remove();
-                        document.body.style.setProperty('filter', 'none', 'important');
-                        document.body.style.setProperty('overflow', 'auto', 'important');
-                        document.body.style.setProperty('pointer-events', 'auto', 'important');
+                        document.body.style.filter = 'none';
+                        document.body.style.overflow = 'auto';
                     }, 800);
                 }
             }, 300);
         });
 
-        await updateStatus('[SYSTEM] Accessing Account Portal...');
+        await updateStatus('[SYSTEM] Login sequence...');
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await masterPage.waitForTimeout(4000);
 
         const loginInput = await masterPage.$('input[type="text"], input[type="tel"]');
         if (loginInput) {
-            await updateStatus('[SYSTEM] Authenticating (Hausa/Portuguese)...');
             await masterPage.fill('input[type="text"], input[type="tel"]', '09163916500');
             await masterPage.fill('input[type="password"]', 'Emmamama');
-            
-            const loginBtn = masterPage.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last();
-            await loginBtn.dispatchEvent('click');
+            await masterPage.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last().dispatchEvent('click');
             await masterPage.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
         }
 
-        await updateStatus('[SYSTEM] Scanning initial balance...');
-        const balanceText = await masterPage.evaluate(() => {
-            const el = Array.from(document.querySelectorAll('*')).find(e => e.innerText?.includes('Balance:') || e.innerText?.includes('Saldo'));
-            return el ? el.innerText.replace(/[^0-9.]/g, '') : '0';
+        // --- ACCURATE BALANCE DETECTION ---
+        await updateStatus('[SYSTEM] Extracting balance...');
+        initialBalanceNum = await masterPage.evaluate(() => {
+            // Find the large yellow balance text specifically
+            const elements = Array.from(document.querySelectorAll('div, span, p'));
+            const balanceEl = elements.find(el => 
+                (el.innerText?.includes('13890') || /^\d+\.\d{2}$/.test(el.innerText?.trim())) && 
+                window.getComputedStyle(el).fontSize.includes('px')
+            );
+            return balanceEl ? parseFloat(balanceEl.innerText.replace(/,/g, '')) : 0;
         });
-        initialBalanceNum = parseFloat(balanceText) || 0;
 
-        await updateStatus(`[SYSTEM] Teleporting to Task Page for suffix ${targetSuffix}...`);
+        await updateStatus(`[SYSTEM] Navigating to Tasks for ${targetSuffix}...`);
         await masterPage.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
         await masterPage.waitForTimeout(5000);
 
@@ -1957,15 +1953,14 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         if (targetCount === 0) throw new Error(`Target ${targetSuffix} not found.`);
 
         const totalTabs = targetCount * 2;
-        await updateStatus(`[SYSTEM] Found ${targetCount} targets. Spawning ${totalTabs} Strike Tabs...`);
-        
+        await updateStatus(`[SYSTEM] Spawning ${totalTabs} Strike Tabs...`);
         for (let i = 1; i < totalTabs; i++) {
             const p = await context.newPage();
             pages.push(p);
             await p.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
         }
 
-        await updateStatus('[SYSTEM] ⚡ EXECUTING SIMULTANEOUS SEND ⚡');
+        await updateStatus('[SYSTEM] ⚡ SIMULTANEOUS SEND ⚡');
         await Promise.all(pages.map(async (p, idx) => {
             const targetIdx = Math.floor(idx / 2);
             await p.evaluate(({ suffix, index }) => {
@@ -1973,10 +1968,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                 let matches = 0;
                 for (let btn of btns) {
                     if (btn.closest('div')?.innerText.includes(suffix)) {
-                        if (matches === index) {
-                            btn.click();
-                            return;
-                        }
+                        if (matches === index) { btn.click(); return; }
                         matches++;
                     }
                 }
@@ -1985,30 +1977,34 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
         await masterPage.waitForTimeout(3000);
 
-        await updateStatus('[SYSTEM] ⚡ FLASH CONFIRM ⚡');
+        await updateStatus('[SYSTEM] ⚡ COORDINATED CONFIRM ⚡');
         await Promise.all(pages.map(p => p.evaluate(() => {
-            const confirm = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.trim().toLowerCase() === 'confirm');
+            const confirm = Array.from(document.querySelectorAll('*')).find(el => 
+                (el.innerText?.toLowerCase().includes('confirm') || el.innerText?.toLowerCase().includes('confirmar')) && el.offsetHeight > 0
+            );
             if (confirm) confirm.click();
         })));
 
-        await masterPage.waitForTimeout(10000);
+        // --- CAPTURE TASK PAGE STATE (MASTER TAB) ---
+        await updateStatus('[SYSTEM] Success. Capturing Master Task Tab...');
+        await masterPage.waitForTimeout(6000);
+        const finalTaskSnap = await masterPage.screenshot({ type: 'png' });
 
-        await updateStatus('[SYSTEM] Strike complete. Finalizing...');
+        // Go back to account to calculate profit
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await masterPage.waitForTimeout(3000);
 
-        const finalBalanceText = await masterPage.evaluate(() => {
-            const el = Array.from(document.querySelectorAll('*')).find(e => e.innerText?.includes('Balance:') || e.innerText?.includes('Saldo'));
-            return el ? el.innerText.replace(/[^0-9.]/g, '') : '0';
+        const finalBalanceNum = await masterPage.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('div, span, p'));
+            const balanceEl = elements.find(el => /^\d+\.\d{2}$/.test(el.innerText?.trim()));
+            return balanceEl ? parseFloat(balanceEl.innerText.replace(/,/g, '')) : 0;
         });
-        const finalBalanceNum = parseFloat(finalBalanceText) || 0;
-        const profit = (finalBalanceNum - initialBalanceNum).toFixed(2);
 
-        const finalSnap = await masterPage.screenshot({ type: 'png' });
-        await bot.deleteMessage(chatId, msgId).catch(() => {});
+        const profit = (finalBalanceNum - initialBalanceNum).toFixed(2);
         
-        await bot.sendPhoto(chatId, finalSnap, { 
-            caption: `Profit: <code>+${profit}</code>\nBalance: <code>${finalBalanceText}</code>`,
+        await bot.deleteMessage(chatId, msgId).catch(() => {});
+        await bot.sendPhoto(chatId, finalTaskSnap, { 
+            caption: `Profit: <code>+${profit}</code>\nBalance: <code>${finalBalanceNum.toLocaleString()}</code>`,
             parse_mode: 'HTML'
         });
 
@@ -2020,9 +2016,8 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         }
 
     } catch (err) {
-        await updateStatus(`❌ [CRASH] Task Failed: ${err.message}`);
+        await updateStatus(`[CRASH] Task Failed: ${err.message}`);
         if (context) {
-            // FIXED: Reference masterPage instead of page
             const video = masterPage?.video();
             await context.close().catch(() => {});
             if (video) {
