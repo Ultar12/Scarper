@@ -230,160 +230,108 @@ async function clearOnboardingPopups(page, updateStatus) {
 
 
 
-async function performM4USignIn(chatId) {
+
+        async function performM4USignIn(chatId) {
+    let browser = null;
+    let context = null;
     let page = null;
+
     try {
-        if (typeof globalTaskBrowser === 'undefined' || !globalTaskBrowser || !globalTaskBrowser.isConnected()) {
-            globalTaskBrowser = await puppeteer.launch({
-                headless: true,
-                executablePath: getChromePath(),
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-            });
-        }
-        page = await globalTaskBrowser.newPage();
-        await page.setViewport({ width: 412, height: 915 });
-        await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+        process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
 
-        // 1. LOGIN LOGIC (EXACTLY AS IN YOUR BALANCE COMMAND)
-        await page.goto('https://taskm4u.com/#/login', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 4000));
-
-        if (page.url().includes('login')) {
-            const inputs = await page.$$('input');
-            if (inputs.length >= 2) {
-                // Using your balance command logic: direct type with delay
-                await inputs[0].type('Staring', { delay: 50 });
-                await inputs[1].type('Emmama', { delay: 50 });
-                await new Promise(r => setTimeout(r, 1000));
-
-                await page.evaluate(() => {
-                    Array.from(document.querySelectorAll('*')).forEach(el => {
-                        if (el.innerText && el.innerText.trim() === 'Login') el.click();
-                    });
-                });
-
-                await page.waitForNavigation({waitUntil:'networkidle2', timeout:15000}).catch(()=>{});
-                await new Promise(r => setTimeout(r, 4000));
-            }
-        }
-
-         // 2. AGGRESSIVE COORDINATE STRIKE ON ORANGE BANNER
-        await new Promise(r => setTimeout(r, 7000)); // Give it time to fully render
-        
-        // Failsafe: Try to close any lingering news popups first
-        await page.evaluate(() => {
-            const items = Array.from(document.querySelectorAll('*'));
-            const closeBtn = items.find(el => (el.innerText || '').trim() === 'Close' && el.offsetParent !== null);
-            if (closeBtn) closeBtn.click();
-        });
-        await new Promise(r => setTimeout(r, 1000));
-
-        const bannerClicked = await page.evaluate(async () => {
-            const elements = Array.from(document.querySelectorAll('*'));
-            // Find the banner by looking for the specific text "Sign in" 
-            // OR the orange container.
-            const target = elements.find(el => {
-                const txt = (el.innerText || el.textContent || '').toLowerCase().trim();
-                return txt === 'sign in' && el.offsetParent !== null;
-            });
-
-            if (target) {
-                const rect = target.getBoundingClientRect();
-                return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-            }
-            return null;
+        browser = await firefox.launch({
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
 
-        if (bannerClicked) {
-            // PHYSICAL MOUSE STRIKE (Bypasses most anti-bot/UI traps)
-            await page.mouse.click(bannerClicked.x, bannerClicked.y);
-            console.log(`[SYSTEM] Physical click sent to: ${bannerClicked.x}, ${bannerClicked.y}`);
-        } else {
-            // EMERGENCY FALLBACK: Click the middle-top area where the banner usually lives
-            await page.mouse.click(200, 360); 
+        context = await browser.newContext({
+            userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
+            viewport: { width: 412, height: 915 }
+        });
+
+        page = await context.newPage();
+
+        // THE SNIPER: Auto-kills "Close" buttons on news popups
+        await page.addInitScript(() => {
+            setInterval(() => {
+                const closeBtn = Array.from(document.querySelectorAll('*'))
+                    .find(el => el.innerText?.trim() === 'Close' && el.offsetHeight > 0);
+                if (closeBtn) closeBtn.click();
+            }, 500);
+        });
+
+        // 1. LOGIN
+        await page.goto('https://taskm4u.com/#/login', { waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(5000);
+
+        const loginInput = await page.$('input[type="text"], input[type="tel"]');
+        if (loginInput) {
+            await page.fill('input[type="text"]', 'Staring');
+            await page.fill('input[type="password"]', 'Emmama');
+            // Click Login using the text locator
+            await page.locator('text=/Login/i').first().click();
+            await page.waitForTimeout(5000);
         }
 
-        // --- CRITICAL: Wait for the sub-page to actually LOAD ---
-        await new Promise(r => setTimeout(r, 7000)); 
+        // 2. NAVIGATE TO CHECK-IN PAGE
+        // Instead of clicking the banner, we teleport directly to the check-in sub-route
+        await page.goto('https://taskm4u.com/#/checkIn', { waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(6000);
 
+        // 3. THE HUMAN STRIKE ON "CHECK IN NOW!"
+        const checkInResult = await page.evaluate(async () => {
+            const btn = Array.from(document.querySelectorAll('*'))
+                .find(el => (el.innerText?.includes('Check in Now') || el.innerText?.includes('Checked In')) && el.offsetHeight > 0);
 
+            if (!btn) return "NOT_FOUND";
+            if (btn.innerText.includes('Checked In')) return "ALREADY_DONE";
 
-                        // 3. CHECK-IN EXECUTION (DIRECT TOUCH-EVENT DISPATCH)
-        await new Promise(r => setTimeout(r, 7000)); // Allow site scripts to fully hydrate
-
-        const checkResult = await page.evaluate(async () => {
-            const elements = Array.from(document.querySelectorAll('*'));
-            
-            // Look for the blue pill button specifically
-            const btn = elements.find(el => {
-                const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
-                return txt.includes('check in now') && el.offsetParent !== null;
-            });
-
-            if (!btn) return { status: "NOT_FOUND" };
-            if (btn.innerText.includes('Checked In')) return { status: "ALREADY_DONE" };
-
-            btn.scrollIntoView({ block: 'center' });
+            // Geometric click calculation
             const rect = btn.getBoundingClientRect();
             const x = rect.left + rect.width / 2;
             const y = rect.top + rect.height / 2;
 
-            // --- THE SECRET SAUCE: TOUCH EVENT BOMBING ---
-            // We simulate a real finger touch sequence (start -> end -> click)
-            const touchData = {
-                bubbles: true,
-                cancelable: true,
-                view: window,
-                touches: [{ identifier: Date.now(), target: btn, clientX: x, clientY: y }],
-                targetTouches: [{ identifier: Date.now(), target: btn, clientX: x, clientY: y }],
-                changedTouches: [{ identifier: Date.now(), target: btn, clientX: x, clientY: y }]
-            };
+            // Dispatch sequence to mimic real touch
+            const events = ['touchstart', 'touchend', 'mousedown', 'mouseup', 'click'];
+            events.forEach(name => {
+                const ev = (name.includes('touch')) 
+                    ? new TouchEvent(name, { bubbles: true, touches: [{ clientX: x, clientY: y }] })
+                    : new MouseEvent(name, { bubbles: true, clientX: x, clientY: y });
+                btn.dispatchEvent(ev);
+            });
 
-            btn.dispatchEvent(new TouchEvent('touchstart', touchData));
-            await new Promise(r => setTimeout(r, 100)); // Hold for 100ms
-            btn.dispatchEvent(new TouchEvent('touchend', touchData));
-            
-            // Standard click fallback
-            btn.click();
-            btn.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: x, clientY: y }));
-
-            return { status: "EXECUTED" };
+            return "CLICKED";
         });
 
-        // 4. VERIFICATION (Check if the screen actually changed)
-        await new Promise(r => setTimeout(r, 5000));
-        
+        await page.waitForTimeout(4000);
+
+        // 4. VERIFICATION AND CAPTURE
         const finalStatus = await page.evaluate(() => {
-            const bodyTxt = document.body.innerText;
-            if (bodyTxt.includes('Checked In') || bodyTxt.includes('Success')) return "SUCCESS";
-            if (bodyTxt.includes('completing the task')) return "TASK_LOCKED";
-            return "STILL_IDLE";
+            const txt = document.body.innerText;
+            if (txt.includes('Checked In')) return "SUCCESS";
+            if (txt.includes('completing the task')) return "TASK_LOCKED";
+            return "IDLE";
         });
 
         const finalSnap = await page.screenshot({ type: 'png' });
 
-        if (finalStatus === "SUCCESS" || checkResult.status === "ALREADY_DONE") {
+        if (finalStatus === "SUCCESS" || checkInResult === "ALREADY_DONE") {
             await bot.sendPhoto(chatId, finalSnap, { caption: "[VERIFIED] M4U Check-in Success." });
         } else if (finalStatus === "TASK_LOCKED") {
-            await bot.sendPhoto(chatId, finalSnap, { caption: "[LOCKED] M4U: WhatsApp Task is not yet verified by the site." });
+            await bot.sendPhoto(chatId, finalSnap, { caption: "[LOCKED] M4U: Task not verified by site." });
         } else {
-            await bot.sendPhoto(chatId, finalSnap, { caption: "[FAILED] The button was hit with TouchEvents but did not respond." });
+            await bot.sendPhoto(chatId, finalSnap, { caption: "[FAILED] Check-in button did not respond to strike." });
         }
-
-
 
     } catch (err) {
         if (page) {
-            const crashSnap = await page.screenshot({ type: 'png' }).catch(() => null);
-            await bot.sendPhoto(chatId, crashSnap || Buffer.alloc(0), { caption: `[CRITICAL] M4U Sequence crashed: ${err.message}` });
+            const errSnap = await page.screenshot().catch(() => null);
+            await bot.sendPhoto(chatId, errSnap || Buffer.alloc(0), { caption: `[CRITICAL] M4U Failed: ${err.message}` });
         }
     } finally {
-        if (page) await page.close().catch(() => {});
+        if (browser) await browser.close();
     }
 }
-
-
-
 
 
 // --- 4. TELEGRAM COMMAND LISTENERS ---
@@ -1564,7 +1512,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
         // LOGIN LOGIC
         const loginInput = await wPage.$('input[type="text"], input[type="tel"]');
         if (loginInput) {
-            await wPage.fill('input[type="text"], input[type="tel"]', '09163916311');
+            await wPage.fill('input[type="text"], input[type="tel"]', '09163916500');
             await wPage.fill('input[type="password"]', 'Emmamama');
             const loginBtn = wPage.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last();
             await loginBtn.dispatchEvent('click');
@@ -1941,7 +1889,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     if (chatId !== ADMIN_ID) return;
 
     const targetSuffix = match[1]; 
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] ⚡ Strike Protocol: ${targetSuffix} ⚡`);
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Strike Protocol: ${targetSuffix} ⚡`);
     const msgId = statusMsg.message_id;
 
     const updateStatus = async (text) => {
@@ -2038,12 +1986,14 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             await p.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
         }
 
-        // --- 5. SYNCHRONIZED STRIKE ---
-        await updateStatus('[SYSTEM] ⚡ EXECUTE SIMULTANEOUS SEND ⚡');
+                // --- 5. SYNCHRONIZED STRIKE ---
+        await updateStatus('[SYSTEM] EXECUTE SIMULTANEOUS SEND...');
         await Promise.all(pages.map(async (p, idx) => {
             const targetIdx = Math.floor(idx / 2);
             await p.evaluate(({ suffix, index }) => {
-                const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim() === 'SEND');
+                const btns = Array.from(document.querySelectorAll('*')).filter(el => 
+                    el.innerText?.trim().toUpperCase() === 'SEND' && el.offsetHeight > 0
+                );
                 let matches = 0;
                 for (let btn of btns) {
                     if (btn.closest('div')?.innerText.includes(suffix)) {
@@ -2054,31 +2004,59 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }, { suffix: targetSuffix, index: targetIdx });
         }));
 
-        await masterPage.waitForTimeout(3000);
+        await masterPage.waitForTimeout(3500);
 
-        await updateStatus('[SYSTEM] ⚡ COORDINATED CONFIRM ⚡');
+        // --- 6. COORDINATED "MODAL-AWARE" CONFIRM ---
+        await updateStatus('[SYSTEM] COORDINATED CONFIRM');
         await Promise.all(pages.map(p => p.evaluate(() => {
-            // Updated to find lowercase "confirm" and "confirmar" as seen in your screenshot
-            const confirm = Array.from(document.querySelectorAll('*')).find(el => 
-                /confirm|confirmar/i.test(el.innerText?.trim()) && el.offsetHeight > 0
+            // 1. Find the modal container (the dark box with the white bottom)
+            const modal = Array.from(document.querySelectorAll('div')).find(el => 
+                (el.innerText?.includes('confirm') || el.innerText?.includes('confirmar')) && 
+                el.offsetHeight > 100 && el.offsetHeight < 400
             );
-            if (confirm) confirm.click();
+
+            if (modal) {
+                // 2. Target the 'confirm' side specifically (the right 50% of the button area)
+                const rect = modal.getBoundingClientRect();
+                const x = rect.left + (rect.width * 0.75); // Click 75% across the width
+                const y = rect.top + (rect.height - 30);    // Click near the bottom
+
+                const evData = { view: window, bubbles: true, clientX: x, clientY: y };
+                const clickTarget = document.elementFromPoint(x, y) || modal;
+                
+                ['mousedown', 'mouseup', 'click'].forEach(t => 
+                    clickTarget.dispatchEvent(new MouseEvent(t, evData))
+                );
+            } else {
+                // Fallback: If no modal, hunt for any clickable element with the text
+                const btn = Array.from(document.querySelectorAll('*')).find(el => 
+                    /confirm|confirmar/i.test(el.innerText) && el.offsetHeight > 0
+                );
+                if (btn) btn.click();
+            }
         })));
 
+        // --- 7. ACCURATE MATH (CLEANS COMMAS) ---
         await masterPage.waitForTimeout(6000);
         const finalTaskSnap = await masterPage.screenshot({ type: 'png' });
 
-        // --- 6. PROFIT CALCULATION ---
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-        await masterPage.waitForTimeout(3000);
+        await masterPage.waitForTimeout(4000);
 
         const finalBalanceNum = await masterPage.evaluate(() => {
             const allText = document.body.innerText;
-            const decimalMatches = allText.match(/\d+\.\d{2}/g);
-            return decimalMatches ? Math.max(...decimalMatches.map(n => parseFloat(n))) : 0;
+            const decimalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
+            if (decimalMatches) {
+                // Clean commas out of every match and pick the highest
+                const nums = decimalMatches.map(n => parseFloat(n.replace(/,/g, '')));
+                const money = nums.filter(n => n < 1000000);
+                return money.length > 0 ? Math.max(...money) : 0;
+            }
+            return 0;
         });
 
         const profit = (finalBalanceNum - initialBalanceNum).toFixed(2);
+
         
         await bot.deleteMessage(chatId, msgId).catch(() => {});
         await bot.sendPhoto(chatId, finalTaskSnap, { 
