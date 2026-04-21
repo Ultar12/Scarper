@@ -1701,7 +1701,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             }, 300);
         });
 
-        // Step 1: Account Login
+                // Step 1: Account Login & Teleport
         await bot.editMessageText('[SYSTEM] Navigating to Account...', { chat_id: chatId, message_id: statusMsg.message_id });
         await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(4000);
@@ -1712,23 +1712,23 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             await page.fill('input[type="password"]', 'Emmamama');
             const loginBtn = page.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last();
             await loginBtn.dispatchEvent('click');
+            
+            // Wait for URL change or timeout
             await page.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
         }
 
-                        // --- STEP 2: ROBUST BALANCE DETECTION ---
-        await page.waitForTimeout(3000);
-        
+        // TELEPORT: Force navigation to account page again to ensure balance is visible
+        await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(5000); // Give sniper time to kill the "Notice" ad
+
+        // --- STEP 2: ROBUST BALANCE DETECTION ---
         const rawBalance = await page.evaluate(() => {
-            // 1. Get all text elements on the page
             const elements = Array.from(document.querySelectorAll('div, span, p, h1, h2'));
-            
-            // 2. Filter for elements that look like a currency balance (e.g., 13890.00)
             const balanceMatches = elements
                 .map(el => el.innerText?.replace(/,/g, '').trim())
-                .filter(text => /^\d+\.\d{2}$/.test(text)); // Must be digits.digits
+                .filter(text => /^\d+\.\d{2}$/.test(text)); 
 
             if (balanceMatches.length > 0) {
-                // 3. Pick the largest number found (to avoid mistaking small UI numbers)
                 const numbers = balanceMatches.map(n => parseFloat(n));
                 return Math.max(...numbers);
             }
@@ -1739,20 +1739,18 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         const targetAmount = tiers.find(t => rawBalance >= t);
 
         if (!targetAmount) {
-            // Diagnostic screenshot to see what went wrong
             const errSnap = await page.screenshot();
             await bot.sendPhoto(chatId, errSnap, { 
-                caption: `[DIAGNOSTIC] Failed to find tier. Detected Balance: ${rawBalance}` 
+                caption: `[DIAGNOSTIC] Detected Balance: ${rawBalance}. No matching tier.` 
             });
-            throw new Error(`Balance ${rawBalance} is too low for available tiers.`);
+            throw new Error(`Balance ${rawBalance} is too low.`);
         }
 
-
-        // Use bot.editMessageText directly to avoid "updateStatus undefined"
-        await bot.editMessageText(`[SYSTEM] Balance: ${rawBalance}. Target: ${targetAmount}.`, { 
+        await bot.editMessageText(`[SYSTEM] Target Acquired: ${targetAmount}. Proceeding to Saque...`, { 
             chat_id: chatId, 
             message_id: statusMsg.message_id 
         });
+
         
         // Go to withdrawal page
         await page.goto('https://www.wsjobs-ng.com/account/withdraw', { waitUntil: 'domcontentloaded' });
