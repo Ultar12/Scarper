@@ -243,7 +243,7 @@ async function performM4USignIn(chatId) {
         });
         page = await context.newPage();
 
-               // 1. DYNAMIC ENTRY
+                // 1. DYNAMIC ENTRY
         await page.goto('https://taskm4u.com/#/home', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(5000);
 
@@ -299,7 +299,7 @@ async function performM4USignIn(chatId) {
         });
 
         await page.waitForTimeout(2000);
- 
+
 
         // 3. TELEPORT & WAIT FOR HYDRATION
         await page.goto('https://taskm4u.com/#/signIn', { waitUntil: 'domcontentloaded' });
@@ -1788,13 +1788,16 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         }
 
 
-               await bot.editMessageText(`[SYSTEM] Target Acquired: ${targetAmount}. Proceeding to Saque...`, { 
-            chatId: chatId, // Fixed to chatId
+
+        await bot.editMessageText(`[SYSTEM] Target Acquired: ${targetAmount}. Proceeding to Saque...`, { 
+            chat_id: chatId, 
             message_id: statusMsg.message_id 
         });
 
+        
         // Go to withdrawal page
         await page.goto('https://www.wsjobs-ng.com/account/withdraw', { waitUntil: 'domcontentloaded' });
+
         await page.waitForTimeout(4000);
 
         // Step 3: Select Amount and Click SACAR AGORA
@@ -1813,15 +1816,19 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             if (mainBtn) mainBtn.click();
         });
 
-        // Step 4: Input Password and Confirm
+                // Step 4: Input Password and Confirm
         await updateStatus('[SYSTEM] Waiting for Withdrawal Popup...');
         
+        // Targeted locator for the password field inside the confirm modal
         const passInput = page.locator('input[type="password"], .modal-body input, [placeholder*="password"], [placeholder*="senha"]').last();
+        
+        // Wait up to 10s for the popup to actually be visible before typing
         await passInput.waitFor({ state: 'visible', timeout: 10000 });
         await passInput.fill('Emmamama');
 
         await updateStatus('[SYSTEM] Submitting Final Confirmation...');
         await page.evaluate(() => {
+            // Find the specific 'Confirm Withdrawal' or 'Confirmar' button inside the green/dark modal
             const buttons = Array.from(document.querySelectorAll('button, div, span'));
             const finalBtn = buttons.find(b => 
                 (b.innerText?.includes('Confirm Withdrawal') || b.innerText?.includes('Confirmar')) && 
@@ -1831,14 +1838,11 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             if (finalBtn) finalBtn.click();
         });
 
+
         await page.waitForTimeout(5000);
         
         const finalSnap = await page.screenshot({ type: 'png' });
-        
-        // --- FIXED LINE BELOW: Changed chat_id to chatId ---
-        await bot.sendPhoto(chatId, finalSnap, { 
-            caption: `[SUCCESS] Withdrawal for ${targetAmount} submitted.` 
-        }, { filename: 'withdraw_success.png' });
+        await bot.sendPhoto(chat_id, finalSnap, { caption: `[SUCCESS] Withdrawal for ${targetAmount} submitted.` });
 
         // Video Cleanup
         const video = page.video();
@@ -1848,8 +1852,9 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             if (fs.existsSync(vPath)) fs.unlinkSync(vPath);
         }
 
-    } catch (err) {
+        } catch (err) {
         console.log(`[WITHDRAW ERROR]: ${err.message}`);
+        // Ensure you use chatId (no underscore)
         await bot.sendMessage(chatId, `[WITHDRAW ERROR]: ${err.message}`); 
         
         if (context) {
@@ -1858,6 +1863,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             if (video) {
                 const vPath = await video.path().catch(() => null);
                 if (vPath && fs.existsSync(vPath)) {
+                    // Changed chat_id to chatId here too
                     await bot.sendVideo(chatId, vPath, { 
                         caption: `Diagnostic: Withdrawal Failure\nError: ${err.message}` 
                     }).catch(() => {});
@@ -1868,9 +1874,8 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
     } finally {
         if (browser) await browser.close().catch(() => {});
     }
- 
+});
 
-        
 
 bot.onText(/\/upscale/i, async (msg) => {
     const chatId = msg.chat.id.toString();
@@ -1984,38 +1989,16 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             await masterPage.goto('https://www.wsjobs-ng.com/account');
         }
 
-                // --- 3. YELLOW-PRIORITY BALANCE SCRAPER (FIXED) ---
+        // --- 3. PRECISION BALANCE SCRAPER (FIXED) ---
         initialBalanceNum = await masterPage.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('div, span, p, b, h1, h2'));
-            
-            // 1. Target the Yellow Balance (rgb 255, 235, 59)
-            // This is the most accurate way because only the balance is yellow.
-            const yellowEl = elements.find(el => {
-                const style = window.getComputedStyle(el);
-                const isYellow = style.color === 'rgb(255, 235, 59)' || style.color === 'yellow';
-                return isYellow && /\d/.test(el.innerText) && el.offsetHeight > 0;
-            });
-
-            if (yellowEl) {
-                // Remove commas and currency symbols, keep only numbers and dots
-                const val = yellowEl.innerText.replace(/[^0-9.]/g, '');
-                return parseFloat(val) || 0;
-            }
-
-            // 2. FALLBACK: If yellow fails, look for money-like numbers but ignore phone numbers
             const allText = document.body.innerText;
-            const matches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
-            if (matches) {
-                const numbers = matches
-                    .map(n => n.replace(/,/g, ''))
-                    .map(n => parseFloat(n))
-                    .filter(n => n > 0 && n < 100000); // Filter out phone numbers (>100k)
-                
-                return numbers.length > 0 ? Math.max(...numbers) : 0;
+            const decimalMatches = allText.match(/\d+\.\d{2}/g);
+            if (decimalMatches) {
+                const nums = decimalMatches.map(n => parseFloat(n));
+                return Math.max(...nums);
             }
             return 0;
         });
-
 
         await updateStatus(`[SYSTEM] Teleporting to Task Page...`);
         await masterPage.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
@@ -2092,7 +2075,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         })));
 
-                        // --- 7. ACCURATE MATH (YELLOW-PRIORITY SCRAPER) ---
+                // --- 7. ACCURATE MATH (YELLOW-PRIORITY SCRAPER) ---
         await masterPage.waitForTimeout(6000);
         const finalTaskSnap = await masterPage.screenshot({ type: 'png' });
 
@@ -2121,31 +2104,32 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                 const nums = matches
                     .map(n => n.replace(/,/g, ''))
                     .map(n => parseFloat(n))
-                    .filter(n => n > 0 && n < 100000); 
+                    .filter(n => n > 0 && n < 100000); // Strict filter to kill phone number interference
                 
                 return nums.length > 0 ? Math.max(...nums) : 0;
             }
             return 0;
         });
 
-        // --- MATH EXECUTION ---
-        const diff = finalBalanceNum - initialBalanceNum;
-        // Fix: If profit is negative (due to a bad initial scan), show 0.00 instead of a mess
-        const profitText = diff > 0 ? diff.toFixed(2) : "0.00";
+        // Calculate profit (Final - Initial)
+        const profit = (finalBalanceNum - initialBalanceNum).toFixed(2);
         
+        // Ensure profit doesn't show weird negatives if the initial scan failed
+        const displayProfit = parseFloat(profit) < 0 ? "0.00" : profit;
+
         await bot.deleteMessage(chatId, msgId).catch(() => {});
-        
         await bot.sendPhoto(chatId, finalTaskSnap, { 
-            caption: `Profit: <code>+${profitText}</code>\nBalance: <code>${finalBalanceNum.toLocaleString(undefined, {minimumFractionDigits: 2})}</code>`,
+            caption: `Profit: <code>+${displayProfit}</code>\nBalance: <code>${finalBalanceNum.toLocaleString(undefined, {minimumFractionDigits: 2})}</code>`,
             parse_mode: 'HTML'
-        }, { filename: 'task_result.png' });
+        });
 
     } catch (err) {
         await bot.sendMessage(chatId, `[STRIKE FAILED]: ${err.message}`);
     } finally {
-        if (context) await context.close().catch(() => {});
-    }
-
+        // Close context to free RAM but keep globalTaskBrowser alive for next strike
+        if (context) {
+            await context.close().catch(() => {});
+        }
     }
 
     });
