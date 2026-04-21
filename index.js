@@ -1768,116 +1768,90 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             message_id: statusMsg.message_id 
         }).catch(() => {});
 
-                // Step 3: Withdraw Navigation & Execution
-        await page.goto('https://www.wsjobs-ng.com/account/withdraw', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(4000);
-
-        // 1. Click the Amount Chip
-        await page.evaluate((amt) => {
-            const chips = Array.from(document.querySelectorAll('div, span, p, button, [class*="item"]'));
-            const targetChip = chips.find(c => c.innerText?.trim() === amt.toString() && c.offsetHeight > 0);
-            if (targetChip) {
-                targetChip.click();
-                // Force a "selected" state trigger
-                targetChip.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-        }, targetAmount);
-
-        // 2. IMPORTANT: Wait for the selection animation to finish and button to stabilize
-        await page.waitForTimeout(3000);
-
-                // --- 3. NUCLEAR BUTTON STRIKE (FIREFOX COMPATIBLE) ---
-        await page.evaluate(() => {
-            const mainBtn = Array.from(document.querySelectorAll('*')).find(b => 
-                (b.innerText?.includes('WITHDRAW NOW') || b.innerText?.includes('SACAR AGORA')) && 
-                b.offsetHeight > 0 && 
-                window.getComputedStyle(b).display !== 'none'
-            );
-
-            if (mainBtn) {
-                const rect = mainBtn.getBoundingClientRect();
-                const x = rect.left + rect.width / 2;
-                const y = rect.top + rect.height / 2;
-
-                // Fire coordinate-based MouseEvents (Works on Firefox/Mobile)
-                const createEvent = (type) => new MouseEvent(type, {
-                    bubbles: true,
-                    cancelable: true,
-                    view: window,
-                    clientX: x,
-                    clientY: y,
-                    buttons: 1
-                });
-
-                // Human sequence: Press down, release, then click
-                mainBtn.dispatchEvent(createEvent('mousedown'));
-                mainBtn.dispatchEvent(createEvent('mouseup'));
-                mainBtn.dispatchEvent(createEvent('click'));
                 
-                return "STRIKE_EXECUTED";
-            } else {
-                throw new Error("Withdraw button not found in DOM");
-            }
-        });
 
-        // Physical Mouse Backup (Safe for Firefox)
-        await page.mouse.click(206, 320).catch(() => {}); 
+        // --- STEP 3: WITHDRAW NAVIGATION & EXECUTION ---
+await page.goto('https://www.wsjobs-ng.com/account/withdraw', { waitUntil: 'domcontentloaded' });
+await page.waitForTimeout(4000);
 
-        await page.waitForTimeout(3000);
+// 1. Precise Amount Chip Selection
+await page.evaluate((amt) => {
+    const chips = Array.from(document.querySelectorAll('div, span, p, button, [class*="item"]'));
+    const targetChip = chips.find(c => c.innerText?.trim() === amt.toString() && c.offsetHeight > 0);
+    if (targetChip) {
+        // Force selection state
+        targetChip.click();
+        targetChip.style.border = "2px solid lime"; // Visual debug if recording
+        targetChip.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+}, targetAmount);
 
-    
-           // --- STEP 4: PASSWORD & FINAL CONFIRM ---
-        const passInput = page.locator('input[type="password"], .modal-body input, [placeholder*="password"], [placeholder*="senha"]').last();
+await page.waitForTimeout(2000);
+
+// 2. THE NUCLEAR "WITHDRAW NOW" STRIKE
+await page.evaluate(() => {
+    // Kill any transparent overlays that might be blocking the main button
+    const overlays = document.querySelectorAll('.van-overlay, .van-mask, [class*="mask"]');
+    overlays.forEach(o => o.remove());
+
+    const mainBtn = Array.from(document.querySelectorAll('*')).find(b => 
+        (b.innerText?.includes('WITHDRAW NOW') || b.innerText?.includes('SACAR AGORA')) && 
+        b.offsetHeight > 0
+    );
+
+    if (mainBtn) {
+        const rect = mainBtn.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+
+        const evData = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, buttons: 1 };
         
-        // 1. Wait for modal visibility
-        await passInput.waitFor({ state: 'visible', timeout: 15000 });
-        
-        // 2. Click and Type (More reliable than .fill() for triggering button activation)
-        await passInput.click();
-        await passInput.type('111111', { delay: 100 }); 
+        // Fire Triple-Threat Click Sequence
+        mainBtn.dispatchEvent(new MouseEvent('mousedown', evData));
+        mainBtn.dispatchEvent(new MouseEvent('mouseup', evData));
+        mainBtn.dispatchEvent(new MouseEvent('click', evData));
+    }
+});
 
-        await page.waitForTimeout(1000);
+// 3. PHYSICAL BACKUP (Force click the exact center of the green button area)
+await page.mouse.click(206, 365).catch(() => {}); 
 
-                // --- 3. NUCLEAR BUTTON STRIKE (WITH OVERLAY SNIPER) ---
-        await page.evaluate(() => {
-            // Physically remove any invisible "Glass Walls"
-            const blockers = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"], [class*="overlay"]');
-            blockers.forEach(el => el.remove());
-            
-            const buttons = Array.from(document.querySelectorAll('button, div, span, p'));
-            const finalBtn = buttons.find(b => 
-                (b.innerText?.includes('Tabbatar Cirewa') || 
-                 b.innerText?.includes('Confirm') || 
-                 b.innerText?.includes('Confirmar')) && 
-                b.offsetHeight > 0 && 
-                window.getComputedStyle(b).display !== 'none'
-            );
+await page.waitForTimeout(3000);
 
-            if (finalBtn) {
-                const rect = finalBtn.getBoundingClientRect();
-                const x = rect.left + rect.width / 2;
-                const y = rect.top + rect.height / 2;
+// --- STEP 4: PASSWORD & FINAL CONFIRM ---
+const passInput = page.locator('input[type="password"], .modal-body input, [placeholder*="password"]').last();
 
-                const evData = {
-                    bubbles: true,
-                    cancelable: true,
-                    view: window,
-                    clientX: x,
-                    clientY: y,
-                    buttons: 1
-                };
+// 1. Ensure modal is ready
+await passInput.waitFor({ state: 'visible', timeout: 10000 });
 
-                // Fire human-style sequence
-                finalBtn.dispatchEvent(new MouseEvent('mousedown', evData));
-                finalBtn.dispatchEvent(new MouseEvent('mouseup', evData));
-                finalBtn.dispatchEvent(new MouseEvent('click', evData));
-            }
-        });
+// 2. High-Precision Input
+await passInput.click();
+await page.evaluate(el => el.value = '', await passInput.elementHandle()); // Hard clear
+await passInput.type('111111', { delay: 100 }); 
 
-        // Physical backup tap at the expected coordinates
-        await page.mouse.click(300, 700).catch(() => {}); 
-        
-        await page.waitForTimeout(5000);
+// 3. Final "Tabbatar Cirewa" Strike
+await page.evaluate(() => {
+    // Remove the new modal overlay that appears after clicking "Withdraw Now"
+    const modalBlockers = document.querySelectorAll('.van-overlay, .modal-mask');
+    modalBlockers.forEach(el => el.remove());
+
+    const finalBtn = Array.from(document.querySelectorAll('*')).find(b => 
+        (b.innerText?.includes('Tabbatar Cirewa') || b.innerText?.includes('Confirm')) && 
+        b.offsetHeight > 0
+    );
+
+    if (finalBtn) {
+        const rect = finalBtn.getBoundingClientRect();
+        const ev = { bubbles: true, view: window, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+        finalBtn.dispatchEvent(new MouseEvent('click', ev));
+    }
+});
+
+// Coordinate backup for the "Tabba" button
+await page.mouse.click(206, 720).catch(() => {}); 
+
+await page.waitForTimeout(5000);
+
 
         // --- 4. SUCCESS CAPTURE & DELIVERY ---
         // Variable defined here so it exists for the sendPhoto call
