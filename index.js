@@ -1844,11 +1844,13 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
         await page.waitForTimeout(1000);
 
-        // 3. GEOMETRIC STRIKE ON CONFIRM BUTTON
+                // --- 3. NUCLEAR BUTTON STRIKE (WITH OVERLAY SNIPER) ---
         await page.evaluate(() => {
-            const buttons = Array.from(document.querySelectorAll('button, div, span, p'));
+            // Physically remove any invisible "Glass Walls"
+            const blockers = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"], [class*="overlay"]');
+            blockers.forEach(el => el.remove());
             
-            // Added 'Tabbatar Cirewa' to the search criteria
+            const buttons = Array.from(document.querySelectorAll('button, div, span, p'));
             const finalBtn = buttons.find(b => 
                 (b.innerText?.includes('Tabbatar Cirewa') || 
                  b.innerText?.includes('Confirm') || 
@@ -1862,7 +1864,6 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                 const x = rect.left + rect.width / 2;
                 const y = rect.top + rect.height / 2;
 
-                // Human-style event sequence (Firefox Compatible)
                 const evData = {
                     bubbles: true,
                     cancelable: true,
@@ -1872,22 +1873,27 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                     buttons: 1
                 };
 
+                // Fire human-style sequence
                 finalBtn.dispatchEvent(new MouseEvent('mousedown', evData));
                 finalBtn.dispatchEvent(new MouseEvent('mouseup', evData));
                 finalBtn.dispatchEvent(new MouseEvent('click', evData));
             }
         });
 
+        // Physical backup tap at the expected coordinates
+        await page.mouse.click(300, 700).catch(() => {}); 
+        
         await page.waitForTimeout(5000);
 
-        
+        // --- 4. SUCCESS CAPTURE & DELIVERY ---
+        // Variable defined here so it exists for the sendPhoto call
         const finalSnap = await page.screenshot({ type: 'png' });
         
-        // Final Delivery
         await bot.sendPhoto(chatId, finalSnap, 
             { caption: `[SUCCESS] Withdrawal for ${targetAmount} submitted.` },
-            { filename: 'withdraw_final.png' }
+            { filename: 'withdraw_final.png' } // MANDATORY to prevent EFATAL
         );
+
 
 
         const video = page.video();
@@ -2138,6 +2144,9 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                 if (btn) btn.click();
             }
         })));
+
+
+        const finalSnap = await page.screenshot({ type: 'png' });
 
                  // --- 7. YELLOW-PRIORITY BALANCE SCRAPER (FINAL) ---
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
