@@ -1687,6 +1687,7 @@ const updateStatus = async (text) => {
 
 
 
+
 bot.onText(/\/withdraw\s+task/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -1694,7 +1695,6 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
     let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting Firefox for Secure Withdrawal...`);
     const videoDir = path.join(__dirname, 'videos');
     if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
-    const videoPath = path.join(videoDir, `withdraw_${Date.now()}.mp4`);
 
     let browser = null;
     let context = null;
@@ -1714,7 +1714,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             recordVideo: { dir: videoDir, size: { width: 412, height: 915 } }
         });
 
-        const page = await context.newPage();
+        page = await context.newPage();
 
         // --- THE HUMAN SNIPER (MODAL KILLER) ---
         await page.addInitScript(() => {
@@ -1740,7 +1740,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             }, 300);
         });
 
-                // Step 1: Account Login & Teleport
+        // Step 1: Account Login & Teleport
         await bot.editMessageText('[SYSTEM] Navigating to Account...', { chat_id: chatId, message_id: statusMsg.message_id });
         await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(4000);
@@ -1751,37 +1751,26 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             await page.fill('input[type="password"]', 'Emmamama');
             const loginBtn = page.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last();
             await loginBtn.dispatchEvent('click');
-            
-            // Wait for URL change or timeout
             await page.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
         }
 
-        // TELEPORT: Force navigation to account page again to ensure balance is visible
         await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(5000); // Give sniper time to kill the "Notice" ad
+        await page.waitForTimeout(5000); 
+
         // --- STEP 2: PRECISION BALANCE SCRAPER ---
-        await page.waitForTimeout(4000);
-        
         const rawBalance = await page.evaluate(() => {
             const allText = document.body.innerText;
-            
-            // 1. Specifically look for numbers with decimals first (e.g., 14450.00)
             const decimalMatches = allText.match(/\d+\.\d{2}/g);
-            
             if (decimalMatches) {
-                // Convert all decimal finds to numbers and pick the largest
                 const nums = decimalMatches.map(n => parseFloat(n));
                 return Math.max(...nums);
             }
-
-            // 2. Fallback: If no decimals found, look for large integers but ignore phone-like sequences
             const generalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
             if (generalMatches) {
                 const numbers = generalMatches
                     .map(n => n.replace(/,/g, ''))
                     .map(n => parseFloat(n))
-                    .filter(n => n > 100 && n < 100000); // Only keep realistic balance ranges
-                
+                    .filter(n => n > 100 && n < 100000); 
                 return numbers.length > 0 ? Math.max(...numbers) : 0;
             }
             return 0;
@@ -1793,23 +1782,20 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         if (!targetAmount) {
             const errSnap = await page.screenshot();
             await bot.sendPhoto(chatId, errSnap, { 
-                caption: `[DIAGNOSTIC] Detected Balance: ${rawBalance}. (Targeted decimals specifically)` 
-            });
+                caption: `[DIAGNOSTIC] Detected Balance: ${rawBalance}. Too low for withdrawal.` 
+            }, { filename: 'low_balance.png' });
             throw new Error(`Balance ${rawBalance} is too low.`);
         }
 
-
-
-                await bot.editMessageText(`[SYSTEM] Target Acquired: ${targetAmount}. Proceeding to Saque...`, { 
-            chat_id: chatId, // Parameter must be chat_id for this API method
+        await bot.editMessageText(`[SYSTEM] Target Acquired: ${targetAmount}. Proceeding to Saque...`, { 
+            chat_id: chatId, 
             message_id: statusMsg.message_id 
         }).catch(() => {});
 
-        // Go to withdrawal page
+        // Step 3: Withdraw Navigation & Execution
         await page.goto('https://www.wsjobs-ng.com/account/withdraw', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(4000);
 
-        // Step 3: Select Amount and Click SACAR AGORA
         await page.evaluate((amt) => {
             const chips = Array.from(document.querySelectorAll('div, span, p, button'));
             const targetChip = chips.find(c => c.innerText?.trim() === amt.toString() && c.offsetHeight > 0);
@@ -1825,15 +1811,11 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             if (mainBtn) mainBtn.click();
         });
 
-        // Step 4: Input Password and Confirm
-        await updateStatus('[SYSTEM] Waiting for Withdrawal Popup...');
-        
+        // Step 4: Password & Final Confirm
         const passInput = page.locator('input[type="password"], .modal-body input, [placeholder*="password"], [placeholder*="senha"]').last();
-        
         await passInput.waitFor({ state: 'visible', timeout: 10000 });
         await passInput.fill('Emmamama');
 
-        await updateStatus('[SYSTEM] Submitting Final Confirmation...');
         await page.evaluate(() => {
             const buttons = Array.from(document.querySelectorAll('button, div, span'));
             const finalBtn = buttons.find(b => 
@@ -1848,13 +1830,12 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         
         const finalSnap = await page.screenshot({ type: 'png' });
         
-        // Fixed: Used chatId variable and added filename to prevent EFATAL
+        // FIXED: Using chatId (no underscore) and providing a filename
         await bot.sendPhoto(chatId, finalSnap, 
             { caption: `[SUCCESS] Withdrawal for ${targetAmount} submitted.` },
             { filename: 'withdraw_final.png' }
         );
 
-        // Video Cleanup
         const video = page.video();
         await context.close();
         if (video) {
@@ -1864,7 +1845,6 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
     } catch (err) {
         console.log(`[WITHDRAW ERROR]: ${err.message}`);
-        // Fixed: Using chatId (camelCase) consistent with variable definition
         await bot.sendMessage(chatId, `[WITHDRAW ERROR]: ${err.message}`).catch(() => {}); 
         
         if (context) {
@@ -1883,8 +1863,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
     } finally {
         if (browser) await browser.close().catch(() => {});
     }
-
-   }); 
+});
 
         
         
