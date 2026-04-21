@@ -230,6 +230,7 @@ async function clearOnboardingPopups(page, updateStatus) {
 
 
 
+
 async function performM4USignIn(chatId) {
     let browser = null;
     let context = null;
@@ -250,48 +251,62 @@ async function performM4USignIn(chatId) {
 
         page = await context.newPage();
 
-        // 1. LOGIN PHASE
-        await page.goto('https://taskm4u.com/#/login', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(4000);
+        // 1. LOGIN & SESSION VERIFICATION
+        // Navigate to home to check if we are already logged in
+        await page.goto('https://taskm4u.com/#/home', { waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(5000);
 
-        const isLoginPage = await page.$('input[placeholder*="phone number"]');
-        if (isLoginPage) {
+        // Check for the login placeholders from your screenshot
+        const needsLogin = await page.evaluate(() => {
+            return !!document.querySelector('input[placeholder*="phone number"]');
+        });
+
+        if (needsLogin) {
             await page.fill('input[placeholder*="phone number"]', 'Staring');
             await page.fill('input[placeholder*="password"]', 'Emmama');
+            
+            // Clicks the purple Login button
             await page.locator('text=/Login/i').first().click();
             
-            // Wait for dashboard to load
+            // Wait for the URL to change to the dashboard
             await page.waitForURL('**/home', { timeout: 15000 }).catch(() => {});
+            await page.waitForTimeout(5000); 
         }
 
-        // 2. THE WELCOME AD SNIPER
-        // Specifically targets the "Close" button on the Daily Rebate popup from your photo
-        await page.waitForTimeout(3000); // Give ad time to spawn
+        // 2. THE SNIPER: KILL WELCOME ADS & OVERLAYS
         await page.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('*'));
             const closeBtn = elements.find(el => 
                 el.innerText?.trim() === 'Close' && el.offsetHeight > 0
             );
+            
             if (closeBtn) {
                 closeBtn.click();
-                // Remove the modal and mask immediately to unblock the page
+                // Find and remove the entire modal structure to prevent "ghost" blocking
                 const modal = closeBtn.closest('div[class*="modal"], div[class*="mask"], div[class*="van-popup"]');
                 if (modal) modal.remove();
-                const overlays = document.querySelectorAll('.van-overlay');
+                
+                // Clear any dark overlays that prevent clicking the background
+                const overlays = document.querySelectorAll('.van-overlay, [class*="overlay"], [class*="mask"]');
                 overlays.forEach(o => o.remove());
+                
+                // Restore body scrolling/interaction
+                document.body.style.filter = 'none';
+                document.body.style.overflow = 'auto';
+                document.body.style.pointerEvents = 'auto';
             }
         });
 
         await page.waitForTimeout(2000);
 
-        // 3. TELEPORT TO SIGN-IN
+        // 3. TELEPORT TO SIGN-IN CALENDAR
         await page.goto('https://taskm4u.com/#/signIn', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(5000);
+        await page.waitForTimeout(6000);
 
-        // 4. THE HUMAN STRIKE ON "CHECK IN NOW!"
-        const checkInResult = await page.evaluate(async () => {
+        // 4. PRECISION STRIKE ON "CHECK IN NOW!"
+        const strikeResult = await page.evaluate(async () => {
             const btn = Array.from(document.querySelectorAll('*'))
-                .find(el => (el.innerText?.trim() === 'Check in Now!') && el.offsetHeight > 0);
+                .find(el => el.innerText?.trim() === 'Check in Now!' && el.offsetHeight > 0);
 
             if (!btn) {
                 const already = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.includes('Checked In'));
@@ -302,19 +317,21 @@ async function performM4USignIn(chatId) {
             const x = rect.left + rect.width / 2;
             const y = rect.top + rect.height / 2;
 
-            ['touchstart', 'touchend', 'mousedown', 'mouseup', 'click'].forEach(name => {
+            // Mimic a real finger touch sequence for mobile-designed buttons
+            const events = ['touchstart', 'touchend', 'mousedown', 'mouseup', 'click'];
+            events.forEach(name => {
                 const ev = (name.includes('touch')) 
                     ? new TouchEvent(name, { bubbles: true, touches: [{ clientX: x, clientY: y }] })
                     : new MouseEvent(name, { bubbles: true, clientX: x, clientY: y });
                 btn.dispatchEvent(ev);
             });
 
-            return "STRIKE_FIRED";
+            return "STRIKE_EXECUTED";
         });
 
-        await page.waitForTimeout(3000);
+        await page.waitForTimeout(4000);
 
-        // 5. VERIFICATION
+        // 5. FINAL VERIFICATION
         const finalStatus = await page.evaluate(() => {
             const txt = document.body.innerText;
             if (txt.includes('Checked In') || txt.includes('Success')) return "SUCCESS";
@@ -324,7 +341,7 @@ async function performM4USignIn(chatId) {
 
         const finalSnap = await page.screenshot({ type: 'png' });
 
-        if (finalStatus === "SUCCESS" || checkInResult === "ALREADY_DONE") {
+        if (finalStatus === "SUCCESS" || strikeResult === "ALREADY_DONE") {
             await bot.sendPhoto(chatId, finalSnap, { caption: "M4U Check-in Success." });
         } else if (finalStatus === "TASK_LOCKED") {
             await bot.sendPhoto(chatId, finalSnap, { caption: "M4U: Task not verified by site." });
@@ -335,13 +352,12 @@ async function performM4USignIn(chatId) {
     } catch (err) {
         if (page) {
             const errSnap = await page.screenshot().catch(() => null);
-            await bot.sendPhoto(chatId, errSnap || Buffer.alloc(0), { caption: `M4U Failed: ${err.message}` });
+            await bot.sendPhoto(chatId, errSnap || Buffer.alloc(0), { caption: `M4U Crash: ${err.message}` });
         }
     } finally {
         if (browser) await browser.close();
     }
 }
-
 
 
 
