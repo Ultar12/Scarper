@@ -243,37 +243,63 @@ async function performM4USignIn(chatId) {
         });
         page = await context.newPage();
 
-        // 1. DYNAMIC ENTRY
+               // 1. DYNAMIC ENTRY
         await page.goto('https://taskm4u.com/#/home', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(5000);
 
+        // Check for login placeholders from your screenshot
         const needsLogin = await page.evaluate(() => !!document.querySelector('input[placeholder*="phone number"]'));
 
         if (needsLogin) {
             await page.fill('input[placeholder*="phone number"]', 'Staring');
             await page.fill('input[placeholder*="password"]', 'Emmama');
-            await page.locator('button:has-text("Login"), .van-button--info').first().click();
+            
+            // AGGRESSIVE LOGIN CLICKER (Fixes the 30000ms Timeout)
+            await page.evaluate(() => {
+                const elements = Array.from(document.querySelectorAll('*'));
+                const loginBtn = elements.find(el => 
+                    el.innerText?.trim() === 'Login' && 
+                    el.offsetHeight > 0 && 
+                    window.getComputedStyle(el).display !== 'none'
+                );
+                if (loginBtn) {
+                    loginBtn.click();
+                    // Dispatch touch events for mobile-optimized divs
+                    ['touchstart', 'touchend', 'mousedown', 'mouseup', 'click'].forEach(name => {
+                        loginBtn.dispatchEvent(new MouseEvent(name, { bubbles: true, cancelable: true, view: window }));
+                    });
+                }
+            });
+            
+            // Wait for dashboard to load
             await page.waitForURL('**/home', { timeout: 15000 }).catch(() => {});
             await page.waitForTimeout(5000); 
         }
 
-        // 2. THE PERMANENT SNIPER (Runs even if already logged in)
+        // 2. THE PERMANENT SNIPER (Kills ads and "Glass Wall" overlays)
         await page.evaluate(() => {
             const closeBtn = Array.from(document.querySelectorAll('*'))
                 .find(el => el.innerText?.trim() === 'Close' && el.offsetHeight > 0);
             
-            if (closeBtn) closeBtn.click();
+            if (closeBtn) {
+                closeBtn.click();
+                // Find and remove the specific Daily Rebate modal structure
+                const modal = closeBtn.closest('div[class*="modal"], div[class*="mask"], div[class*="popup"]');
+                if (modal) modal.remove();
+            }
             
-            // Delete the "Glass Wall" (overlays) from the page entirely
-            const blockers = document.querySelectorAll('.van-overlay, .van-popup, .van-modal, [class*="mask"]');
+            // Global cleanup: Delete any invisible blockers or dark masks
+            const blockers = document.querySelectorAll('.van-overlay, .van-popup, .van-modal, [class*="mask"], [class*="overlay"]');
             blockers.forEach(el => el.remove());
             
-            // Force the page to be clickable again
+            // Force interaction back to the body
             document.body.style.setProperty('pointer-events', 'auto', 'important');
             document.body.style.setProperty('filter', 'none', 'important');
+            document.body.style.setProperty('overflow', 'auto', 'important');
         });
 
         await page.waitForTimeout(2000);
+ 
 
         // 3. TELEPORT & WAIT FOR HYDRATION
         await page.goto('https://taskm4u.com/#/signIn', { waitUntil: 'domcontentloaded' });
