@@ -1792,24 +1792,53 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             message_id: statusMsg.message_id 
         }).catch(() => {});
 
-        // Step 3: Withdraw Navigation & Execution
+                // Step 3: Withdraw Navigation & Execution
         await page.goto('https://www.wsjobs-ng.com/account/withdraw', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(4000);
 
+        // 1. Click the Amount Chip
         await page.evaluate((amt) => {
-            const chips = Array.from(document.querySelectorAll('div, span, p, button'));
+            const chips = Array.from(document.querySelectorAll('div, span, p, button, [class*="item"]'));
             const targetChip = chips.find(c => c.innerText?.trim() === amt.toString() && c.offsetHeight > 0);
-            if (targetChip) targetChip.click();
+            if (targetChip) {
+                targetChip.click();
+                // Force a "selected" state trigger
+                targetChip.dispatchEvent(new Event('change', { bubbles: true }));
+            }
         }, targetAmount);
+
+        // 2. IMPORTANT: Wait for the selection animation to finish and button to stabilize
+        await page.waitForTimeout(3000);
+
+        // 3. NUCLEAR BUTTON STRIKE
+        await page.evaluate(() => {
+            const mainBtn = Array.from(document.querySelectorAll('*')).find(b => 
+                (b.innerText?.includes('WITHDRAW NOW') || b.innerText?.includes('SACAR AGORA')) && 
+                b.offsetHeight > 0 && 
+                window.getComputedStyle(b).display !== 'none'
+            );
+
+            if (mainBtn) {
+                // Get fresh coordinates of the button's center
+                const rect = mainBtn.getBoundingClientRect();
+                const x = rect.left + rect.width / 2;
+                const y = rect.top + rect.height / 2;
+
+                // Execute a geometric touch sequence (Bypasses most blockers)
+                const events = ['touchstart', 'touchend', 'mousedown', 'mouseup', 'click'];
+                events.forEach(name => {
+                    const ev = (name.includes('touch')) 
+                        ? new TouchEvent(name, { bubbles: true, touches: [{ clientX: x, clientY: y }] })
+                        : new MouseEvent(name, { bubbles: true, clientX: x, clientY: y, view: window });
+                    mainBtn.dispatchEvent(ev);
+                });
+            } else {
+                throw new Error("Withdraw button not found in DOM");
+            }
+        });
 
         await page.waitForTimeout(2000);
 
-        await page.evaluate(() => {
-            const mainBtn = Array.from(document.querySelectorAll('*')).find(b => 
-                (b.innerText?.includes('SACAR AGORA') || b.innerText?.includes('WITHDRAW NOW')) && b.offsetHeight > 0
-            );
-            if (mainBtn) mainBtn.click();
-        });
 
         // Step 4: Password & Final Confirm
         const passInput = page.locator('input[type="password"], .modal-body input, [placeholder*="password"], [placeholder*="senha"]').last();
