@@ -230,150 +230,132 @@ async function clearOnboardingPopups(page, updateStatus) {
 
 
 
+
+        
 async function performM4USignIn(chatId) {
     let browser = null;
     let context = null;
     let page = null;
+    const videoDir = path.join(__dirname, 'videos');
+    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
 
     try {
         process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
+        browser = await firefox.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
         
-        // Launch Firefox for better mobile-touch emulation
-        browser = await firefox.launch({ 
-            headless: true, 
-            args: ['--no-sandbox', '--disable-setuid-sandbox'] 
-        });
-
         context = await browser.newContext({
             userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
-            viewport: { width: 412, height: 915 }
+            viewport: { width: 412, height: 915 },
+            recordVideo: { dir: videoDir, size: { width: 412, height: 915 } } // VIDEO RECORDING ENABLED
         });
-
         page = await context.newPage();
 
-        // --- PHASE 1: LOGIN & AD CLEARANCE ---
-        await page.goto('https://taskm4u.com/#/home', { waitUntil: 'domcontentloaded' });
+        // 1. LOGIN PHASE (Aggressive Precision)
+        await page.goto('https://taskm4u.com/#/login', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(5000);
 
-        // Check if we are stuck on the login screen
-        const needsLogin = await page.evaluate(() => {
-            return !!document.querySelector('input[placeholder*="phone number"]');
-        });
+        const needsLogin = await page.evaluate(() => !!document.querySelector('input[placeholder*="phone number"]'));
 
         if (needsLogin) {
-            await page.fill('input[placeholder*="phone number"]', 'Staring');
-            await page.fill('input[placeholder*="password"]', 'Emmama');
-            
-            // AGGRESSIVE LOGIN CLICKER (Bypasses tag strictness)
+            // Use human-like typing to trigger validation
+            const phoneInput = page.locator('input[placeholder*="phone number"]');
+            await phoneInput.click();
+            await phoneInput.type('Staring', { delay: 100 });
+
+            const passInput = page.locator('input[placeholder*="password"]');
+            await passInput.click();
+            await passInput.type('Emmama', { delay: 100 });
+
+            await page.waitForTimeout(1000);
+
+            // GEOMETRIC STRIKE ON LOGIN BUTTON
             await page.evaluate(() => {
-                const elements = Array.from(document.querySelectorAll('*'));
-                const loginBtn = elements.find(el => 
-                    el.innerText?.trim() === 'Login' && 
-                    el.offsetHeight > 0 && 
-                    window.getComputedStyle(el).display !== 'none'
+                const btn = Array.from(document.querySelectorAll('*')).find(el => 
+                    el.innerText?.trim() === 'Login' && el.offsetHeight > 0
                 );
-                if (loginBtn) {
-                    loginBtn.click();
-                    // Dispatch touch sequence just in case it's a div/span
-                    ['touchstart', 'touchend', 'mousedown', 'mouseup', 'click'].forEach(name => {
-                        loginBtn.dispatchEvent(new MouseEvent(name, { bubbles: true, cancelable: true, view: window }));
-                    });
+                if (btn) {
+                    const rect = btn.getBoundingClientRect();
+                    const x = rect.left + rect.width / 2;
+                    const y = rect.top + rect.height / 2;
+                    
+                    const evData = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, buttons: 1 };
+                    btn.dispatchEvent(new MouseEvent('mousedown', evData));
+                    btn.dispatchEvent(new MouseEvent('mouseup', evData));
+                    btn.dispatchEvent(new MouseEvent('click', evData));
                 }
             });
             
-            // Wait for dashboard to actually load before clearing ads
             await page.waitForURL('**/home', { timeout: 15000 }).catch(() => {});
             await page.waitForTimeout(5000); 
         }
 
-        // --- PHASE 2: THE NUCLEAR SNIPER (Kills the "Daily Rebate" Ad & Overlays) ---
+        // 2. AD SNIPER
         await page.evaluate(() => {
-            const closeBtn = Array.from(document.querySelectorAll('*'))
-                .find(el => el.innerText?.trim() === 'Close' && el.offsetHeight > 0);
-            
+            const closeBtn = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.trim() === 'Close' && el.offsetHeight > 0);
             if (closeBtn) closeBtn.click();
-            
-            // Physical removal of the "Glass Wall" (overlays/masks)
-            const blockers = document.querySelectorAll('.van-overlay, .van-popup, .van-modal, [class*="mask"], [class*="overlay"]');
-            blockers.forEach(el => el.remove());
-            
-            // Force interaction back to the body
+            document.querySelectorAll('.van-overlay, .van-popup, .van-modal, [class*="mask"]').forEach(el => el.remove());
             document.body.style.setProperty('pointer-events', 'auto', 'important');
-            document.body.style.setProperty('filter', 'none', 'important');
-            document.body.style.setProperty('overflow', 'auto', 'important');
         });
 
         await page.waitForTimeout(2000);
 
-        // --- PHASE 3: TELEPORT TO SIGN-IN ---
+        // 3. TELEPORT TO SIGN-IN
         await page.goto('https://taskm4u.com/#/signIn', { waitUntil: 'domcontentloaded' });
-        
-        // Wait for the "Check in Now!" button text to exist in HTML
-        await page.waitForSelector('text=/Check in Now!/i', { timeout: 12000 }).catch(() => {});
-        await page.waitForTimeout(4000);
+        await page.waitForTimeout(5000);
 
-        // --- PHASE 4: COORDINATE STRIKE (Mobile Touch Sequence) ---
+        // 4. COORDINATE STRIKE ON CHECK-IN
         const strikeResult = await page.evaluate(async () => {
-            const btn = Array.from(document.querySelectorAll('*'))
-                .find(el => el.innerText?.trim() === 'Check in Now!' && el.offsetHeight > 0);
+            const btn = Array.from(document.querySelectorAll('*')).find(el => 
+                el.innerText?.trim() === 'Check in Now!' && el.offsetHeight > 0
+            );
 
-            if (!btn) {
-                const already = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.includes('Checked In'));
-                return already ? "ALREADY_DONE" : "NOT_FOUND";
-            }
+            if (!btn) return "NOT_FOUND";
 
             const rect = btn.getBoundingClientRect();
             const x = rect.left + rect.width / 2;
             const y = rect.top + rect.height / 2;
 
-            // Trigger every possible touch/mouse event to force the click
-            const events = ['touchstart', 'touchend', 'mousedown', 'mouseup', 'click'];
-            events.forEach(name => {
-                const ev = (name.includes('touch')) 
-                    ? new TouchEvent(name, { bubbles: true, touches: [{ clientX: x, clientY: y }] })
-                    : new MouseEvent(name, { bubbles: true, clientX: x, clientY: y });
-                btn.dispatchEvent(ev);
-            });
-            return "STRIKE_FIRED";
+            const evData = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, buttons: 1 };
+            btn.dispatchEvent(new MouseEvent('mousedown', evData));
+            btn.dispatchEvent(new MouseEvent('mouseup', evData));
+            btn.dispatchEvent(new MouseEvent('click', evData));
+            return "STRIKE_EXECUTED";
         });
-
-        // PHYSICAL MOUSE FALLBACK (Pixel-specific click for 412x915 viewport)
-        if (strikeResult === "STRIKE_FIRED") {
-            await page.mouse.click(206, 695); 
-        }
 
         await page.waitForTimeout(4000);
 
-        // --- PHASE 5: VERIFICATION & SNAPSHOT ---
+        // 5. VERIFY & SEND
         const finalStatus = await page.evaluate(() => {
             const txt = document.body.innerText;
-            if (txt.includes('Checked In') || txt.includes('Success')) return "SUCCESS";
-            return "IDLE";
+            return (txt.includes('Checked In') || txt.includes('Success')) ? "SUCCESS" : "IDLE";
         });
 
         const finalSnap = await page.screenshot({ type: 'png' });
+        
+        // If it worked, we don't need the video taking up space
+        const video = page.video();
+        await context.close(); 
+        const vPath = await video.path().catch(() => null);
 
-        if (finalStatus === "SUCCESS" || strikeResult === "ALREADY_DONE") {
+        if (finalStatus === "SUCCESS") {
             await bot.sendPhoto(chatId, finalSnap, { caption: "M4U Check-in Success." }, { filename: 'success.png' });
+            if (vPath && fs.existsSync(vPath)) fs.unlinkSync(vPath);
         } else {
-            await bot.sendPhoto(chatId, finalSnap, { caption: "Check-in button did not respond." }, { filename: 'failed.png' });
+            // FAILURE: Send screenshot AND the video record to see why it didn't fill
+            await bot.sendPhoto(chatId, finalSnap, { caption: "Check-in failed. Sending video record..." }, { filename: 'failed.png' });
+            if (vPath && fs.existsSync(vPath)) {
+                await bot.sendVideo(chatId, vPath, { caption: "M4U Diagnostic Video" });
+                setTimeout(() => { if (fs.existsSync(vPath)) fs.unlinkSync(vPath); }, 5000);
+            }
         }
 
     } catch (err) {
-        if (page) {
-            const errSnap = await page.screenshot({ type: 'png' }).catch(() => null);
-            if (errSnap) {
-                await bot.sendPhoto(chatId, errSnap, { caption: `M4U Error: ${err.message}` }, { filename: 'error.png' });
-            } else {
-                await bot.sendMessage(chatId, `M4U Error: ${err.message}`);
-            }
-        }
+        if (context) await context.close().catch(() => {});
+        await bot.sendMessage(chatId, `⚠️ M4U Crash: ${err.message}`);
     } finally {
         if (browser) await browser.close();
     }
 }
-
-        
 
 
 // --- 4. TELEGRAM COMMAND LISTENERS ---
@@ -1854,7 +1836,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         
         // Wait up to 15s for the modal to be fully visible
         await passInput.waitFor({ state: 'visible', timeout: 15000 });
-        await passInput.fill('Emmamama');
+        await passInput.fill('111111');
 
         await page.evaluate(() => {
             const buttons = Array.from(document.querySelectorAll('button, div, span'));
