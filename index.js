@@ -415,6 +415,103 @@ bot.onText(/\/m4usign/i, (msg) => {
 });
 
 
+bot.onText(/^\/testlogin$/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Initializing Playwright Firefox...');
+    
+    const updateStatus = async (text) => {
+        await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+    };
+
+    let browser = null;
+    try {
+        process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
+
+        browser = await firefox.launch({ 
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+        });
+
+        const context = await browser.newContext({
+            userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
+            viewport: { width: 412, height: 915 },
+        });
+
+        const page = await context.newPage();
+
+        await page.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
+            
+            // Accelerated Sniper (150ms) to ensure popup dies fast
+            setInterval(() => {
+                const okBtn = Array.from(document.querySelectorAll('*'))
+                    .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
+                if (okBtn) {
+                    okBtn.click();
+                    document.body.style.filter = 'none';
+                    document.body.style.overflow = 'auto';
+                    document.body.style.pointerEvents = 'auto';
+                }
+            }, 150);
+        });
+
+        await updateStatus('[SYSTEM] Navigating to wsjobs-ng...');
+        await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(5000); 
+
+        const loginInput = await page.$('input[type="text"], input[type="tel"]');
+        if (loginInput) {
+            await updateStatus('[SYSTEM] Filling credentials...');
+            await loginInput.fill('09163916500');
+            await page.fill('input[type="password"]', 'Emmamama');
+            
+            await updateStatus('[SYSTEM] Attempting to click Login...');
+            
+            try {
+                // Try clicking with a shorter timeout to trigger diagnostic screenshot faster
+                const loginBtn = page.locator('text=/LOGIN|SIGN IN|SHIGA/i').first();
+                await loginBtn.click({ timeout: 8000 });
+            } catch (clickErr) {
+                // --- DIAGNOSTIC SCREENSHOT ON FAILURE ---
+                const diagBuffer = await page.screenshot({ fullPage: false });
+                await bot.sendPhoto(chatId, diagBuffer, { 
+                    caption: `⚠️ [DIAGNOSTIC] Login click failed.\nError: ${clickErr.message}\n\nChecking if popup blocked the click...` 
+                });
+                
+                // Emergency Fallback: Force click via JavaScript
+                await page.evaluate(() => {
+                    const btn = Array.from(document.querySelectorAll('button, div, span, input'))
+                        .find(el => /LOGIN|SIGN IN|SHIGA/i.test(el.innerText || el.value || ''));
+                    if (btn) btn.click();
+                });
+            }
+            
+            await page.waitForLoadState('networkidle').catch(() => {});
+        }
+
+        await updateStatus('[SYSTEM] Verifying dashboard...');
+        await page.goto('https://www.wsjobs-ng.com/user');
+        await page.waitForTimeout(4000);
+        
+        const buffer = await page.screenshot({ fullPage: false });
+        
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+        await bot.sendPhoto(chatId, buffer, { 
+            caption: '[SUCCESS] Firefox Login Process Finished.\n\nCheck the image above for final state.' 
+        });
+
+    } catch (err) {
+        await updateStatus(`[ERROR] Playwright Session Failed: ${err.message}`);
+        if (page) {
+            const crashSnap = await page.screenshot().catch(() => null);
+            if (crashSnap) await bot.sendPhoto(chatId, crashSnap, { caption: 'Crash State Screenshot' });
+        }
+    } finally {
+        if (browser) await browser.close();
+    }
+});
 
 
 
