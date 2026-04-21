@@ -1800,84 +1800,74 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
                 
 
-        // --- STEP 3: WITHDRAW NAVIGATION & EXECUTION ---
-await page.goto('https://www.wsjobs-ng.com/account/withdraw', { waitUntil: 'domcontentloaded' });
-await page.waitForTimeout(4000);
+                // Step 3: Withdraw Navigation & Execution
+        await page.goto('https://www.wsjobs-ng.com/account/withdraw', { waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(4000);
 
-// 1. Precise Amount Chip Selection
-await page.evaluate((amt) => {
-    const chips = Array.from(document.querySelectorAll('div, span, p, button, [class*="item"]'));
-    const targetChip = chips.find(c => c.innerText?.trim() === amt.toString() && c.offsetHeight > 0);
-    if (targetChip) {
-        // Force selection state
-        targetChip.click();
-        targetChip.style.border = "2px solid lime"; // Visual debug if recording
-        targetChip.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-}, targetAmount);
+        // 1. Click the Amount Chip (Upgraded to force state sync)
+        await page.evaluate((amt) => {
+            const chips = Array.from(document.querySelectorAll('div, span, button, li'));
+            const targetChip = chips.find(c => c.innerText?.trim() === amt.toString() && c.offsetHeight > 0);
+            if (targetChip) {
+                targetChip.click();
+                if (targetChip.parentElement) targetChip.parentElement.click();
+                targetChip.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+            }
+        }, targetAmount);
 
-        // 2. IMPORTANT: Wait for the selection animation to finish and button to stabilize
+        // 2. Wait for the selection animation and state to fully update
         await page.waitForTimeout(3000);
 
-        // --- 3. NUCLEAR BUTTON STRIKE (MOBILE TOUCH UPGRADE) ---
-        await page.evaluate(() => {
-            // Kill any transparent overlays blocking the touch
-            const overlays = document.querySelectorAll('.van-overlay, .van-mask, [class*="mask"]');
-            overlays.forEach(o => o.remove());
+        // --- 3. NUCLEAR BUTTON STRIKE (SCORCHED EARTH) ---
+        
+        // Phase A: Playwright Native Force Click
+        // This explicitly ignores pointer-events interception and glass walls
+        try {
+            const withdrawLocator = page.locator('text=/WITHDRAW NOW|SACAR AGORA/i').last();
+            await withdrawLocator.click({ force: true, delay: 150, timeout: 3000 });
+        } catch (e) {
+            // Failsafe moves to JS evaluation if Playwright can't resolve the node
+        }
 
-            // Grab the specific button (searching backwards to get the deepest element)
-            const elements = Array.from(document.querySelectorAll('button, div, span'));
+        // Phase B: JavaScript DOM Blast (Hits the element, parent, and grandparent)
+        await page.evaluate(() => {
+            // Destroy overlays completely
+            document.querySelectorAll('.van-overlay, .van-mask, [class*="mask"], [class*="overlay"]').forEach(o => o.remove());
+
+            const elements = Array.from(document.querySelectorAll('button, div, span, a'));
+            // Reverse search to grab the deepest nested element with the text
             const mainBtn = elements.reverse().find(b => 
                 (b.innerText?.includes('WITHDRAW NOW') || b.innerText?.includes('SACAR AGORA')) && 
                 b.offsetHeight > 0
             );
 
             if (mainBtn) {
-                const rect = mainBtn.getBoundingClientRect();
-                const x = rect.left + rect.width / 2;
-                const y = rect.top + rect.height / 2;
-
-                // 1. Desktop fallback events
-                const evData = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
-                mainBtn.dispatchEvent(new MouseEvent('mousedown', evData));
-                mainBtn.dispatchEvent(new MouseEvent('mouseup', evData));
-                mainBtn.dispatchEvent(new MouseEvent('click', evData));
-
-                // 2. CRITICAL FIX: Simulate Mobile Touch Events
-                try {
-                    const touchObj = new Touch({
-                        identifier: Date.now(),
-                        target: mainBtn,
-                        clientX: x,
-                        clientY: y,
-                        radiusX: 2.5,
-                        radiusY: 2.5,
-                        rotationAngle: 10,
-                        force: 0.5,
-                    });
-
-                    mainBtn.dispatchEvent(new TouchEvent('touchstart', {
-                        cancelable: true, bubbles: true, touches: [touchObj], targetTouches: [touchObj], changedTouches: [touchObj]
-                    }));
-                    mainBtn.dispatchEvent(new TouchEvent('touchend', {
-                        cancelable: true, bubbles: true, touches: [], targetTouches: [], changedTouches: [touchObj]
-                    }));
-                } catch(e) {
-                    // Ignore if Touch API isn't supported in this specific headless context
+                let curr = mainBtn;
+                // Fire clicks on the text node itself, then the button container, then the outer wrapper
+                for (let i = 0; i < 3; i++) {
+                    if (!curr) break;
+                    
+                    curr.click();
+                    
+                    const rect = curr.getBoundingClientRect();
+                    const ev = { bubbles: true, cancelable: true, view: window, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+                    curr.dispatchEvent(new MouseEvent('mousedown', ev));
+                    curr.dispatchEvent(new MouseEvent('mouseup', ev));
+                    curr.dispatchEvent(new MouseEvent('click', ev));
+                    
+                    curr = curr.parentElement;
                 }
             }
         });
 
-        // 3. PHYSICAL BACKUP: Use Playwright's native mobile tap feature
-        try {
-            const withdrawLocator = page.locator('text=/WITHDRAW NOW|SACAR AGORA/i').last();
-            await withdrawLocator.tap({ timeout: 2000, force: true }); 
-        } catch (e) {
-            // Absolute last resort physical click (Y-coordinate adjusted down for typical screen ratio)
-            await page.mouse.click(206, 450).catch(() => {}); 
-        }
+        // Phase C: Physical Barrage 
+        // Fires clicks across the typical vertical spread of that specific green button
+        await page.mouse.click(206, 360).catch(() => {}); 
+        await page.mouse.click(206, 380).catch(() => {}); 
+        await page.mouse.click(206, 400).catch(() => {}); 
 
         await page.waitForTimeout(3000);
+
 
 
 // --- STEP 4: PASSWORD & FINAL CONFIRM ---
