@@ -231,32 +231,43 @@ async function clearOnboardingPopups(page, updateStatus) {
 
 
 
-        
-async function performM4USignIn(chatId) {
+    async function performM4USignIn(chatId) {
     let browser = null;
     let context = null;
     let page = null;
     const videoDir = path.join(__dirname, 'videos');
     if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
 
+    // Helper to update status safely within this function's scope
+    const updateStatus = async (text) => {
+        console.log(text);
+        return await bot.sendMessage(chatId, text).catch(() => {});
+    };
+
     try {
         process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
-        browser = await firefox.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+        
+        // Launching Firefox (as per your specific setup for Heroku/Playwright)
+        browser = await firefox.launch({ 
+            headless: true, 
+            args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+        });
         
         context = await browser.newContext({
             userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
             viewport: { width: 412, height: 915 },
-            recordVideo: { dir: videoDir, size: { width: 412, height: 915 } } // VIDEO RECORDING ENABLED
+            recordVideo: { dir: videoDir, size: { width: 412, height: 915 } }
         });
+        
         page = await context.newPage();
 
-        // 1. LOGIN PHASE (Aggressive Precision)
+        // --- PHASE 1: LOGIN ---
+        await updateStatus('[SYSTEM] Navigating to M4U Login...');
         await page.goto('https://taskm4u.com/#/login', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(5000);
 
         const needsLogin = await page.evaluate(() => !!document.querySelector('input[placeholder*="phone number"]'));
 
-                // --- PHASE 1: LOGIN WITH GEOMETRIC STRIKE ---
         if (needsLogin) {
             await updateStatus('[SYSTEM] Injecting credentials...');
             const phoneInput = page.locator('input[placeholder*="phone number"]');
@@ -269,74 +280,68 @@ async function performM4USignIn(chatId) {
 
             await page.waitForTimeout(1000);
 
-            // THE CRITICAL FIX: Physically strike the Login button center
+            // Precision login strike
             await page.evaluate(() => {
                 const btn = Array.from(document.querySelectorAll('*')).find(el => 
                     el.innerText?.trim() === 'Login' && el.offsetHeight > 0
                 );
-                
                 if (btn) {
                     const rect = btn.getBoundingClientRect();
-                    const x = rect.left + rect.width / 2;
-                    const y = rect.top + rect.height / 2;
-
-                    const evData = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, buttons: 1 };
-                    btn.dispatchEvent(new MouseEvent('mousedown', evData));
-                    btn.dispatchEvent(new MouseEvent('mouseup', evData));
-                    btn.dispatchEvent(new MouseEvent('click', evData));
+                    const ev = { bubbles: true, view: window, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+                    ['mousedown', 'mouseup', 'click'].forEach(t => btn.dispatchEvent(new MouseEvent(t, ev)));
                 }
             });
 
-            // WAIT for the site to confirm login and redirect to home
             await page.waitForURL('**/home', { timeout: 15000 }).catch(() => {});
-            await page.waitForTimeout(6000); 
+            await page.waitForTimeout(4000); 
         }
 
-        // --- PHASE 2: THE TELEPORT ---
-        await updateStatus('[SYSTEM] Login verified. Teleporting to Sign-in page...');
+        // --- PHASE 2: TELEPORT TO SIGN-IN ---
+        await updateStatus('[SYSTEM] Teleporting to Check-in page...');
         await page.goto('https://taskm4u.com/#/signIn', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(5000);
 
         // --- PHASE 3: THE CHECK-IN STRIKE ---
-        await page.evaluate(() => {
-            // Find and strike the Check-in button
+        await updateStatus('[SYSTEM] Attempting "Check in Now!" strike...');
+        const checkInResult = await page.evaluate(() => {
             const btn = Array.from(document.querySelectorAll('*')).find(el => 
-                el.innerText?.trim() === 'Check in Now!' && el.offsetHeight > 0
+                (el.innerText?.trim() === 'Check in Now!' || el.innerText?.includes('Check-in')) && el.offsetHeight > 0
             );
 
             if (btn) {
                 const rect = btn.getBoundingClientRect();
                 const x = rect.left + rect.width / 2;
                 const y = rect.top + rect.height / 2;
-
                 const evData = { bubbles: true, view: window, clientX: x, clientY: y, buttons: 1 };
+                
                 btn.dispatchEvent(new MouseEvent('mousedown', evData));
                 btn.dispatchEvent(new MouseEvent('mouseup', evData));
                 btn.dispatchEvent(new MouseEvent('click', evData));
+                return "STRIKE_EXECUTED";
             }
+            return "BUTTON_NOT_FOUND";
         });
 
         await page.waitForTimeout(4000);
 
-        // 5. VERIFY & SEND
+        // --- PHASE 4: VERIFICATION ---
         const finalStatus = await page.evaluate(() => {
             const txt = document.body.innerText;
-            return (txt.includes('Checked In') || txt.includes('Success')) ? "SUCCESS" : "IDLE";
+            return (txt.includes('Checked In') || txt.includes('Success') || txt.includes('Already')) ? "SUCCESS" : "FAILED";
         });
 
         const finalSnap = await page.screenshot({ type: 'png' });
-        
-        // If it worked, we don't need the video taking up space
         const video = page.video();
-        await context.close(); 
-        const vPath = await video.path().catch(() => null);
+        const vPath = video ? await video.path().catch(() => null) : null;
 
         if (finalStatus === "SUCCESS") {
-            await bot.sendPhoto(chatId, finalSnap, { caption: "M4U Check-in Success." }, { filename: 'success.png' });
+            await bot.sendPhoto(chatId, finalSnap, { caption: "✅ M4U Check-in Success." });
+            // Clean up video if successful to save space
+            await context.close();
             if (vPath && fs.existsSync(vPath)) fs.unlinkSync(vPath);
         } else {
-            // FAILURE: Send screenshot AND the video record to see why it didn't fill
-            await bot.sendPhoto(chatId, finalSnap, { caption: "Check-in failed. Sending video record..." }, { filename: 'failed.png' });
+            await bot.sendPhoto(chatId, finalSnap, { caption: `❌ Check-in state: ${checkInResult}. Diagnostic video follows...` });
+            await context.close();
             if (vPath && fs.existsSync(vPath)) {
                 await bot.sendVideo(chatId, vPath, { caption: "M4U Diagnostic Video" });
                 setTimeout(() => { if (fs.existsSync(vPath)) fs.unlinkSync(vPath); }, 5000);
@@ -345,12 +350,12 @@ async function performM4USignIn(chatId) {
 
     } catch (err) {
         if (context) await context.close().catch(() => {});
-        await bot.sendMessage(chatId, `⚠️ M4U Crash: ${err.message}`);
+        await bot.sendMessage(chatId, `M4U Crash: ${err.message}`);
     } finally {
-        if (browser) await browser.close();
+        if (browser) await browser.close().catch(() => {});
     }
 }
-
+      
 
 // --- 4. TELEGRAM COMMAND LISTENERS ---
 
