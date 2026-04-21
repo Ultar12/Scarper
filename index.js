@@ -275,7 +275,7 @@ async function clearOnboardingPopups(page, updateStatus) {
 
         // 2. NAVIGATE TO CHECK-IN PAGE
         // Instead of clicking the banner, we teleport directly to the check-in sub-route
-        await page.goto('https://taskm4u.com/#/checkIn', { waitUntil: 'domcontentloaded' });
+        await page.goto('https://taskm4u.com/#/signIn', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(6000);
 
         // 3. THE HUMAN STRIKE ON "CHECK IN NOW!"
@@ -2036,7 +2036,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         })));
 
-        // --- 7. ACCURATE MATH (CLEANS COMMAS) ---
+                // --- 7. ACCURATE MATH (YELLOW-PRIORITY SCRAPER) ---
         await masterPage.waitForTimeout(6000);
         const finalTaskSnap = await masterPage.screenshot({ type: 'png' });
 
@@ -2044,33 +2044,54 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await masterPage.waitForTimeout(4000);
 
         const finalBalanceNum = await masterPage.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('div, span, p, b'));
+            
+            // 1. Target the Yellow Balance (Most accurate for 996.00 or 14,450.00)
+            const yellowEl = elements.find(el => {
+                const style = window.getComputedStyle(el);
+                return (style.color === 'rgb(255, 235, 59)' || style.color === 'yellow') && 
+                       /\d/.test(el.innerText);
+            });
+
+            if (yellowEl) {
+                const val = yellowEl.innerText.replace(/[^0-9.]/g, '');
+                return parseFloat(val) || 0;
+            }
+
+            // 2. Fallback: Scan text but ignore phone numbers (>100,000)
             const allText = document.body.innerText;
-            const decimalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
-            if (decimalMatches) {
-                // Clean commas out of every match and pick the highest
-                const nums = decimalMatches.map(n => parseFloat(n.replace(/,/g, '')));
-                const money = nums.filter(n => n < 1000000);
-                return money.length > 0 ? Math.max(...money) : 0;
+            const matches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
+            if (matches) {
+                const nums = matches
+                    .map(n => n.replace(/,/g, ''))
+                    .map(n => parseFloat(n))
+                    .filter(n => n > 0 && n < 100000); // Strict filter to kill phone number interference
+                
+                return nums.length > 0 ? Math.max(...nums) : 0;
             }
             return 0;
         });
 
+        // Calculate profit (Final - Initial)
         const profit = (finalBalanceNum - initialBalanceNum).toFixed(2);
-
         
+        // Ensure profit doesn't show weird negatives if the initial scan failed
+        const displayProfit = parseFloat(profit) < 0 ? "0.00" : profit;
+
         await bot.deleteMessage(chatId, msgId).catch(() => {});
         await bot.sendPhoto(chatId, finalTaskSnap, { 
-            caption: `Profit: <code>+${profit}</code>\nBalance: <code>${finalBalanceNum.toLocaleString()}</code>`,
+            caption: `Profit: <code>+${displayProfit}</code>\nBalance: <code>${finalBalanceNum.toLocaleString(undefined, {minimumFractionDigits: 2})}</code>`,
             parse_mode: 'HTML'
         });
 
     } catch (err) {
-        await updateStatus(`[STRIKE FAILED]: ${err.message}`);
+        await bot.sendMessage(chatId, `[STRIKE FAILED]: ${err.message}`);
     } finally {
-        // We close the CONTEXT but keep the BROWSER open for the next number
-        if (context) await context.close();
+        // Close context to free RAM but keep globalTaskBrowser alive for next strike
+        if (context) {
+            await context.close().catch(() => {});
+        }
     }
-});
 
 
 
