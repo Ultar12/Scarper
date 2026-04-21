@@ -1970,23 +1970,39 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await page.waitForTimeout(5000);
 
 
-        // --- 4. SUCCESS CAPTURE & DELIVERY ---
-        // Variable defined here so it exists for the sendPhoto call
+
+        // --- 4. SUCCESS REFRESH, CAPTURE & DELIVERY ---
+        
+        // 1. Teleport back to the account page to refresh the balance
+        await bot.editMessageText(`[SYSTEM] Withdrawal submitted. Refreshing account page...`, { 
+            chat_id: chatId, 
+            message_id: statusMsg.message_id 
+        }).catch(() => {});
+
+        await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        
+        // 2. Wait 5 seconds for the UI and the new balance to fully load
+        await page.waitForTimeout(5000); 
+
+        // 3. Take the fresh screenshot
         const finalSnap = await page.screenshot({ type: 'png' });
         
+        // 4. Send the photo and clean up the status message
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+
         await bot.sendPhoto(chatId, finalSnap, 
             { caption: `[SUCCESS] Withdrawal for ${targetAmount} submitted.` },
             { filename: 'withdraw_final.png' } // MANDATORY to prevent EFATAL
         );
 
-
-
+        // 5. Video Cleanup
         const video = page.video();
         await context.close();
         if (video) {
             const vPath = await video.path().catch(() => null);
             if (vPath && fs.existsSync(vPath)) fs.unlinkSync(vPath);
         }
+
 
     } catch (err) {
         console.log(`[WITHDRAW ERROR]: ${err.message}`);
