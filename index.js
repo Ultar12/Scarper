@@ -1784,45 +1784,44 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             }
         }, targetAmount);
 
-        // 2. IMPORTANT: Wait for the selection animation to finish and button to stabilize
-        await page.waitForTimeout(3000);
+                // --- STEP 3: THE PROFESSIONAL WITHDRAWAL STRIKE ---
+        await page.waitForTimeout(3000); // Wait for amount selection to settle
 
-                // --- 3. NUCLEAR BUTTON STRIKE (FIREFOX COMPATIBLE) ---
         await page.evaluate(() => {
-            const mainBtn = Array.from(document.querySelectorAll('*')).find(b => 
+            // 1. CLEAR BLOCKERS: Kill any invisible masks or loading overlays
+            const overlays = document.querySelectorAll('.van-overlay, [class*="mask"], [class*="loading"]');
+            overlays.forEach(el => el.remove());
+
+            // 2. TARGET: Find the big green button
+            const btn = Array.from(document.querySelectorAll('*')).find(b => 
                 (b.innerText?.includes('WITHDRAW NOW') || b.innerText?.includes('SACAR AGORA')) && 
-                b.offsetHeight > 0 && 
-                window.getComputedStyle(b).display !== 'none'
+                b.offsetHeight > 0
             );
 
-            if (mainBtn) {
-                const rect = mainBtn.getBoundingClientRect();
+            if (btn) {
+                const rect = btn.getBoundingClientRect();
                 const x = rect.left + rect.width / 2;
                 const y = rect.top + rect.height / 2;
 
-                // Fire coordinate-based MouseEvents (Works on Firefox/Mobile)
-                const createEvent = (type) => new MouseEvent(type, {
-                    bubbles: true,
-                    cancelable: true,
-                    view: window,
-                    clientX: x,
-                    clientY: y,
-                    buttons: 1
+                // 3. PRECISION BOMBARDMENT: Fire Pointer and Mouse events
+                const events = ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click'];
+                events.forEach(type => {
+                    const ev = new MouseEvent(type, {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window,
+                        clientX: x,
+                        clientY: y,
+                        buttons: 1
+                    });
+                    btn.dispatchEvent(ev);
                 });
-
-                // Human sequence: Press down, release, then click
-                mainBtn.dispatchEvent(createEvent('mousedown'));
-                mainBtn.dispatchEvent(createEvent('mouseup'));
-                mainBtn.dispatchEvent(createEvent('click'));
-                
-                return "STRIKE_EXECUTED";
-            } else {
-                throw new Error("Withdraw button not found in DOM");
             }
         });
 
-        // Physical Mouse Backup (Safe for Firefox)
-        await page.mouse.click(206, 320).catch(() => {}); 
+        // 4. COORDINATE FALLBACK: Direct tap on the button's center point
+        await page.mouse.click(206, 365).catch(() => {}); 
+
 
         await page.waitForTimeout(3000);
 
