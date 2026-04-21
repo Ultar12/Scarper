@@ -309,7 +309,7 @@ async function performM4USignIn(chatId) {
             await page.waitForTimeout(3000); 
         }
 
-        /        // --- PHASE 2: TELEPORT TO SIGN-IN ---
+               // --- PHASE 2: TELEPORT TO SIGN-IN ---
         await updateStatus('[SYSTEM] Authentication confirmed. Teleporting to Check-in page...');
         await page.goto('https://taskm4u.com/#/signIn', { waitUntil: 'domcontentloaded' });
         
