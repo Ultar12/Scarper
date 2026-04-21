@@ -1750,25 +1750,23 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(5000); // Give sniper time to kill the "Notice" ad
 
-                // --- STEP 2: AGGRESSIVE BALANCE SCRAPER ---
+                        // --- STEP 2: AGGRESSIVE BALANCE SCRAPER (FIXED) ---
         await page.waitForTimeout(4000);
         
         const rawBalance = await page.evaluate(() => {
-            // 1. Grab every single piece of text on the page
             const allText = document.body.innerText;
             
-            // 2. Find anything that looks like a number (e.g., 14450, 14450.00, 14,450)
-            // This regex finds numbers with optional commas and decimals
+            // Finds numbers like 14450.00 or 14,450
             const matches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?|\d+(\.\d+)?/g);
             
-            if (context && matches) {
+            // REMOVED 'context' check here as it's not needed inside the browser
+            if (matches) {
                 const numbers = matches
-                    .map(n => n.replace(/,/g, '')) // Remove commas
-                    .map(n => parseFloat(n))       // Convert to actual numbers
-                    .filter(n => n < 1000000 && n > 0); // Ignore massive numbers (like phone IDs)
+                    .map(n => n.replace(/,/g, '')) 
+                    .map(n => parseFloat(n))       
+                    .filter(n => n < 1000000 && n > 0); 
                 
-                // 3. Return the largest number found (which will be the 14450.00)
-                return Math.max(...numbers);
+                return numbers.length > 0 ? Math.max(...numbers) : 0;
             }
             return 0;
         });
@@ -1779,9 +1777,9 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         if (!targetAmount) {
             const errSnap = await page.screenshot();
             await bot.sendPhoto(chatId, errSnap, { 
-                caption: `[DIAGNOSTIC] Scanned Balance: ${rawBalance}. Still no tier match.` 
+                caption: `[DIAGNOSTIC] Detected Balance: ${rawBalance}. No tier match.` 
             });
-            throw new Error(`Balance ${rawBalance} is too low for a withdrawal.`);
+            throw new Error(`Balance ${rawBalance} is too low.`);
         }
 
 
