@@ -242,13 +242,21 @@ const SPY_BOT_TOKEN = '8424082135:AAGc73Ztzkb49dZd4hHEx99QFlMMwS5MONw';
 const spyMessageBot = new TelegramBot(SPY_BOT_TOKEN, { polling: false });
 const SPY_TARGET_ID = '7518619353';
 
-// --- THE AUTO-SCRAPER FUNCTION (SILENT MODE) ---
+
+
+// --- THE AUTO-SCRAPER FUNCTION (WITH VIDEO DEBUGGING) ---
 async function scrapeRecentOTPNumbers() {
     let browser = null;
     let page = null;
+    let recorder = null;
+    let videoPath = null;
+    
+    const videoDir = path.join(__dirname, 'videos');
+    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
 
     try {
-        console.log('[SYSTEM] Executing TimeSMS Spy Sweep (Silent Mode)...');
+        console.log('[SYSTEM] Executing TimeSMS Spy Sweep with Debug Video...');
+        bot.sendMessage(ADMIN_ID, '[SYSTEM] Booting TimeSMS Spy Sweep. Recording session...').catch(() => {});
 
         browser = await puppeteer.launch({
             headless: true,
@@ -259,6 +267,15 @@ async function scrapeRecentOTPNumbers() {
         page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 800 });
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+        // --- INITIALIZE VIDEO RECORDER ---
+        recorder = new PuppeteerScreenRecorder(page, {
+            fps: 30,
+            videoFrame: { width: 1280, height: 800 },
+            aspectRatio: '16:10'
+        });
+        videoPath = path.join(videoDir, `spy_debug_${Date.now()}.mp4`);
+        await recorder.start(videoPath);
 
         // --- 1. LOGIN LOGIC ---
         await page.goto('https://timesms.org/login', { waitUntil: 'networkidle2' });
@@ -307,8 +324,13 @@ async function scrapeRecentOTPNumbers() {
         await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
 
         // --- 2. TELEPORT TO SMS REPORTS ---
-        await page.goto('https://timesms.org/client/SMSCDRS', { waitUntil: 'networkidle2' });
+        // Using the exact URL from your screenshot
+        await page.goto('https://timesms.org/client/SMSCDRStats', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
+
+        // Scroll down slightly so the video captures the table layout
+        await page.evaluate(() => window.scrollBy(0, 300));
+        await new Promise(r => setTimeout(r, 1000));
 
         // --- 3. SELECT 100 RECORDS ---
         await page.evaluate(() => {
@@ -336,6 +358,7 @@ async function scrapeRecentOTPNumbers() {
                 if (cells && cells.length >= 4) {
                     const numText = cells[2].innerText.trim();
                     const cleanNum = numText.replace(/\D/g, '');
+                    // Verify it is a realistic phone number length
                     if (cleanNum.length >= 8) {
                         numbers.push(cleanNum);
                     }
@@ -353,22 +376,38 @@ async function scrapeRecentOTPNumbers() {
             }
         }
 
+        // Stop recording cleanly before uploading to Telegram
+        await recorder.stop();
+
         if (newNumbers.length > 0) {
             const textToSend = `[NEW OTP NUMBERS DETECTED]\n\n${newNumbers.join('\n')}`;
             await spyMessageBot.sendMessage(SPY_TARGET_ID, textToSend);
-            console.log(`[SYSTEM] Sent ${newNumbers.length} new numbers to target ID.`);
+            bot.sendMessage(ADMIN_ID, `[SYSTEM] Scrape complete. Found ${newNumbers.length} new numbers. Sending diagnostic video...`).catch(() => {});
         } else {
-            console.log('[SYSTEM] Scrape complete. Zero new numbers found.');
+            bot.sendMessage(ADMIN_ID, '[SYSTEM] Scrape complete. Zero new numbers found. Sending diagnostic video...').catch(() => {});
+        }
+
+        // Send video to Admin for debugging
+        if (fs.existsSync(videoPath)) {
+            await bot.sendVideo(ADMIN_ID, videoPath, { caption: '[DIAGNOSTIC] TimeSMS Spy Session Video' }).catch(() => {});
+            setTimeout(() => { if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath); }, 5000);
         }
 
     } catch (err) {
         console.error(`[ERROR] TimeSMS Scraper crashed: ${err.message}`);
-        bot.sendMessage(ADMIN_ID, `[ERROR] Spy Sweep Crashed: ${err.message}`).catch(() => {});
+        
+        if (recorder) await recorder.stop().catch(() => {});
+        
+        if (videoPath && fs.existsSync(videoPath)) {
+            await bot.sendVideo(ADMIN_ID, videoPath, { caption: `[ERROR] Spy Sweep Crashed: ${err.message}` }).catch(() => {});
+            setTimeout(() => { if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath); }, 5000);
+        } else {
+            bot.sendMessage(ADMIN_ID, `[ERROR] Spy Sweep Crashed: ${err.message}`).catch(() => {});
+        }
     } finally {
         if (browser) await browser.close().catch(() => {});
     }
 }
-
 
 
 
