@@ -2450,7 +2450,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
         })));
 
-        await masterPage.waitForTimeout(12000);
+        await masterPage.waitForTimeout(20000);
 
         // FIX: Changed 'page' to 'masterPage' to resolve undefined crash
         const finalTaskSnap = await masterPage.screenshot({ type: 'png' });
