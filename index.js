@@ -237,27 +237,15 @@ const seenTimesmsNumbers = new Set();
 let spyIntervalTimer = null;
 let isSpying = false;
 
-// Initialize the secondary bot with the new Token and Channel ID
-const SPY_BOT_TOKEN = '8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY';
-const spyMessageBot = new TelegramBot(SPY_BOT_TOKEN, { polling: false });
-const SPY_TARGET_ID = '-1003735392339';
 
 
-
-
-// --- THE AUTO-SCRAPER FUNCTION (WITH VIDEO DEBUGGING) ---
+// --- THE AUTO-SCRAPER FUNCTION (API WEBHOOK MODE) ---
 async function scrapeRecentOTPNumbers() {
     let browser = null;
     let page = null;
-    let recorder = null;
-    let videoPath = null;
-    
-    const videoDir = path.join(__dirname, 'videos');
-    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
 
     try {
-        console.log('[SYSTEM] Executing TimeSMS Spy Sweep with Debug Video...');
-        bot.sendMessage(ADMIN_ID, '[SYSTEM] Booting TimeSMS Spy Sweep. Recording session...').catch(() => {});
+        console.log('[SYSTEM] Executing TimeSMS Spy Sweep (Silent API Mode)...');
 
         browser = await puppeteer.launch({
             headless: true,
@@ -268,15 +256,6 @@ async function scrapeRecentOTPNumbers() {
         page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 800 });
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-
-        // --- INITIALIZE VIDEO RECORDER ---
-        recorder = new PuppeteerScreenRecorder(page, {
-            fps: 30,
-            videoFrame: { width: 1280, height: 800 },
-            aspectRatio: '16:10'
-        });
-        videoPath = path.join(videoDir, `spy_debug_${Date.now()}.mp4`);
-        await recorder.start(videoPath);
 
         // --- 1. LOGIN LOGIC ---
         await page.goto('https://timesms.org/login', { waitUntil: 'networkidle2' });
@@ -325,13 +304,8 @@ async function scrapeRecentOTPNumbers() {
         await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
 
         // --- 2. TELEPORT TO SMS REPORTS ---
-        // Using the exact URL from your screenshot
-        await page.goto('https://timesms.org/client/SMSCDRStats', { waitUntil: 'networkidle2' });
+        await page.goto('https://timesms.org/client/SMSCDRS', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
-
-        // Scroll down slightly so the video captures the table layout
-        await page.evaluate(() => window.scrollBy(0, 300));
-        await new Promise(r => setTimeout(r, 1000));
 
         // --- 3. SELECT 100 RECORDS ---
         await page.evaluate(() => {
@@ -359,7 +333,6 @@ async function scrapeRecentOTPNumbers() {
                 if (cells && cells.length >= 4) {
                     const numText = cells[2].innerText.trim();
                     const cleanNum = numText.replace(/\D/g, '');
-                    // Verify it is a realistic phone number length
                     if (cleanNum.length >= 8) {
                         numbers.push(cleanNum);
                     }
@@ -368,7 +341,7 @@ async function scrapeRecentOTPNumbers() {
             return numbers;
         });
 
-        // --- 5. FILTER DUPLICATES & SEND ---
+        // --- 5. FILTER DUPLICATES & SEND TO WEBHOOK API ---
         const newNumbers = [];
         for (let num of scrapedNumbers) {
             if (!seenTimesmsNumbers.has(num)) {
@@ -377,39 +350,41 @@ async function scrapeRecentOTPNumbers() {
             }
         }
 
-        // Stop recording cleanly before uploading to Telegram
-        await recorder.stop();
-
         if (newNumbers.length > 0) {
-            const textToSend = `[NEW OTP NUMBERS DETECTED]\n\n${newNumbers.join('\n')}`;
-            await spyMessageBot.sendMessage(SPY_TARGET_ID, textToSend);
-            bot.sendMessage(ADMIN_ID, `[SYSTEM] Scrape complete. Found ${newNumbers.length} new numbers. Sending diagnostic video...`).catch(() => {});
-        } else {
-            bot.sendMessage(ADMIN_ID, '[SYSTEM] Scrape complete. Zero new numbers found. Sending diagnostic video...').catch(() => {});
-        }
+            console.log(`[SYSTEM] Preparing payload of ${newNumbers.length} new numbers...`);
+            
+            // Format exact payload specification (newline separated string)
+            const payload = {
+                text: newNumbers.join('\n')
+            };
 
-        // Send video to Admin for debugging
-        if (fs.existsSync(videoPath)) {
-            await bot.sendVideo(ADMIN_ID, videoPath, { caption: '[DIAGNOSTIC] TimeSMS Spy Session Video' }).catch(() => {});
-            setTimeout(() => { if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath); }, 5000);
+            // Safely construct the webhook URL from your ENV
+            const baseUrl = process.env.APP_URL ? process.env.APP_URL.replace(/\/$/, '') : `https://${process.env.HEROKU_APP_NAME}.herokuapp.com`;
+            const webhookUrl = `${baseUrl}/api/sync-numbers`;
+
+            try {
+                const response = await axios.post(webhookUrl, payload, {
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                console.log(`[API SUCCESS] Sent numbers to Webhook. Response:`, response.data);
+            } catch (apiErr) {
+                console.error(`[API ERROR] Webhook delivery failed: ${apiErr.message}`);
+                // Optional: Alert Admin on API failure
+                bot.sendMessage(ADMIN_ID, `[API ERROR] Failed to send numbers to Webhook: ${apiErr.message}`).catch(() => {});
+            }
+
+        } else {
+            console.log('[SYSTEM] Scrape complete. Zero new numbers found.');
         }
 
     } catch (err) {
         console.error(`[ERROR] TimeSMS Scraper crashed: ${err.message}`);
-        
-        if (recorder) await recorder.stop().catch(() => {});
-        
-        if (videoPath && fs.existsSync(videoPath)) {
-            await bot.sendVideo(ADMIN_ID, videoPath, { caption: `[ERROR] Spy Sweep Crashed: ${err.message}` }).catch(() => {});
-            setTimeout(() => { if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath); }, 5000);
-        } else {
-            bot.sendMessage(ADMIN_ID, `[ERROR] Spy Sweep Crashed: ${err.message}`).catch(() => {});
-        }
+        bot.sendMessage(ADMIN_ID, `[ERROR] Spy Sweep Crashed: ${err.message}`).catch(() => {});
     } finally {
         if (browser) await browser.close().catch(() => {});
     }
 }
-
 
 
 
