@@ -239,19 +239,13 @@ let isSpying = false;
 
 
 
-// --- THE AUTO-SCRAPER FUNCTION (VIDEO + API HYBRID) ---
+// --- THE AUTO-SCRAPER FUNCTION (API WEBHOOK MODE) ---
 async function scrapeRecentOTPNumbers() {
     let browser = null;
     let page = null;
-    let recorder = null;
-    let videoPath = null;
-    
-    const videoDir = path.join(__dirname, 'videos');
-    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
 
     try {
-        console.log('[SYSTEM] Executing TimeSMS Spy Sweep with Debug Video...');
-        bot.sendMessage(ADMIN_ID, '[SYSTEM] Booting TimeSMS Spy Sweep. Recording session...').catch(() => {});
+        console.log('[SYSTEM] Executing TimeSMS Spy Sweep (Silent API Mode)...');
 
         browser = await puppeteer.launch({
             headless: true,
@@ -262,15 +256,6 @@ async function scrapeRecentOTPNumbers() {
         page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 800 });
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-
-        // --- INITIALIZE VIDEO RECORDER ---
-        recorder = new PuppeteerScreenRecorder(page, {
-            fps: 30,
-            videoFrame: { width: 1280, height: 800 },
-            aspectRatio: '16:10'
-        });
-        videoPath = path.join(videoDir, `spy_debug_${Date.now()}.mp4`);
-        await recorder.start(videoPath);
 
         // --- 1. LOGIN LOGIC ---
         await page.goto('https://timesms.org/login', { waitUntil: 'networkidle2' });
@@ -322,10 +307,6 @@ async function scrapeRecentOTPNumbers() {
         await page.goto('https://timesms.org/client/SMSCDRStats', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
 
-        // Scroll down slightly so the video captures the table layout and forces elements into view
-        await page.evaluate(() => window.scrollBy(0, 300));
-        await new Promise(r => setTimeout(r, 1000));
-
         // --- 3. SELECT 100 RECORDS ---
         await page.evaluate(() => {
             const selects = Array.from(document.querySelectorAll('select'));
@@ -352,7 +333,6 @@ async function scrapeRecentOTPNumbers() {
                 if (cells && cells.length >= 4) {
                     const numText = cells[2].innerText.trim();
                     const cleanNum = numText.replace(/\D/g, '');
-                    // Verify it is a realistic phone number length
                     if (cleanNum.length >= 8) {
                         numbers.push(cleanNum);
                     }
@@ -370,9 +350,6 @@ async function scrapeRecentOTPNumbers() {
             }
         }
 
-        // Stop recording cleanly before uploading logic
-        await recorder.stop();
-
         if (newNumbers.length > 0) {
             console.log(`[SYSTEM] Preparing payload of ${newNumbers.length} new numbers...`);
             
@@ -389,33 +366,21 @@ async function scrapeRecentOTPNumbers() {
                 const response = await axios.post(webhookUrl, payload, {
                     headers: { 'Content-Type': 'application/json' }
                 });
-                bot.sendMessage(ADMIN_ID, `[SYSTEM] Scrape complete. Sent ${newNumbers.length} new numbers to API. Sending diagnostic video...`).catch(() => {});
+                
+                console.log(`[API SUCCESS] Sent numbers to Webhook. Response:`, response.data);
             } catch (apiErr) {
                 console.error(`[API ERROR] Webhook delivery failed: ${apiErr.message}`);
-                bot.sendMessage(ADMIN_ID, `[API ERROR] Failed to send numbers to Webhook: ${apiErr.message}. Sending diagnostic video...`).catch(() => {});
+                // Optional: Alert Admin on API failure
+                bot.sendMessage(ADMIN_ID, `[API ERROR] Failed to send numbers to Webhook: ${apiErr.message}`).catch(() => {});
             }
 
         } else {
-            bot.sendMessage(ADMIN_ID, '[SYSTEM] Scrape complete. Zero new numbers found. Sending diagnostic video...').catch(() => {});
-        }
-
-        // Send video to Admin for debugging
-        if (fs.existsSync(videoPath)) {
-            await bot.sendVideo(ADMIN_ID, videoPath, { caption: '[DIAGNOSTIC] TimeSMS Spy Session Video' }).catch(() => {});
-            setTimeout(() => { if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath); }, 5000);
+            console.log('[SYSTEM] Scrape complete. Zero new numbers found.');
         }
 
     } catch (err) {
         console.error(`[ERROR] TimeSMS Scraper crashed: ${err.message}`);
-        
-        if (recorder) await recorder.stop().catch(() => {});
-        
-        if (videoPath && fs.existsSync(videoPath)) {
-            await bot.sendVideo(ADMIN_ID, videoPath, { caption: `[ERROR] Spy Sweep Crashed: ${err.message}` }).catch(() => {});
-            setTimeout(() => { if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath); }, 5000);
-        } else {
-            bot.sendMessage(ADMIN_ID, `[ERROR] Spy Sweep Crashed: ${err.message}`).catch(() => {});
-        }
+        bot.sendMessage(ADMIN_ID, `[ERROR] Spy Sweep Crashed: ${err.message}`).catch(() => {});
     } finally {
         if (browser) await browser.close().catch(() => {});
     }
