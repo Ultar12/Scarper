@@ -319,7 +319,7 @@ async function scrapeRecentOTPNumbers() {
         await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
 
         // --- 2. TELEPORT TO SMS REPORTS ---
-        await page.goto('https://timesms.org/client/SMSCDRS', { waitUntil: 'networkidle2' });
+        await page.goto('https://timesms.org/client/SMSCDRStats', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
 
         // Scroll down slightly so the video captures the table layout and forces elements into view
