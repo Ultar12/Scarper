@@ -2737,7 +2737,7 @@ bot.on('message', async (msg) => {
 
                     // Dynamic Login
                     await updateStatus('[WT BURNER] Injecting credentials...');
-                    await page1.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
+                    await page1.goto('https://simpletasks234.com/user', { waitUntil: 'networkidle2' });
                     
                     const allInputs = await page1.$$('input');
                     const visibleInputs = [];
@@ -2762,7 +2762,7 @@ bot.on('message', async (msg) => {
                 const masterTab = pages[0];
 
                 // Initial Balance
-                await masterTab.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
+                await masterTab.goto('https://simpletasks234.com/user', { waitUntil: 'networkidle2' });
                 await new Promise(r => setTimeout(r, 3000));
                 const initialText = await masterTab.evaluate(() => {
                     const match = document.body.innerText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
@@ -2772,7 +2772,7 @@ bot.on('message', async (msg) => {
 
                 // 2. Sweep & Target Acquisition
                 await updateStatus('[WT BURNER] Clearing popups and scanning targets...');
-                await masterTab.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
+                await masterTab.goto('https://simpletasks234.com/task', { waitUntil: 'networkidle2' });
                 await new Promise(r => setTimeout(r, 4000));
                 await clearOnboardingPopups(masterTab, null);
 
@@ -2810,7 +2810,7 @@ bot.on('message', async (msg) => {
                     const p = await session.browser.newPage();
                     pages.push(p);
                     await p.setViewport({ width: 412, height: 915 });
-                    await p.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
+                    await p.goto('https://simpletasks234.com/task', { waitUntil: 'networkidle2' });
                 }
                 
                 if (pages.length > 1) {
@@ -2853,7 +2853,7 @@ bot.on('message', async (msg) => {
                 let earnedDisplay = "Unknown";
 
                 try {
-                    await masterTab.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
+                    await masterTab.goto('https://simpletasks234.com/user', { waitUntil: 'networkidle2' });
                     await new Promise(r => setTimeout(r, 3000));
                     currentBalanceText = await masterTab.evaluate(() => {
                         const match = document.body.innerText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
