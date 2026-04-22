@@ -2431,11 +2431,23 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         // FIX: Changed 'page' to 'masterPage' to resolve undefined crash
         const finalTaskSnap = await masterPage.screenshot({ type: 'png' });
 
-        // --- 7. PRECISION BALANCE SCRAPER (FINAL) ---
+                // --- 7. PRECISION BALANCE SCRAPER (FINAL) ---
         await updateStatus('[SYSTEM] Fetching Final Balance...');
-        await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         
-        // Wait 5 seconds to let the server update the visual balance
+        // Initial navigation to the account page
+        await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        await masterPage.waitForTimeout(2000);
+        
+        // Force Refresh 1
+        await updateStatus('[SYSTEM] Refreshing page (1/2)...');
+        await masterPage.reload({ waitUntil: 'domcontentloaded' });
+        await masterPage.waitForTimeout(2000);
+
+        // Force Refresh 2
+        await updateStatus('[SYSTEM] Refreshing page (2/2)...');
+        await masterPage.reload({ waitUntil: 'domcontentloaded' });
+        
+        // Final wait to let the server fully update the visual balance
         await masterPage.waitForTimeout(5000);
 
         const finalBalanceNum = await masterPage.evaluate(() => {
@@ -2455,6 +2467,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }
             return 0;
         });
+
 
         // --- MATH EXECUTION ---
         const diff = finalBalanceNum - initialBalanceNum;
