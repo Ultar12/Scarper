@@ -2399,9 +2399,20 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
         await masterPage.waitForTimeout(3500);
 
-        // --- 6. COORDINATED "MODAL-AWARE" CONFIRM ---
+                // --- 6. COORDINATED "MODAL-AWARE" CONFIRM ---
         await updateStatus('[SYSTEM] COORDINATED CONFIRM');
         await Promise.all(pages.map(p => p.evaluate(() => {
+            
+            // 1. ANNIHILATE THE APP DOWNLOAD OVERLAY AND MASKS
+            const overlays = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"]');
+            overlays.forEach(el => el.remove());
+
+            const textBlockers = Array.from(document.querySelectorAll('div')).filter(el => 
+                el.innerText?.includes('Saka Yanzu') || el.innerText?.includes('Don Allah sauke App')
+            );
+            textBlockers.forEach(b => b.remove());
+
+            // 2. LOCATE AND CLICK THE CONFIRM BUTTON
             const modal = Array.from(document.querySelectorAll('div')).find(el => 
                 (el.innerText?.includes('confirm') || el.innerText?.includes('confirmar')) && 
                 el.offsetHeight > 100 && el.offsetHeight < 400
@@ -2413,6 +2424,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                 const y = rect.top + (rect.height - 30);   
 
                 const evData = { view: window, bubbles: true, clientX: x, clientY: y };
+                // Now that overlays are gone, elementFromPoint will correctly hit the confirm button
                 const clickTarget = document.elementFromPoint(x, y) || modal;
                 
                 ['mousedown', 'mouseup', 'click'].forEach(t => 
@@ -2422,9 +2434,13 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                 const btn = Array.from(document.querySelectorAll('*')).find(el => 
                     /confirm|confirmar/i.test(el.innerText) && el.offsetHeight > 0
                 );
-                if (btn) btn.click();
+                if (btn) {
+                    btn.click();
+                    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                }
             }
         })));
+
 
         await masterPage.waitForTimeout(20000);
 
