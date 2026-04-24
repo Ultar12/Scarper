@@ -80,6 +80,12 @@ pool.query(`CREATE TABLE IF NOT EXISTS browser_sessions (platform VARCHAR(50) PR
     .then(() => console.log('[SYSTEM] Browser Session DB Ready.'))
     .catch(console.error);
 
+// --- M4U VERIFIED NUMBERS DATABASE ---
+pool.query(`CREATE TABLE IF NOT EXISTS m4u_linked_numbers (phone_number VARCHAR(20) PRIMARY KEY);`)
+    .then(() => console.log('[SYSTEM] M4U Verified Numbers DB Ready.'))
+    .catch(console.error);
+
+
 const saveSessionToDB = async (platform, page) => {
     try {
         const cookies = await page.cookies();
@@ -939,6 +945,44 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
         if (browser) await browser.close();
     }
 });
+
+
+// --- M4U NUMBER EXTRACTION COMMAND ---
+// Usage: /m4unum
+bot.onText(/^\/m4unum$/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    try {
+        // 1. Fetch all numbers
+        const res = await pool.query(`SELECT phone_number FROM m4u_linked_numbers`);
+        const numbers = res.rows.map(row => row.phone_number);
+
+        if (numbers.length === 0) {
+            return bot.sendMessage(chatId, '[SYSTEM] The vault is empty. No new verified numbers found.');
+        }
+
+        await bot.sendMessage(chatId, `[SYSTEM] Extracting ${numbers.length} numbers. Initiating self-destruct protocol on database...`);
+        
+        // 2. Delete the exact numbers we just fetched
+        await pool.query(`DELETE FROM m4u_linked_numbers WHERE phone_number = ANY($1)`, [numbers]);
+
+        // 3. Send in tight batches of 5 (No spaces between numbers)
+        for (let i = 0; i < numbers.length; i += 5) {
+            const batch = numbers.slice(i, i + 5);
+            // Joins the numbers with a strict newline, removing all horizontal spaces
+            await bot.sendMessage(chatId, batch.join('\n'));
+            // 500ms delay to prevent Telegram from blocking the bot for spamming
+            await new Promise(r => setTimeout(r, 500)); 
+        }
+
+        bot.sendMessage(chatId, '[SUCCESS] All numbers delivered and wiped from memory.');
+
+    } catch (err) {
+        bot.sendMessage(chatId, `[ERROR] Failed to extract numbers: ${err.message}`);
+    }
+});
+
 
 
 // --- TOGGLE COMMAND: /spy on | /spy off ---
@@ -3255,9 +3299,19 @@ bot.on('message', async (msg) => {
                         // Verify state didn't change while we were sleeping
                         if (!m4uSession || m4uSession.state !== 'WAITING_FOR_LINK') return;
 
-                                                if (popupClosed) {
+                            if (popupClosed) {
                             m4uSession.linkedCount++; 
                             bot.sendMessage(chatId, `[VERIFIED] Number successfully linked!\n\nTotal: ${m4uSession.linkedCount} | Refreshing...`);
+                            
+                            // --- NEW: SAVE TO DATABASE ---
+                            try {
+                                await pool.query(
+                                    `INSERT INTO m4u_linked_numbers (phone_number) VALUES ($1) ON CONFLICT DO NOTHING`, 
+                                    [targetNumber]
+                                );
+                            } catch (dbErr) {
+                                console.error(`[DB ERROR] Could not save ${targetNumber}:`, dbErr.message);
+                            }
                             
                             // 1. FAST RELOAD: Only wait for the initial DOM load
                             await m4uPage.reload({ waitUntil: 'domcontentloaded' });
@@ -3277,6 +3331,7 @@ bot.on('message', async (msg) => {
                             m4uSession.state = 'WAITING_NUMBER';
                             bot.sendMessage(chatId, `[SYSTEM] Ready for next number.`);
                         }
+
                            else {
                             // 30 mins timeout reached without linking
                             bot.sendMessage(chatId, `[TIMEOUT] The popup didn't close within 30 minutes. Resetting the popup for a new number...`);
