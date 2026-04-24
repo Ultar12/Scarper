@@ -2056,8 +2056,18 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         // 2. IMPORTANT: Wait for the selection animation to finish and button to stabilize
         await page.waitForTimeout(3000);
 
-                // --- 3. NUCLEAR BUTTON STRIKE (FIREFOX COMPATIBLE) ---
+                        // --- 3. NUCLEAR BUTTON STRIKE (FIREFOX COMPATIBLE) ---
         await page.evaluate(() => {
+            // 1. ANNIHILATE POPUPS/MASKS RIGHT BEFORE THE CLICK
+            const overlays = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"]');
+            overlays.forEach(el => el.remove());
+
+            const textBlockers = Array.from(document.querySelectorAll('div')).filter(el => 
+                el.innerText?.includes('Saka Yanzu') || el.innerText?.includes('Don Allah sauke App')
+            );
+            textBlockers.forEach(b => b.remove());
+
+            // 2. LOCATE THE WITHDRAW BUTTON
             const mainBtn = Array.from(document.querySelectorAll('*')).find(b => 
                 (b.innerText?.includes('WITHDRAW NOW') || b.innerText?.includes('SACAR AGORA')) && 
                 b.offsetHeight > 0 && 
@@ -2084,6 +2094,9 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                 mainBtn.dispatchEvent(createEvent('mouseup'));
                 mainBtn.dispatchEvent(createEvent('click'));
                 
+                // Bulletproof Backup: Native DOM click
+                mainBtn.click();
+                
                 return "STRIKE_EXECUTED";
             } else {
                 throw new Error("Withdraw button not found in DOM");
@@ -2094,6 +2107,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await page.mouse.click(206, 320).catch(() => {}); 
 
         await page.waitForTimeout(3000);
+
 
     
                    // --- STEP 4: PASSWORD & FINAL CONFIRM ---
