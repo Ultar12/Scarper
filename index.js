@@ -1081,6 +1081,7 @@ bot.onText(/\/record/i, async (msg) => {
 });
 
 
+
 // --- THE GHOST BAN CHECKER (HEROKU COMPATIBLE) ---
 // Usage: /checkban 2348000000000
 bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
@@ -1106,7 +1107,10 @@ bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
 
     checkerClient.on('qr', async () => {
         try {
-            // The millisecond WA Web loads, we hit Meta with the pairing request
+            // --- THE FIX: WAIT 5 SECONDS ---
+            // Let WhatsApp's heavy internal JavaScript finish loading before we strike
+            await new Promise(r => setTimeout(r, 5000));
+
             const code = await checkerClient.requestPairingCode(targetNumber);
             
             if (!isFinished) {
@@ -1114,16 +1118,25 @@ bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
                 bot.editMessageText(`✅ [SAFE & ACTIVE]\n\nThe number +${targetNumber} is completely clean. Meta just generated a pairing code for it.`, { 
                     chat_id: chatId, 
                     message_id: statusMsg.message_id 
-                });
+                }).catch(() => {});
                 checkerClient.destroy().catch(()=>{});
             }
         } catch (err) {
             if (!isFinished) {
                 isFinished = true;
-                bot.editMessageText(`🚨 [BANNED OR DEAD]\n\nMeta actively rejected the pairing request for +${targetNumber}.\n\nRaw Server Response: ${err.message}`, { 
-                    chat_id: chatId, 
-                    message_id: statusMsg.message_id 
-                });
+                
+                // Tell the difference between a real ban and a browser glitch
+                if (err.message.includes('onCodeReceivedEvent') || err.message.includes('Evaluation failed')) {
+                    bot.editMessageText(`⚠️ [BROWSER GLITCH]\n\nThe invisible browser crashed before Meta could answer. Run /checkban again.`, { 
+                        chat_id: chatId, 
+                        message_id: statusMsg.message_id 
+                    }).catch(() => {});
+                } else {
+                    bot.editMessageText(`🚨 [BANNED OR DEAD]\n\nMeta actively rejected the pairing request for +${targetNumber}.\n\nRaw Server Response: ${err.message}`, { 
+                        chat_id: chatId, 
+                        message_id: statusMsg.message_id 
+                    }).catch(() => {});
+                }
                 checkerClient.destroy().catch(()=>{});
             }
         }
@@ -1139,7 +1152,7 @@ bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
                 bot.editMessageText(`[TIMEOUT] Could not get a response from Meta. The proxy is slow or the connection dropped.`, { 
                     chat_id: chatId, 
                     message_id: statusMsg.message_id 
-                });
+                }).catch(() => {});
                 checkerClient.destroy().catch(()=>{});
             }
         }, 45000);
@@ -1148,7 +1161,7 @@ bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
         bot.editMessageText(`[ERROR] Ghost Engine failed to start: ${err.message}`, { 
             chat_id: chatId, 
             message_id: statusMsg.message_id 
-        });
+        }).catch(() => {});
     }
 });
 
