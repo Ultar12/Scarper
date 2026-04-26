@@ -1081,20 +1081,20 @@ bot.onText(/\/record/i, async (msg) => {
 });
 
 
-
-// --- THE GHOST BAN CHECKER (HEROKU COMPATIBLE) ---
+// --- THE GHOST BAN CHECKER (WITH VIDEO DEBUGGING) ---
 // Usage: /checkban 2348000000000
 bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    // Clean the phone number (remove +, spaces, etc)
+    // Clean the phone number
     const targetNumber = match[1].replace(/[^0-9]/g, '');
     
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Ghost Protocol Initiated.\n\nBypassing mobile emulator requirement. Pinging Meta servers via Headless Web to test +${targetNumber}...`);
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Ghost Protocol Initiated.\n\nBooting invisible engine with Video Recording to test +${targetNumber}...`);
 
-    // We boot a completely isolated, temporary WA client just for this check
-    // CRITICAL: We DO NOT use RemoteAuth here, so this ghost session deletes itself and doesn't clog your database.
+    const videoDir = path.join(__dirname, 'videos');
+    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
+
     const checkerClient = new Client({
         puppeteer: {
             headless: true,
@@ -1104,40 +1104,82 @@ bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
     });
 
     let isFinished = false;
+    let recorder = null;
+    let videoPath = null;
+
+    // Helper function to stop recording, send the video, and kill the client
+    const cleanupAndSendVideo = async (captionText) => {
+        if (recorder) await recorder.stop().catch(() => {});
+        
+        if (videoPath && fs.existsSync(videoPath)) {
+            await bot.sendVideo(chatId, videoPath, { caption: captionText }).catch(() => {});
+            setTimeout(() => { if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath); }, 5000);
+        } else {
+            bot.sendMessage(chatId, `[NO VIDEO GENERATED]\n\n${captionText}`).catch(() => {});
+        }
+        
+        checkerClient.destroy().catch(()=>{});
+    };
 
     checkerClient.on('qr', async () => {
         try {
-            // --- THE FIX: WAIT 5 SECONDS ---
-            // Let WhatsApp's heavy internal JavaScript finish loading before we strike
-            await new Promise(r => setTimeout(r, 5000));
+            // --- ATTACH THE VIDEO RECORDER TO THE HIDDEN PUPPETEER PAGE ---
+            const page = checkerClient.pupPage;
+            if (page) {
+                // Force desktop viewport so the recording looks clear
+                await page.setViewport({ width: 1280, height: 800 });
+                recorder = new PuppeteerScreenRecorder(page, {
+                    fps: 30,
+                    videoFrame: { width: 1280, height: 800 },
+                    aspectRatio: '16:10'
+                });
+                videoPath = path.join(videoDir, `ban_check_${Date.now()}.mp4`);
+                await recorder.start(videoPath);
+            }
 
-            const code = await checkerClient.requestPairingCode(targetNumber);
-            
+            await bot.editMessageText(`[SYSTEM] Video recording active. Requesting code from Meta...`, { 
+                chat_id: chatId, 
+                message_id: statusMsg.message_id 
+            }).catch(() => {});
+
+            // Warmup wait to let JS load
+            await new Promise(r => setTimeout(r, 6000)); 
+
+            let isConfirmedSafe = false;
+            let lastError = null;
+
+            for (let attempt = 1; attempt <= 3; attempt++) {
+                try {
+                    await checkerClient.requestPairingCode(targetNumber);
+                    isConfirmedSafe = true;
+                    break; // Succeeded!
+                } catch (e) {
+                    lastError = e;
+                    
+                    // Treat the UI scrape glitch as a pseudo-success
+                    if (e.message.includes('onCodeReceivedEvent') || e.message.includes('Evaluation failed')) {
+                        isConfirmedSafe = true;
+                        break; 
+                    }
+
+                    console.log(`[SYSTEM] Browser Glitch on attempt ${attempt}. Retrying...`);
+                    await new Promise(r => setTimeout(r, 4000)); 
+                }
+            }
+
+            if (!isConfirmedSafe) throw lastError;
+
             if (!isFinished) {
                 isFinished = true;
-                bot.editMessageText(`✅ [SAFE & ACTIVE]\n\nThe number +${targetNumber} is completely clean. Meta just generated a pairing code for it.`, { 
-                    chat_id: chatId, 
-                    message_id: statusMsg.message_id 
-                }).catch(() => {});
-                checkerClient.destroy().catch(()=>{});
+                // Delete the status text and send the final video with the success caption
+                await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+                await cleanupAndSendVideo(`✅ [SAFE & ACTIVE]\n\nThe number +${targetNumber} is completely clean!\n\n*(Meta accepted the request. Watch the video to see the exact interaction).*`);
             }
         } catch (err) {
             if (!isFinished) {
                 isFinished = true;
-                
-                // Tell the difference between a real ban and a browser glitch
-                if (err.message.includes('onCodeReceivedEvent') || err.message.includes('Evaluation failed')) {
-                    bot.editMessageText(`⚠️ [BROWSER GLITCH]\n\nThe invisible browser crashed before Meta could answer. Run /checkban again.`, { 
-                        chat_id: chatId, 
-                        message_id: statusMsg.message_id 
-                    }).catch(() => {});
-                } else {
-                    bot.editMessageText(`🚨 [BANNED OR DEAD]\n\nMeta actively rejected the pairing request for +${targetNumber}.\n\nRaw Server Response: ${err.message}`, { 
-                        chat_id: chatId, 
-                        message_id: statusMsg.message_id 
-                    }).catch(() => {});
-                }
-                checkerClient.destroy().catch(()=>{});
+                await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+                await cleanupAndSendVideo(`🚨 [BANNED OR DEAD]\n\nMeta rejected the pairing request for +${targetNumber}.\n\nRaw Server Response: ${err.message}`);
             }
         }
     });
@@ -1145,15 +1187,12 @@ bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
     try {
         await checkerClient.initialize();
         
-        // Safety timeout: Destroy the invisible browser after 45 seconds if the connection lags
-        setTimeout(() => {
+        // Safety timeout (45 seconds)
+        setTimeout(async () => {
             if (!isFinished) {
                 isFinished = true;
-                bot.editMessageText(`[TIMEOUT] Could not get a response from Meta. The proxy is slow or the connection dropped.`, { 
-                    chat_id: chatId, 
-                    message_id: statusMsg.message_id 
-                }).catch(() => {});
-                checkerClient.destroy().catch(()=>{});
+                await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+                await cleanupAndSendVideo(`[TIMEOUT] Could not get a response from Meta within 45 seconds. The connection dropped or the page froze.`);
             }
         }, 45000);
 
@@ -1164,7 +1203,6 @@ bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
         }).catch(() => {});
     }
 });
-
 
 
 
