@@ -1081,6 +1081,79 @@ bot.onText(/\/record/i, async (msg) => {
 });
 
 
+// --- THE GHOST BAN CHECKER (HEROKU COMPATIBLE) ---
+// Usage: /checkban 2348000000000
+bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    // Clean the phone number (remove +, spaces, etc)
+    const targetNumber = match[1].replace(/[^0-9]/g, '');
+    
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Ghost Protocol Initiated.\n\nBypassing mobile emulator requirement. Pinging Meta servers via Headless Web to test +${targetNumber}...`);
+
+    // We boot a completely isolated, temporary WA client just for this check
+    // CRITICAL: We DO NOT use RemoteAuth here, so this ghost session deletes itself and doesn't clog your database.
+    const checkerClient = new Client({
+        puppeteer: {
+            headless: true,
+            executablePath: getChromePath(),
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        }
+    });
+
+    let isFinished = false;
+
+    checkerClient.on('qr', async () => {
+        try {
+            // The millisecond WA Web loads, we hit Meta with the pairing request
+            const code = await checkerClient.requestPairingCode(targetNumber);
+            
+            if (!isFinished) {
+                isFinished = true;
+                bot.editMessageText(`✅ [SAFE & ACTIVE]\n\nThe number +${targetNumber} is completely clean. Meta just generated a pairing code for it.`, { 
+                    chat_id: chatId, 
+                    message_id: statusMsg.message_id 
+                });
+                checkerClient.destroy().catch(()=>{});
+            }
+        } catch (err) {
+            if (!isFinished) {
+                isFinished = true;
+                bot.editMessageText(`🚨 [BANNED OR DEAD]\n\nMeta actively rejected the pairing request for +${targetNumber}.\n\nRaw Server Response: ${err.message}`, { 
+                    chat_id: chatId, 
+                    message_id: statusMsg.message_id 
+                });
+                checkerClient.destroy().catch(()=>{});
+            }
+        }
+    });
+
+    try {
+        await checkerClient.initialize();
+        
+        // Safety timeout: Destroy the invisible browser after 45 seconds if the connection lags
+        setTimeout(() => {
+            if (!isFinished) {
+                isFinished = true;
+                bot.editMessageText(`[TIMEOUT] Could not get a response from Meta. The proxy is slow or the connection dropped.`, { 
+                    chat_id: chatId, 
+                    message_id: statusMsg.message_id 
+                });
+                checkerClient.destroy().catch(()=>{});
+            }
+        }, 45000);
+
+    } catch (err) {
+        bot.editMessageText(`[ERROR] Ghost Engine failed to start: ${err.message}`, { 
+            chat_id: chatId, 
+            message_id: statusMsg.message_id 
+        });
+    }
+});
+
+
+
 
 // --- UPGRADED ISOLATED TT COMMAND ---
 // Usage: /tt 127
