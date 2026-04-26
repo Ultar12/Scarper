@@ -1082,7 +1082,7 @@ bot.onText(/\/record/i, async (msg) => {
 
 
 
-// --- THE PURE UI GHOST CHECKER (WITH VIDEO) ---
+// --- THE PURE UI GHOST CHECKER (WITH VIDEO - TIMEOUT FIXED) ---
 // Usage: /checkban 2348000000000
 bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
@@ -1134,8 +1134,8 @@ bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
                 message_id: statusMsg.message_id 
             }).catch(() => {});
 
-            // 1. Wait for the QR page to settle
-            await page.waitForTimeout(3000);
+            // 1. Wait for the QR page to settle using Node.js timeout instead of Puppeteer's
+            await new Promise(r => setTimeout(r, 3000));
 
             // 2. Click "Log in with phone number"
             await page.evaluate(() => {
@@ -1145,11 +1145,11 @@ bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
             });
 
             // Wait for the input screen transition
-            await page.waitForTimeout(2000);
+            await new Promise(r => setTimeout(r, 2000));
 
             // 3. Type the number and click Next
             await page.evaluate((num) => {
-                // Find the phone number input box (WhatsApp uses aria-labels usually)
+                // Find the phone number input box
                 const inputs = Array.from(document.querySelectorAll('input'));
                 const phoneInput = inputs.find(i => i.className.includes('selectable-text') || i.type === 'text');
                 
@@ -1165,7 +1165,7 @@ bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
             }, targetNumber);
 
             // 4. Wait for Meta to process the number and show the result
-            await page.waitForTimeout(5000);
+            await new Promise(r => setTimeout(r, 5000));
 
             // 5. Scrape the screen to see what happened
             const screenResult = await page.evaluate(() => {
