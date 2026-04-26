@@ -1082,6 +1082,8 @@ bot.onText(/\/record/i, async (msg) => {
 
 
 
+// --- THE PURE UI GHOST CHECKER (WITH VIDEO) ---
+// Usage: /checkban 2348000000000
 bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -1089,7 +1091,7 @@ bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
     // Clean the phone number
     const targetNumber = match[1].replace(/[^0-9]/g, '');
     
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Ghost Protocol Initiated.\n\nBooting invisible engine with Video Recording to test +${targetNumber}...`);
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Manual UI Override Initiated.\n\nBooting invisible browser to physically type +${targetNumber} into WhatsApp Web...`);
 
     const videoDir = path.join(__dirname, 'videos');
     if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
@@ -1106,60 +1108,127 @@ bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
     let recorder = null;
     let videoPath = null;
 
-    // Helper function to stop recording, send the video, and kill the client
     const cleanupAndSendVideo = async (captionText) => {
         if (recorder) await recorder.stop().catch(() => {});
-        
         if (videoPath && fs.existsSync(videoPath)) {
             await bot.sendVideo(chatId, videoPath, { caption: captionText }).catch(() => {});
             setTimeout(() => { if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath); }, 5000);
         } else {
-            bot.sendMessage(chatId, `[NO VIDEO GENERATED]\n\n${captionText}`).catch(() => {});
+            bot.sendMessage(chatId, captionText).catch(() => {});
         }
-        
         checkerClient.destroy().catch(()=>{});
     };
 
     checkerClient.on('qr', async () => {
         try {
-            // --- ATTACH THE VIDEO RECORDER TO THE HIDDEN PUPPETEER PAGE ---
             const page = checkerClient.pupPage;
-            if (page) {
-                // Force desktop viewport so the recording looks clear
-                await page.setViewport({ width: 1280, height: 800 });
-                recorder = new PuppeteerScreenRecorder(page, {
-                    fps: 30,
-                    videoFrame: { width: 1280, height: 800 },
-                    aspectRatio: '16:10'
-                });
-                videoPath = path.join(videoDir, `ban_check_${Date.now()}.mp4`);
-                await recorder.start(videoPath);
-            }
+            if (!page) throw new Error("Could not extract raw Puppeteer page.");
 
-            await bot.editMessageText(`[SYSTEM] Video recording active. Requesting code from Meta...`, { 
+            await page.setViewport({ width: 1280, height: 800 });
+            recorder = new PuppeteerScreenRecorder(page, { fps: 30 });
+            videoPath = path.join(videoDir, `manual_check_${Date.now()}.mp4`);
+            await recorder.start(videoPath);
+
+            await bot.editMessageText(`[SYSTEM] Video active. Typing number and clicking buttons...`, { 
                 chat_id: chatId, 
                 message_id: statusMsg.message_id 
             }).catch(() => {});
 
-            // Warmup wait to let JS load
-            await new Promise(r => setTimeout(r, 6000)); 
+            // 1. Wait for the QR page to settle
+            await page.waitForTimeout(3000);
 
-            let isConfirmedSafe = false;
-            let lastError = null;
+            // 2. Click "Log in with phone number"
+            await page.evaluate(() => {
+                const elements = Array.from(document.querySelectorAll('span, div, button'));
+                const loginBtn = elements.find(el => el.innerText && el.innerText.includes('Log in with phone number'));
+                if (loginBtn) loginBtn.click();
+            });
 
-            for (let attempt = 1; attempt <= 3; attempt++) {
-                try {
-                    await checkerClient.requestPairingCode(targetNumber);
-                    isConfirmedSafe = true;
-                    break; // Succeeded!
-                } catch (e) {
-                    lastError = e;
-                    
-                    // Treat the UI scrape glitch as a pseudo-success
-                    if (e.message.includes('onCodeReceivedEvent') || e.message.includes('Evaluation failed')) {
-                        isConfirmedSafe = true;
-                        break; 
-                    }
+            // Wait for the input screen transition
+            await page.waitForTimeout(2000);
+
+            // 3. Type the number and click Next
+            await page.evaluate((num) => {
+                // Find the phone number input box (WhatsApp uses aria-labels usually)
+                const inputs = Array.from(document.querySelectorAll('input'));
+                const phoneInput = inputs.find(i => i.className.includes('selectable-text') || i.type === 'text');
+                
+                if (phoneInput) {
+                    phoneInput.focus();
+                    document.execCommand('insertText', false, num);
+                }
+
+                // Find and click the "Next" button
+                const buttons = Array.from(document.querySelectorAll('div, button'));
+                const nextBtn = buttons.find(b => b.innerText && b.innerText.trim() === 'Next' && b.offsetHeight > 0);
+                if (nextBtn) nextBtn.click();
+            }, targetNumber);
+
+            // 4. Wait for Meta to process the number and show the result
+            await page.waitForTimeout(5000);
+
+            // 5. Scrape the screen to see what happened
+            const screenResult = await page.evaluate(() => {
+                const allText = document.body.innerText.toLowerCase();
+                
+                // Check for ban/invalid errors
+                if (allText.includes('cannot be used') || 
+                    allText.includes('not a valid') || 
+                    allText.includes('banned') || 
+                    allText.includes('check your number')) {
+                    return 'BANNED';
+                }
+                
+                // Check if it successfully advanced to the 8-digit code screen
+                if (allText.includes('enter code on your phone') || 
+                    allText.includes('enter code') ||
+                    document.querySelectorAll('[aria-label="Code"]').length > 0) {
+                    return 'SAFE';
+                }
+                
+                return 'UNKNOWN';
+            });
+
+            if (!isFinished) {
+                isFinished = true;
+                await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+                
+                if (screenResult === 'SAFE') {
+                    await cleanupAndSendVideo(`✅ [SAFE & ACTIVE]\n\nThe number +${targetNumber} successfully advanced to the pairing code screen.`);
+                } else if (screenResult === 'BANNED') {
+                    await cleanupAndSendVideo(`🚨 [BANNED OR DEAD]\n\nWhatsApp rejected +${targetNumber}. Watch the video to see the red error text.`);
+                } else {
+                    await cleanupAndSendVideo(`⚠️ [UNKNOWN STATE]\n\nThe bot clicked next, but couldn't read the result. Watch the video to see what happened to +${targetNumber}.`);
+                }
+            }
+
+        } catch (err) {
+            if (!isFinished) {
+                isFinished = true;
+                await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+                await cleanupAndSendVideo(`[ERROR] UI Automation failed: ${err.message}`);
+            }
+        }
+    });
+
+    try {
+        await checkerClient.initialize();
+        
+        setTimeout(async () => {
+            if (!isFinished) {
+                isFinished = true;
+                await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+                await cleanupAndSendVideo(`[TIMEOUT] Process took too long.`);
+            }
+        }, 45000);
+
+    } catch (err) {
+        bot.editMessageText(`[ERROR] Engine failed to start: ${err.message}`, { 
+            chat_id: chatId, message_id: statusMsg.message_id 
+        }).catch(() => {});
+    }
+});
+
 
 
 // --- UPGRADED ISOLATED TT COMMAND ---
