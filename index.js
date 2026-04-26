@@ -1081,8 +1081,7 @@ bot.onText(/\/record/i, async (msg) => {
 });
 
 
-// --- THE GHOST BAN CHECKER (WITH VIDEO DEBUGGING) ---
-// Usage: /checkban 2348000000000
+
 bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -1161,49 +1160,6 @@ bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
                         isConfirmedSafe = true;
                         break; 
                     }
-
-                    console.log(`[SYSTEM] Browser Glitch on attempt ${attempt}. Retrying...`);
-                    await new Promise(r => setTimeout(r, 4000)); 
-                }
-            }
-
-            if (!isConfirmedSafe) throw lastError;
-
-            if (!isFinished) {
-                isFinished = true;
-                // Delete the status text and send the final video with the success caption
-                await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-                await cleanupAndSendVideo(`✅ [SAFE & ACTIVE]\n\nThe number +${targetNumber} is completely clean!\n\n*(Meta accepted the request. Watch the video to see the exact interaction).*`);
-            }
-        } catch (err) {
-            if (!isFinished) {
-                isFinished = true;
-                await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-                await cleanupAndSendVideo(`🚨 [BANNED OR DEAD]\n\nMeta rejected the pairing request for +${targetNumber}.\n\nRaw Server Response: ${err.message}`);
-            }
-        }
-    });
-
-    try {
-        await checkerClient.initialize();
-        
-        // Safety timeout (45 seconds)
-        setTimeout(async () => {
-            if (!isFinished) {
-                isFinished = true;
-                await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-                await cleanupAndSendVideo(`[TIMEOUT] Could not get a response from Meta within 45 seconds. The connection dropped or the page froze.`);
-            }
-        }, 45000);
-
-    } catch (err) {
-        bot.editMessageText(`[ERROR] Ghost Engine failed to start: ${err.message}`, { 
-            chat_id: chatId, 
-            message_id: statusMsg.message_id 
-        }).catch(() => {});
-    }
-});
-
 
 
 // --- UPGRADED ISOLATED TT COMMAND ---
