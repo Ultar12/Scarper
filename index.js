@@ -627,43 +627,6 @@ bot.onText(/\/m4usign/i, (msg) => {
 });
 
 
-// --- 1. THE WSTASK TOGGLE (WITH TIMEOUT & KEYBOARD HIDE) ---
-bot.onText(/^\/wstask$/i, async (msg) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
-
-    wsTaskMode = !wsTaskMode; 
-
-    if (wsTaskMode) {
-        // Set the 30-minute timebomb
-        if (wsTaskTimer) clearTimeout(wsTaskTimer);
-        wsTaskTimer = setTimeout(() => {
-            wsTaskMode = false;
-            bot.sendMessage(chatId, '[SYSTEM] WSTASK Mode automatically ended after 30 minutes of inactivity.', {
-                reply_markup: {
-                    keyboard: [[{ text: 'Pair M4U' }, { text: 'Withdraw' }], [{ text: 'Balance' }]],
-                    resize_keyboard: true, is_persistent: true
-                }
-            });
-        }, 30 * 60 * 1000);
-
-        await bot.sendMessage(chatId, `🟢 *WSTASK MODE: ENGAGED*\n\nSend me numbers one by one. I will instantly route them to the Message Server.\n\n🎯 *Daily Goal:* 200 numbers\n\nType Stop to end this mode.`, { 
-            parse_mode: 'Markdown',
-            reply_markup: { remove_keyboard: true } // Hides the keyboard!
-        });
-    } else {
-        // Allow toggling it off manually via /wstask
-        if (wsTaskTimer) clearTimeout(wsTaskTimer);
-        await bot.sendMessage(chatId, `🔴 *WSTASK MODE: OFFLINE*`, { 
-            parse_mode: 'Markdown',
-            reply_markup: {
-                keyboard: [[{ text: 'Pair M4U' }, { text: 'Withdraw' }], [{ text: 'Balance' }]],
-                resize_keyboard: true, is_persistent: true
-            }
-        });
-    }
-});
-
 
 
 // --- THE WSTASK TOGGLE COMMAND ---
