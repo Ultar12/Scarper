@@ -666,56 +666,41 @@ bot.onText(/^\/wstask$/i, async (msg) => {
 
 
 
-// --- 2. THE INVISIBLE WSTASK EXECUTOR ---
-bot.onText(/^\/wstask_internal\s+(\d+)$/, async (msg, match) => {
+// --- THE WSTASK TOGGLE COMMAND ---
+bot.onText(/^\/wstask$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return; 
+    if (chatId !== ADMIN_ID) return;
 
-    const targetNumber = match[1];
+    wsTaskMode = !wsTaskMode; 
 
-    // Midnight reset logic
-    const today = new Date().toLocaleDateString('en-NG', { timeZone: 'Africa/Lagos' });
-    if (today !== wsLastResetDate) {
-        wsDailyCount = 0;
-        wsLastResetDate = today;
-    }
-
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Routing ${targetNumber} to Message Server...`);
-
-    try {
-        const payload = { phone_number: targetNumber, command: "wstask_send" };
-
-        // --- FETCH APP_URL DYNAMICALLY ---
-        if (!process.env.APP_URL) {
-            throw new Error("APP_URL is not set in your server's environment variables!");
-        }
-        
-        // Clean the URL (removes the trailing slash if you accidentally added one in your ENV)
-        const baseUrl = process.env.APP_URL.replace(/\/$/, '');
-        const serverUrl = `${baseUrl}/api/receive-task`; 
-
-        const axios = require('axios');
-        const response = await axios.post(serverUrl, payload);
-
-        if (response.data.success) {
-            wsDailyCount++;
-            const percentage = ((wsDailyCount / 200) * 100).toFixed(1);
-            
-            bot.editMessageText(`✅ *TARGET SENT*\nNumber: \`${targetNumber}\`\n\n📊 *Progress:* ${wsDailyCount}/200 targets hit\n📈 *Completion:* ${percentage}%`, { 
-                chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown'
+    if (wsTaskMode) {
+        if (wsTaskTimer) clearTimeout(wsTaskTimer);
+        wsTaskTimer = setTimeout(() => {
+            wsTaskMode = false;
+            bot.sendMessage(chatId, '[SYSTEM] WSTASK Mode automatically ended after 30 minutes of inactivity.', {
+                reply_markup: {
+                    keyboard: [[{ text: 'Pair M4U' }, { text: 'Withdraw' }], [{ text: 'Balance' }]],
+                    resize_keyboard: true, is_persistent: true
+                }
             });
+        }, 30 * 60 * 1000);
 
-            if (wsDailyCount === 200) bot.sendMessage(chatId, `🎉 *DAILY GOAL REACHED!* You have hit 200 numbers today!`);
-        } else {
-            throw new Error("Server rejected the payload");
-        }
-
-    } catch (err) {
-        bot.editMessageText(`🚨 *FAILED TO ROUTE*\nCould not send ${targetNumber} to the server.\nError: ${err.message}`, { 
-            chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown'
+        await bot.sendMessage(chatId, `[WSTASK MODE: ENGAGED]\n\nSend me numbers one by one. I will instantly route them to the Message Server.\n\n[Daily Goal:] 200 numbers\n\nType Stop to end this mode.`, { 
+            parse_mode: 'Markdown',
+            reply_markup: { remove_keyboard: true }
+        });
+    } else {
+        if (wsTaskTimer) clearTimeout(wsTaskTimer);
+        await bot.sendMessage(chatId, `[WSTASK MODE: OFFLINE]`, { 
+            parse_mode: 'Markdown',
+            reply_markup: {
+                keyboard: [[{ text: 'Pair M4U' }, { text: 'Withdraw' }], [{ text: 'Balance' }]],
+                resize_keyboard: true, is_persistent: true
+            }
         });
     }
 });
+
 
 
 
@@ -3214,23 +3199,60 @@ bot.on('message', async (msg) => {
     }
 
 
-     // Check if the message is JUST a raw number
+         // Check if the message is JUST a raw number
     if (/^\d+$/.test(msg.text.trim())) {
+        const targetNumber = msg.text.trim();
         
         // ROUTE 1: WSTASK MODE
         if (typeof wsTaskMode !== 'undefined' && wsTaskMode) {
+            
             if (wsTaskTimer) clearTimeout(wsTaskTimer);
             wsTaskTimer = setTimeout(() => {
                 wsTaskMode = false;
                 bot.sendMessage(chatId, '[SYSTEM] WSTASK Mode automatically ended after 30 minutes of inactivity.');
             }, 30 * 60 * 1000);
 
-            const fakeMessage = { ...msg };
-            fakeMessage.text = `/wstask_internal ${msg.text.trim()}`;
-            bot.processUpdate({
-                update_id: Math.floor(Math.random() * 1000000),
-                message: fakeMessage
-            });
+            const today = new Date().toLocaleDateString('en-NG', { timeZone: 'Africa/Lagos' });
+            if (today !== wsLastResetDate) {
+                wsDailyCount = 0;
+                wsLastResetDate = today;
+            }
+
+            let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Routing ${targetNumber} to Message Server...`);
+
+            try {
+                const payload = { phone_number: targetNumber, command: "wstask_send" };
+
+                if (!process.env.APP_URL) {
+                    throw new Error("APP_URL is not set in your server's environment variables!");
+                }
+                
+                const baseUrl = process.env.APP_URL.replace(/\/$/, '');
+                const serverUrl = `${baseUrl}/api/receive-task`; 
+
+                const axios = require('axios');
+                const response = await axios.post(serverUrl, payload);
+
+                if (response.data.success) {
+                    wsDailyCount++;
+                    const percentage = ((wsDailyCount / 200) * 100).toFixed(1);
+                    
+                    bot.editMessageText(`[TARGET SENT]\nNumber: \`${targetNumber}\`\n\n[Progress:] ${wsDailyCount}/200 targets hit\n[Completion:] ${percentage}%`, { 
+                        chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown'
+                    });
+
+                    if (wsDailyCount === 200) bot.sendMessage(chatId, `[DAILY GOAL REACHED] You have hit 200 numbers today!`);
+                } else {
+                    throw new Error("Server rejected the payload");
+                }
+
+            } catch (err) {
+                bot.editMessageText(`[FAILED TO ROUTE]\nCould not send ${targetNumber} to the server.\nError: ${err.message}`, { 
+                    chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown'
+                });
+            }
+            
+            return; 
         }
         
         // ROUTE 2: CONTINUOUS TASK MODE
@@ -3242,14 +3264,16 @@ bot.on('message', async (msg) => {
             }, 30 * 60 * 1000);
 
             const fakeMessage = { ...msg };
-            fakeMessage.text = `/task ${msg.text.trim()}`;
+            fakeMessage.text = `/task ${targetNumber}`;
             bot.processUpdate({
                 update_id: Math.floor(Math.random() * 1000000),
                 message: fakeMessage
             });
+            
+            return;
         }
     }
-});
+
 
 
     // --- 3. M4U PAIRING CONTINUOUS LOOP ---
