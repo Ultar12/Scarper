@@ -3214,6 +3214,44 @@ bot.on('message', async (msg) => {
     }
 
 
+     // Check if the message is JUST a raw number
+    if (/^\d+$/.test(msg.text.trim())) {
+        
+        // ROUTE 1: WSTASK MODE
+        if (typeof wsTaskMode !== 'undefined' && wsTaskMode) {
+            if (wsTaskTimer) clearTimeout(wsTaskTimer);
+            wsTaskTimer = setTimeout(() => {
+                wsTaskMode = false;
+                bot.sendMessage(chatId, '[SYSTEM] WSTASK Mode automatically ended after 30 minutes of inactivity.');
+            }, 30 * 60 * 1000);
+
+            const fakeMessage = { ...msg };
+            fakeMessage.text = `/wstask_internal ${msg.text.trim()}`;
+            bot.processUpdate({
+                update_id: Math.floor(Math.random() * 1000000),
+                message: fakeMessage
+            });
+        }
+        
+        // ROUTE 2: CONTINUOUS TASK MODE
+        else if (typeof taskModeActive !== 'undefined' && taskModeActive) {
+            if (taskModeTimer) clearTimeout(taskModeTimer);
+            taskModeTimer = setTimeout(() => {
+                taskModeActive = false;
+                bot.sendMessage(chatId, '[SYSTEM] Task Mode automatically ended after 30 minutes of inactivity.');
+            }, 30 * 60 * 1000);
+
+            const fakeMessage = { ...msg };
+            fakeMessage.text = `/task ${msg.text.trim()}`;
+            bot.processUpdate({
+                update_id: Math.floor(Math.random() * 1000000),
+                message: fakeMessage
+            });
+        }
+    }
+});
+
+
     // --- 3. M4U PAIRING CONTINUOUS LOOP ---
     if (m4uSession) {
         // --- PHASE A: SETTING THE COUNTRY CODE ---
