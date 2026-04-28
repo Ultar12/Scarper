@@ -137,6 +137,13 @@ let initialBalanceNum = 0;
 // --- WT BURNER SESSION TRACKER ---
 const wtSessions = {}; 
 
+// --- WSTASK STATE & TRACKING ---
+let wsTaskMode = false;
+let wsTaskTimer = null; // Added timer for the 30-minute auto-close
+let wsDailyCount = 0;
+let wsLastResetDate = new Date().toLocaleDateString('en-NG', { timeZone: 'Africa/Lagos' });
+
+
 
 const appiumSessions = {};
 
@@ -618,6 +625,98 @@ bot.onText(/\/m4usign/i, (msg) => {
     bot.sendMessage(ADMIN_ID, "[SYSTEM] Manually triggering M4U Sign-in sequence...");
     performM4USignIn(ADMIN_ID);
 });
+
+
+// --- 1. THE WSTASK TOGGLE (WITH TIMEOUT & KEYBOARD HIDE) ---
+bot.onText(/^\/wstask$/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    wsTaskMode = !wsTaskMode; 
+
+    if (wsTaskMode) {
+        // Set the 30-minute timebomb
+        if (wsTaskTimer) clearTimeout(wsTaskTimer);
+        wsTaskTimer = setTimeout(() => {
+            wsTaskMode = false;
+            bot.sendMessage(chatId, '[SYSTEM] WSTASK Mode automatically ended after 30 minutes of inactivity.', {
+                reply_markup: {
+                    keyboard: [[{ text: 'Pair M4U' }, { text: 'Withdraw' }], [{ text: 'Balance' }]],
+                    resize_keyboard: true, is_persistent: true
+                }
+            });
+        }, 30 * 60 * 1000);
+
+        await bot.sendMessage(chatId, `🟢 *WSTASK MODE: ENGAGED*\n\nSend me numbers one by one. I will instantly route them to the Message Server.\n\n🎯 *Daily Goal:* 200 numbers\n\nType Stop to end this mode.`, { 
+            parse_mode: 'Markdown',
+            reply_markup: { remove_keyboard: true } // Hides the keyboard!
+        });
+    } else {
+        // Allow toggling it off manually via /wstask
+        if (wsTaskTimer) clearTimeout(wsTaskTimer);
+        await bot.sendMessage(chatId, `🔴 *WSTASK MODE: OFFLINE*`, { 
+            parse_mode: 'Markdown',
+            reply_markup: {
+                keyboard: [[{ text: 'Pair M4U' }, { text: 'Withdraw' }], [{ text: 'Balance' }]],
+                resize_keyboard: true, is_persistent: true
+            }
+        });
+    }
+});
+
+
+
+// --- 2. THE INVISIBLE WSTASK EXECUTOR ---
+bot.onText(/^\/wstask_internal\s+(\d+)$/, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return; 
+
+    const targetNumber = match[1];
+
+    // Midnight reset logic
+    const today = new Date().toLocaleDateString('en-NG', { timeZone: 'Africa/Lagos' });
+    if (today !== wsLastResetDate) {
+        wsDailyCount = 0;
+        wsLastResetDate = today;
+    }
+
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Routing ${targetNumber} to Message Server...`);
+
+    try {
+        const payload = { phone_number: targetNumber, command: "wstask_send" };
+
+        // --- FETCH APP_URL DYNAMICALLY ---
+        if (!process.env.APP_URL) {
+            throw new Error("APP_URL is not set in your server's environment variables!");
+        }
+        
+        // Clean the URL (removes the trailing slash if you accidentally added one in your ENV)
+        const baseUrl = process.env.APP_URL.replace(/\/$/, '');
+        const serverUrl = `${baseUrl}/api/receive-task`; 
+
+        const axios = require('axios');
+        const response = await axios.post(serverUrl, payload);
+
+        if (response.data.success) {
+            wsDailyCount++;
+            const percentage = ((wsDailyCount / 200) * 100).toFixed(1);
+            
+            bot.editMessageText(`✅ *TARGET SENT*\nNumber: \`${targetNumber}\`\n\n📊 *Progress:* ${wsDailyCount}/200 targets hit\n📈 *Completion:* ${percentage}%`, { 
+                chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown'
+            });
+
+            if (wsDailyCount === 200) bot.sendMessage(chatId, `🎉 *DAILY GOAL REACHED!* You have hit 200 numbers today!`);
+        } else {
+            throw new Error("Server rejected the payload");
+        }
+
+    } catch (err) {
+        bot.editMessageText(`🚨 *FAILED TO ROUTE*\nCould not send ${targetNumber} to the server.\nError: ${err.message}`, { 
+            chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown'
+        });
+    }
+});
+
 
 
 
@@ -1819,7 +1918,7 @@ bot.onText(/^(?:Task|task)$/i, async (msg) => {
 });
 
 
-// Universal STOP Command (Kills Task Mode, WA Login, and M4U Pairing)
+// Universal STOP Command (Kills Task Mode, WSTASK Mode, WA Login, and M4U Pairing)
 bot.onText(/^(?:Stop|stop|\/stop)$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -1830,33 +1929,41 @@ bot.onText(/^(?:Stop|stop|\/stop)$/i, async (msg) => {
     if (taskModeActive) {
         taskModeActive = false;
         if (taskModeTimer) clearTimeout(taskModeTimer);
-        // Bring the keyboard back!
         bot.sendMessage(chatId, '[INACTIVE] Task Mode Deactivated. Main menu restored.', {
             reply_markup: {
-                keyboard: [
-                    [{ text: 'Pair M4U' }, { text: 'Withdraw' }],
-                    [{ text: 'Balance' }]
-                ],
-                resize_keyboard: true,
-                is_persistent: true
+                keyboard: [[{ text: 'Pair M4U' }, { text: 'Withdraw' }], [{ text: 'Balance' }]],
+                resize_keyboard: true, is_persistent: true
             }
         });
         stoppedSomething = true;
     }
 
-    // 2. Stop WhatsApp Login
+    // 2. Stop WSTASK Mode
+    if (wsTaskMode) {
+        wsTaskMode = false;
+        if (wsTaskTimer) clearTimeout(wsTaskTimer);
+        bot.sendMessage(chatId, '[INACTIVE] WSTASK Mode Deactivated. Main menu restored.', {
+            reply_markup: {
+                keyboard: [[{ text: 'Pair M4U' }, { text: 'Withdraw' }], [{ text: 'Balance' }]],
+                resize_keyboard: true, is_persistent: true
+            }
+        });
+        stoppedSomething = true;
+    }
+
+    // 3. Stop WhatsApp Login
     if (userState[chatId]) {
         userState[chatId] = null;
         bot.sendMessage(chatId, '[SYSTEM] WhatsApp login sequence aborted.');
         stoppedSomething = true;
     }
 
-    // 3. Stop M4U Pairing & Free RAM
-    if (m4uSession) {
+    // 4. Stop M4U Pairing & Free RAM
+    if (typeof m4uSession !== 'undefined' && m4uSession) {
         m4uSession = null;
-        if (m4uTimer) clearTimeout(m4uTimer);
+        if (typeof m4uTimer !== 'undefined' && m4uTimer) clearTimeout(m4uTimer);
         bot.sendMessage(chatId, '[SYSTEM] M4U Pairing aborted. Closing background browser...');
-        if (m4uBrowser) {
+        if (typeof m4uBrowser !== 'undefined' && m4uBrowser) {
             await m4uBrowser.close().catch(() => {});
             m4uBrowser = null;
             m4uPage = null;
