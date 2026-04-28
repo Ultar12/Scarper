@@ -1737,50 +1737,63 @@ bot.onText(/^\/getfile$/i, async (msg) => {
             await new Promise(r => setTimeout(r, 5000)); // Wait for the giant list to load
         }
 
-        // --- 4. TRIGGER EXCEL DOWNLOAD ---
-        await updateStatus('[SYSTEM] Extracting Excel file from server...');
-        
-        await page.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('a, button, span'));
-            for (let el of elements) {
-                if ((el.innerText || '').trim() === 'Excel') {
-                    // Force synthetic click to bypass traps
-                    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                    el.click();
-                    if (el.parentElement) el.parentElement.click();
-                    return;
+                // --- 4. TRIGGER EXCEL DOWNLOAD (AGGRESSIVE RETRY MODE) ---
+        let downloadedFilePath = null;
+        const maxAttempts = 3;
+
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            await updateStatus(`[SYSTEM] Extraction Attempt ${attempt}/${maxAttempts}...`);
+
+            // Physically trigger the Excel button
+            await page.evaluate(() => {
+                const elements = Array.from(document.querySelectorAll('a, button, span'));
+                const excelBtn = elements.find(el => (el.innerText || '').trim() === 'Excel');
+                if (excelBtn) {
+                    excelBtn.scrollIntoView();
+                    excelBtn.click();
+                    // Double-tap with synthetic events
+                    const ev = { bubbles: true, cancelable: true, view: window };
+                    excelBtn.dispatchEvent(new MouseEvent('mousedown', ev));
+                    excelBtn.dispatchEvent(new MouseEvent('mouseup', ev));
+                    excelBtn.dispatchEvent(new MouseEvent('click', ev));
+                }
+            });
+
+            // Wait 10 seconds to see if the file starts landing
+            for (let i = 0; i < 10; i++) {
+                await new Promise(r => setTimeout(r, 1000));
+                
+                if (fs.existsSync(downloadDir)) {
+                    const files = fs.readdirSync(downloadDir);
+                    // Check for real file (no .crdownload or .tmp)
+                    const excelFile = files.find(f => f.endsWith('.xlsx') || f.endsWith('.xls') || f.endsWith('.csv'));
+                    const isDownloading = files.some(f => f.endsWith('.crdownload') || f.endsWith('.tmp'));
+
+                    if (excelFile && !isDownloading) {
+                        downloadedFilePath = path.join(downloadDir, excelFile);
+                        break; 
+                    }
                 }
             }
-        });
 
-                // --- 5. INTERCEPT AND SEND THE FILE VIA SECONDARY BOT ---
-        await updateStatus('[SYSTEM] Waiting for file to finish downloading...');
-        
-        let downloadedFilePath = null;
-        
-        // Poll the directory for up to 30 seconds waiting for the .xlsx file
-        for (let i = 0; i < 30; i++) {
-            await new Promise(r => setTimeout(r, 1000));
+            if (downloadedFilePath) break; // Exit attempt loop if we got it!
             
-            if (fs.existsSync(downloadDir)) {
-                const files = fs.readdirSync(downloadDir);
-                // Look for the file, ignoring Chrome's temporary .crdownload files
-                const excelFile = files.find(f => f.endsWith('.xlsx') || f.endsWith('.xls') || f.endsWith('.csv'));
-                const isDownloading = files.some(f => f.endsWith('.crdownload'));
-                
-                if (excelFile && !isDownloading) {
-                    // Safe file routing using the path module
-                    downloadedFilePath = path.join(downloadDir, excelFile);
-                    break;
-                }
+            if (attempt < maxAttempts) {
+                await updateStatus(`[SYSTEM] No file detected. Re-striking Excel button...`);
             }
         }
 
+        // --- 5. VERIFICATION & HANDOFF ---
         if (!downloadedFilePath) {
-            throw new Error("Download timed out or failed to trigger.");
+            const errorSnap = await page.screenshot({ type: 'png' });
+            await bot.sendPhoto(chatId, errorSnap, { 
+                caption: '[ERROR] Triple-Strike failed. Website is not releasing the file.' 
+            });
+            throw new Error("Download failed after 3 attempts.");
         }
 
         await updateStatus('[SUCCESS] File acquired! Handing off to the Message Bot...');
+
         
         // Initialize the secondary Message Bot (polling: false because it only needs to send)
         const msgBotToken = '8424082135:AAGc73Ztzkb49dZd4hHEx99QFlMMwS5MONw';
