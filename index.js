@@ -85,6 +85,26 @@ pool.query(`CREATE TABLE IF NOT EXISTS m4u_linked_numbers (phone_number VARCHAR(
     .then(() => console.log('[SYSTEM] M4U Verified Numbers DB Ready.'))
     .catch(console.error);
 
+// --- WSTASK PERSISTENCE DATABASE ---
+pool.query(`
+    CREATE TABLE IF NOT EXISTS wstask_stats (
+        id SERIAL PRIMARY KEY,
+        daily_count INTEGER DEFAULT 0,
+        last_reset_date TEXT
+    );
+`)
+.then(async () => {
+    // Check if we need to insert the first row
+    const res = await pool.query('SELECT * FROM wstask_stats LIMIT 1');
+    if (res.rows.length === 0) {
+        await pool.query('INSERT INTO wstask_stats (daily_count, last_reset_date) VALUES (0, $1)', 
+            [new Date().toLocaleDateString('en-NG', { timeZone: 'Africa/Lagos' })]);
+    }
+    console.log('[SYSTEM] WSTASK Stats DB Ready.');
+})
+.catch(console.error);
+
+
 
 const saveSessionToDB = async (platform, page) => {
     try {
@@ -125,6 +145,35 @@ const loadSessionFromDB = async (platform, page) => {
     }
     return false;
 };
+
+
+const saveWSTaskStats = async (count, date) => {
+    try {
+        await pool.query(
+            'UPDATE wstask_stats SET daily_count = $1, last_reset_date = $2 WHERE id = 1',
+            [count, date]
+        );
+    } catch (err) {
+        console.error('[ERROR] Failed to save WSTASK stats:', err);
+    }
+};
+
+const loadWSTaskStats = async () => {
+    try {
+        const res = await pool.query('SELECT daily_count, last_reset_date FROM wstask_stats WHERE id = 1');
+        if (res.rows.length > 0) {
+            wsDailyCount = res.rows[0].daily_count;
+            wsLastResetDate = res.rows[0].last_reset_date;
+            console.log(`[SYSTEM] Restored stats: ${wsDailyCount} targets hit on ${wsLastResetDate}`);
+        }
+    } catch (err) {
+        console.error('[ERROR] Failed to load WSTASK stats:', err);
+    }
+};
+
+// Call this immediately to load stats when the server boots up
+loadWSTaskStats();
+
 
 // Global variables to track open tabs and handle the 1-hour idle timeout
 let activeTaskPages = [];
