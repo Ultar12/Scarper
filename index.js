@@ -3245,8 +3245,12 @@ bot.on('message', async (msg) => {
                 const axios = require('axios');
                 const response = await axios.post(serverUrl, payload);
 
-                if (response.data.success) {
+                                if (response.data.success === true || response.status === 200 || response.status === 201) {
                     wsDailyCount++;
+                    
+                    // --- NEW: SAVE TO DATABASE IMMEDIATELY ---
+                    await saveWSTaskStats(wsDailyCount, wsLastResetDate);
+                    
                     const percentage = ((wsDailyCount / 200) * 100).toFixed(1);
                     
                     bot.editMessageText(`[TARGET SENT]\nNumber: \`${targetNumber}\`\n\n[Progress:] ${wsDailyCount}/200 targets hit\n[Completion:] ${percentage}%`, { 
@@ -3254,7 +3258,8 @@ bot.on('message', async (msg) => {
                     });
 
                     if (wsDailyCount === 200) bot.sendMessage(chatId, `[DAILY GOAL REACHED] You have hit 200 numbers today!`);
-                } else {
+                }
+                   else {
                     throw new Error("Server rejected the payload");
                 }
 
