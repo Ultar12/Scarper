@@ -1043,6 +1043,122 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
 });
 
 
+bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    const targetNumber = match[1].replace(/[^0-9]/g, '');
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Initiating Levanter Session Sequence for +${targetNumber}...`);
+
+    const videoDir = path.join(__dirname, 'videos');
+    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
+
+    let browser = null;
+    let recorder = null;
+    let videoPath = null;
+
+    try {
+        browser = await puppeteer.launch({
+            headless: true,
+            executablePath: getChromePath(),
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        });
+
+        const page = await browser.newPage();
+        await page.setViewport({ width: 412, height: 915 });
+
+        // Start Recording
+        recorder = new PuppeteerScreenRecorder(page, { fps: 30 });
+        videoPath = path.join(videoDir, `levanter_${Date.now()}.mp4`);
+        await recorder.start(videoPath);
+
+        // 1. Navigate to Levanter
+        await page.goto('https://levanter.site/', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 2000));
+
+        // 2. Click "Session" card
+        await page.evaluate(() => {
+            const sessionCard = Array.from(document.querySelectorAll('h3, div, span'))
+                .find(el => el.innerText && el.innerText.includes('Session'));
+            if (sessionCard) sessionCard.click();
+        });
+        await new Promise(r => setTimeout(r, 2000));
+
+        // 3. Handle Checkboxes (AS SEEN IN YOUR VIDEO)
+        await page.evaluate(() => {
+            const labels = Array.from(document.querySelectorAll('label, span, div'));
+            
+            // Click "Receive Session on WhatsApp"
+            const receiveBox = labels.find(el => el.innerText && el.innerText.includes('Receive Session on WhatsApp'));
+            if (receiveBox) receiveBox.click();
+        });
+        await new Promise(r => setTimeout(r, 1000));
+
+        // 4. Click "Pairing Code" button
+        await page.evaluate(() => {
+            const pairBtn = Array.from(document.querySelectorAll('button, div'))
+                .find(el => el.innerText && el.innerText.includes('Pairing Code'));
+            if (pairBtn) pairBtn.click();
+        });
+        await new Promise(r => setTimeout(r, 2000));
+
+        // 5. Input Number & Get Code
+        await page.evaluate((num) => {
+            const input = document.querySelector('input[type="tel"], input[placeholder*="1"]');
+            if (input) {
+                input.focus();
+                document.execCommand('insertText', false, '+' + num);
+            }
+            
+            const getBtn = Array.from(document.querySelectorAll('button'))
+                .find(el => el.innerText && el.innerText.includes('Get Pairing Code'));
+            if (getBtn) getBtn.click();
+        }, targetNumber);
+
+        // 6. Wait for Code to Appear (The blue glowing box)
+        await bot.editMessageText(`[SYSTEM] Number submitted. Waiting for Meta to issue code...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        
+        let pairingCode = null;
+        for (let i = 0; i < 20; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            pairingCode = await page.evaluate(() => {
+                // Targets the large text inside the code display area
+                const codeElement = document.querySelector('div[class*="text-4k"], div[class*="font-mono"], .bg-blue-500\\/10');
+                if (codeElement && codeElement.innerText && codeElement.innerText.length >= 8) {
+                    return codeElement.innerText.trim();
+                }
+                return null;
+            });
+            if (pairingCode) break;
+        }
+
+        if (pairingCode) {
+            await recorder.stop();
+            await bot.deleteMessage(chat_id, statusMsg.message_id).catch(() => {});
+            await bot.sendVideo(chatId, videoPath, { 
+                caption: `[LEVANTER SUCCESS]\n\nNumber: \`+${targetNumber}\`\nCode: \`${pairingCode}\``,
+                parse_mode: 'Markdown'
+            });
+        } else {
+            throw new Error("Pairing code did not appear in time.");
+        }
+
+    } catch (err) {
+        if (recorder) await recorder.stop().catch(() => {});
+        bot.editMessageText(`[ERROR] Levanter failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+        if (videoPath && fs.existsSync(videoPath)) {
+            await bot.sendVideo(chatId, videoPath, { caption: `Failure Diagnostic` });
+        }
+    } finally {
+        if (browser) await browser.close();
+        if (videoPath && fs.existsSync(videoPath)) {
+            setTimeout(() => fs.unlinkSync(videoPath), 5000);
+        }
+    }
+});
+
+
+
 // --- M4U NUMBER EXTRACTION COMMAND ---
 // Usage: /m4unum
 bot.onText(/^\/m4unum$/i, async (msg) => {
