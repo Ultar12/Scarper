@@ -1048,7 +1048,7 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
     if (chatId !== ADMIN_ID) return;
 
     const targetNumber = match[1].replace(/[^0-9]/g, '');
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Initiating Levanter Session Sequence for +${targetNumber}...`);
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Launching Levanter Sequence for +${targetNumber}...`);
 
     const videoDir = path.join(__dirname, 'videos');
     if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
@@ -1067,93 +1067,109 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
         const page = await browser.newPage();
         await page.setViewport({ width: 412, height: 915 });
 
-        // Start Recording
-        recorder = new PuppeteerScreenRecorder(page, { fps: 30 });
+        // --- THE REDIRECT SHIELD ---
+        page.on('framenavigated', async (frame) => {
+            if (frame === page.mainFrame()) {
+                const currentUrl = page.url();
+                // If domain shifts away from levanter.site, force a Go Back
+                if (currentUrl !== 'about:blank' && !currentUrl.includes('levanter.site')) {
+                    console.log(`[AD DETECTED] Blocked redirect to: ${currentUrl}`);
+                    await page.goBack().catch(() => {});
+                }
+            }
+        });
+
         videoPath = path.join(videoDir, `levanter_${Date.now()}.mp4`);
+        recorder = new PuppeteerScreenRecorder(page, { fps: 30 });
         await recorder.start(videoPath);
 
-        // 1. Navigate to Levanter
+        // 1. Initial Navigation
         await page.goto('https://levanter.site/', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 3000));
 
-        // 2. Click "Session" card
-        await page.evaluate(() => {
-            const sessionCard = Array.from(document.querySelectorAll('h3, div, span'))
-                .find(el => el.innerText && el.innerText.includes('Session'));
-            if (sessionCard) sessionCard.click();
+        // --- CONTINUOUS POPUP SNIPER ---
+        await page.addInitScript(() => {
+            setInterval(() => {
+                const overlays = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"], [class*="popup"], [id*="google_ads"]');
+                overlays.forEach(o => o.remove());
+                document.body.style.overflow = 'auto';
+                document.body.style.pointerEvents = 'auto';
+            }, 500);
         });
-        await new Promise(r => setTimeout(r, 2000));
 
-        // 3. Handle Checkboxes (AS SEEN IN YOUR VIDEO)
+        // 2. Click Session Card
+        await page.evaluate(() => {
+            const cards = Array.from(document.querySelectorAll('div, a, h3'));
+            const sessionBtn = cards.find(el => el.innerText?.trim() === 'Session');
+            if (sessionBtn) {
+                const target = sessionBtn.closest('div[class*="cursor-pointer"]') || sessionBtn;
+                target.click();
+            }
+        });
+        await new Promise(r => setTimeout(r, 4000));
+
+        // 3. Checkbox: Receive Session on WhatsApp
         await page.evaluate(() => {
             const labels = Array.from(document.querySelectorAll('label, span, div'));
-            
-            // Click "Receive Session on WhatsApp"
-            const receiveBox = labels.find(el => el.innerText && el.innerText.includes('Receive Session on WhatsApp'));
+            const receiveBox = labels.find(el => el.innerText?.includes('Receive Session on WhatsApp'));
             if (receiveBox) receiveBox.click();
         });
-        await new Promise(r => setTimeout(r, 1000));
+        await new Promise(r => setTimeout(r, 1500));
 
-        // 4. Click "Pairing Code" button
+        // 4. Select Pairing Code Method
         await page.evaluate(() => {
-            const pairBtn = Array.from(document.querySelectorAll('button, div'))
-                .find(el => el.innerText && el.innerText.includes('Pairing Code'));
+            const btns = Array.from(document.querySelectorAll('button, div'));
+            const pairBtn = btns.find(el => el.innerText?.trim() === 'Pairing Code');
             if (pairBtn) pairBtn.click();
         });
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 3000));
 
-        // 5. Input Number & Get Code
-        await page.evaluate((num) => {
-            const input = document.querySelector('input[type="tel"], input[placeholder*="1"]');
-            if (input) {
-                input.focus();
-                document.execCommand('insertText', false, '+' + num);
-            }
-            
-            const getBtn = Array.from(document.querySelectorAll('button'))
-                .find(el => el.innerText && el.innerText.includes('Get Pairing Code'));
+        // 5. Number Input & Submit
+        await page.focus('input[type="tel"]');
+        await page.keyboard.type('+' + targetNumber, { delay: 100 });
+        await new Promise(r => setTimeout(r, 1000));
+
+        await page.evaluate(() => {
+            const getBtn = Array.from(document.querySelectorAll('button')).find(el => el.innerText?.includes('Get Pairing Code'));
             if (getBtn) getBtn.click();
-        }, targetNumber);
+        });
 
-        // 6. Wait for Code to Appear (The blue glowing box)
-        await bot.editMessageText(`[SYSTEM] Number submitted. Waiting for Meta to issue code...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        // 6. Extraction Loop
+        await bot.editMessageText(`[SYSTEM] Submit successful. Extraction in progress...`, { chat_id: chatId, message_id: statusMsg.message_id });
         
         let pairingCode = null;
-        for (let i = 0; i < 20; i++) {
+        for (let i = 0; i < 30; i++) {
             await new Promise(r => setTimeout(r, 1000));
             pairingCode = await page.evaluate(() => {
-                // Targets the large text inside the code display area
-                const codeElement = document.querySelector('div[class*="text-4k"], div[class*="font-mono"], .bg-blue-500\\/10');
-                if (codeElement && codeElement.innerText && codeElement.innerText.length >= 8) {
-                    return codeElement.innerText.trim();
-                }
-                return null;
+                const codeDiv = Array.from(document.querySelectorAll('div')).find(el => 
+                    el.innerText?.length === 8 && /^[A-Z0-9]+$/.test(el.innerText) && el.innerText !== 'LEVANTER'
+                );
+                return codeDiv ? codeDiv.innerText.trim() : null;
             });
             if (pairingCode) break;
         }
 
+        await recorder.stop();
+
         if (pairingCode) {
-            await recorder.stop();
-            await bot.deleteMessage(chat_id, statusMsg.message_id).catch(() => {});
-            await bot.sendVideo(chatId, videoPath, { 
-                caption: `[LEVANTER SUCCESS]\n\nNumber: \`+${targetNumber}\`\nCode: \`${pairingCode}\``,
-                parse_mode: 'Markdown'
+            await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+            await bot.sendMessage(chatId, `[LEVANTER SUCCESS]\n\nNumber: \`+${targetNumber}\`\nCode: \`${pairingCode}\``, { 
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [[{ text: `Copy: ${pairingCode}`, copy_text: { text: pairingCode } }]]
+                }
             });
         } else {
-            throw new Error("Pairing code did not appear in time.");
+            throw new Error("Code failed to appear (Check for network lag)");
         }
 
     } catch (err) {
         if (recorder) await recorder.stop().catch(() => {});
-        bot.editMessageText(`[ERROR] Levanter failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
-        if (videoPath && fs.existsSync(videoPath)) {
-            await bot.sendVideo(chatId, videoPath, { caption: `Failure Diagnostic` });
-        }
+        bot.editMessageText(`[FAILED] Sequence interrupted. Check diagnostic video.`, { chat_id: chatId, message_id: statusMsg.message_id });
+        if (fs.existsSync(videoPath)) await bot.sendVideo(chatId, videoPath, { caption: `Error: ${err.message}` });
     } finally {
         if (browser) await browser.close();
-        if (videoPath && fs.existsSync(videoPath)) {
-            setTimeout(() => fs.unlinkSync(videoPath), 5000);
-        }
+        if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
     }
 });
 
