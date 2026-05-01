@@ -1073,13 +1073,12 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
             if (frame === page.mainFrame()) {
                 const currentUrl = page.url();
                 if (currentUrl !== 'about:blank' && !currentUrl.includes('levanter.site')) {
-                    console.log(`[AD DETECTED] Blocked redirect to: ${currentUrl}`);
                     await page.goBack().catch(() => {});
                 }
             }
         });
 
-        // --- THE POPUP SNIPER (PUPPETEER SYNTAX) ---
+        // --- THE POPUP SNIPER ---
         await page.evaluateOnNewDocument(() => {
             setInterval(() => {
                 const overlays = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"], [class*="popup"], [id*="google_ads"]');
@@ -1122,17 +1121,30 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
             const pairBtn = btns.find(el => el.innerText?.trim() === 'Pairing Code');
             if (pairBtn) pairBtn.click();
         });
-        await new Promise(r => setTimeout(r, 3000));
 
-        // 5. Number Input & Submit
-        await page.focus('input[type="tel"]');
-        await page.keyboard.type('+' + targetNumber, { delay: 100 });
-        await new Promise(r => setTimeout(r, 1000));
+        // --- DYNAMIC WAIT FOR INPUT ---
+        await bot.editMessageText(`[SYSTEM] Waiting for input field to spawn...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        
+        // Wait up to 10s for any input to appear
+        const inputSelector = 'input[type="tel"], input[placeholder*="1"], .van-field__control';
+        await page.waitForSelector(inputSelector, { timeout: 10000 }).catch(() => {});
 
-        await page.evaluate(() => {
-            const getBtn = Array.from(document.querySelectorAll('button')).find(el => el.innerText?.includes('Get Pairing Code'));
-            if (getBtn) getBtn.click();
-        });
+        await new Promise(r => setTimeout(r, 2000));
+
+        // 5. High-Precision Number Input
+        const inputExists = await page.$(inputSelector);
+        if (inputExists) {
+            await page.focus(inputSelector);
+            await page.keyboard.type('+' + targetNumber, { delay: 100 });
+            await new Promise(r => setTimeout(r, 1000));
+
+            await page.evaluate(() => {
+                const getBtn = Array.from(document.querySelectorAll('button')).find(el => el.innerText?.includes('Get Pairing Code'));
+                if (getBtn) getBtn.click();
+            });
+        } else {
+            throw new Error("Input field failed to appear. Website might be lagging.");
+        }
 
         // 6. Extraction Loop
         await bot.editMessageText(`[SYSTEM] Submit successful. Extraction in progress...`, { chat_id: chatId, message_id: statusMsg.message_id });
@@ -1160,7 +1172,7 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
                 }
             });
         } else {
-            throw new Error("Code failed to appear (Check for network lag)");
+            throw new Error("Code failed to appear.");
         }
 
     } catch (err) {
@@ -1172,8 +1184,6 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
         if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
     }
 });
-
-
 
 
 // --- M4U NUMBER EXTRACTION COMMAND ---
