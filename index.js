@@ -1044,12 +1044,14 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
 
 
 
+
+
 bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
     const targetNumber = match[1].replace(/[^0-9]/g, '');
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Launching Levanter Sequence for +${targetNumber}...`);
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Initiating High-Precision Strike for +${targetNumber}...`);
 
     const videoDir = path.join(__dirname, 'videos');
     if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
@@ -1068,7 +1070,7 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
         const page = await browser.newPage();
         await page.setViewport({ width: 412, height: 915 });
 
-        // --- THE REDIRECT SHIELD ---
+        // Anti-Ad Shield
         page.on('framenavigated', async (frame) => {
             if (frame === page.mainFrame()) {
                 const currentUrl = page.url();
@@ -1078,81 +1080,54 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
             }
         });
 
-        // --- THE POPUP SNIPER ---
-        await page.evaluateOnNewDocument(() => {
-            setInterval(() => {
-                const overlays = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"], [class*="popup"], [id*="google_ads"]');
-                overlays.forEach(o => o.remove());
-                document.body.style.overflow = 'auto';
-                document.body.style.pointerEvents = 'auto';
-            }, 500);
-        });
-
         videoPath = path.join(videoDir, `levanter_${Date.now()}.mp4`);
         recorder = new PuppeteerScreenRecorder(page, { fps: 30 });
         await recorder.start(videoPath);
 
-        // 1. Initial Navigation
+        // 1. Initial Load
         await page.goto('https://levanter.site/', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 3000));
-
-        // 2. Click Session Card
-        await page.evaluate(() => {
-            const cards = Array.from(document.querySelectorAll('div, a, h3'));
-            const sessionBtn = cards.find(el => el.innerText?.trim() === 'Session');
-            if (sessionBtn) {
-                const target = sessionBtn.closest('div[class*="cursor-pointer"]') || sessionBtn;
-                target.click();
-            }
-        });
         await new Promise(r => setTimeout(r, 4000));
 
-        // 3. Checkbox: Receive Session on WhatsApp
-        await page.evaluate(() => {
-            const labels = Array.from(document.querySelectorAll('label, span, div'));
-            const receiveBox = labels.find(el => el.innerText?.includes('Receive Session on WhatsApp'));
-            if (receiveBox) receiveBox.click();
-        });
-        await new Promise(r => setTimeout(r, 1500));
+        // 2. COORDINATE STRIKE: CLICK SESSION CARD
+        // Targets the approximate center-top area where the Session card lives
+        await page.mouse.click(200, 450); 
+        await new Promise(r => setTimeout(r, 4000));
 
-        // 4. Select Pairing Code Method
-        await page.evaluate(() => {
-            const btns = Array.from(document.querySelectorAll('button, div'));
-            const pairBtn = btns.find(el => el.innerText?.trim() === 'Pairing Code');
-            if (pairBtn) pairBtn.click();
-        });
-
-        // --- DYNAMIC WAIT FOR INPUT ---
-        await bot.editMessageText(`[SYSTEM] Waiting for input field to spawn...`, { chat_id: chatId, message_id: statusMsg.message_id });
-        
-        // Wait up to 10s for any input to appear
-        const inputSelector = 'input[type="tel"], input[placeholder*="1"], .van-field__control';
-        await page.waitForSelector(inputSelector, { timeout: 10000 }).catch(() => {});
-
+        // 3. CLICK CHECKBOX: RECEIVE SESSION ON WHATSAPP
+        // Targets the second checkbox area
+        await page.mouse.click(150, 300);
         await new Promise(r => setTimeout(r, 2000));
 
-        // 5. High-Precision Number Input
-        const inputExists = await page.$(inputSelector);
-        if (inputExists) {
-            await page.focus(inputSelector);
-            await page.keyboard.type('+' + targetNumber, { delay: 100 });
-            await new Promise(r => setTimeout(r, 1000));
+        // 4. CLICK PAIRING CODE BUTTON
+        // Targets the bottom selection box
+        await page.mouse.click(200, 700);
+        await new Promise(r => setTimeout(r, 4000));
 
-            await page.evaluate(() => {
-                const getBtn = Array.from(document.querySelectorAll('button')).find(el => el.innerText?.includes('Get Pairing Code'));
-                if (getBtn) getBtn.click();
-            });
-        } else {
-            throw new Error("Input field failed to appear. Website might be lagging.");
-        }
+        // 5. INPUT NUMBER
+        // We hunt for the input specifically now that the modal is definitely open
+        const inputSelector = 'input[type="tel"], input';
+        await page.waitForSelector(inputSelector, { timeout: 10000 });
+        
+        await page.click(inputSelector, { clickCount: 3 }); // Highlight all
+        await page.keyboard.press('Backspace');
+        await page.keyboard.type('+' + targetNumber, { delay: 100 });
+        await new Promise(r => setTimeout(r, 1000));
 
-        // 6. Extraction Loop
-        await bot.editMessageText(`[SYSTEM] Submit successful. Extraction in progress...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        // CLICK GET PAIRING CODE
+        await page.evaluate(() => {
+            const btns = Array.from(document.querySelectorAll('button'));
+            const getBtn = btns.find(el => el.innerText?.includes('Get'));
+            if (getBtn) getBtn.click();
+        });
+
+        // 6. EXTRACTION
+        await bot.editMessageText(`[SYSTEM] Submit successful. Extraction loop started...`, { chat_id: chatId, message_id: statusMsg.message_id });
         
         let pairingCode = null;
         for (let i = 0; i < 30; i++) {
             await new Promise(r => setTimeout(r, 1000));
             pairingCode = await page.evaluate(() => {
+                // Look for the specific glowing box text
                 const codeDiv = Array.from(document.querySelectorAll('div')).find(el => 
                     el.innerText?.length === 8 && /^[A-Z0-9]+$/.test(el.innerText) && el.innerText !== 'LEVANTER'
                 );
@@ -1172,18 +1147,19 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
                 }
             });
         } else {
-            throw new Error("Code failed to appear.");
+            throw new Error("Final pairing code box did not populate.");
         }
 
     } catch (err) {
         if (recorder) await recorder.stop().catch(() => {});
-        bot.editMessageText(`[FAILED] Sequence interrupted. Check diagnostic video.`, { chat_id: chatId, message_id: statusMsg.message_id });
+        bot.editMessageText(`[FAILED] Strike failed. Diagnostic video sent.`, { chat_id: chatId, message_id: statusMsg.message_id });
         if (fs.existsSync(videoPath)) await bot.sendVideo(chatId, videoPath, { caption: `Error: ${err.message}` });
     } finally {
         if (browser) await browser.close();
         if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
     }
 });
+
 
 
 // --- M4U NUMBER EXTRACTION COMMAND ---
