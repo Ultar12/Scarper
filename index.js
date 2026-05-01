@@ -1043,6 +1043,7 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
 });
 
 
+
 bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -1071,12 +1072,21 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
         page.on('framenavigated', async (frame) => {
             if (frame === page.mainFrame()) {
                 const currentUrl = page.url();
-                // If domain shifts away from levanter.site, force a Go Back
                 if (currentUrl !== 'about:blank' && !currentUrl.includes('levanter.site')) {
                     console.log(`[AD DETECTED] Blocked redirect to: ${currentUrl}`);
                     await page.goBack().catch(() => {});
                 }
             }
+        });
+
+        // --- THE POPUP SNIPER (PUPPETEER SYNTAX) ---
+        await page.evaluateOnNewDocument(() => {
+            setInterval(() => {
+                const overlays = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"], [class*="popup"], [id*="google_ads"]');
+                overlays.forEach(o => o.remove());
+                document.body.style.overflow = 'auto';
+                document.body.style.pointerEvents = 'auto';
+            }, 500);
         });
 
         videoPath = path.join(videoDir, `levanter_${Date.now()}.mp4`);
@@ -1086,16 +1096,6 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
         // 1. Initial Navigation
         await page.goto('https://levanter.site/', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 3000));
-
-        // --- CONTINUOUS POPUP SNIPER ---
-        await page.addInitScript(() => {
-            setInterval(() => {
-                const overlays = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"], [class*="popup"], [id*="google_ads"]');
-                overlays.forEach(o => o.remove());
-                document.body.style.overflow = 'auto';
-                document.body.style.pointerEvents = 'auto';
-            }, 500);
-        });
 
         // 2. Click Session Card
         await page.evaluate(() => {
@@ -1172,6 +1172,7 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
         if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
     }
 });
+
 
 
 
