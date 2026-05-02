@@ -844,21 +844,25 @@ bot.onText(/\/m4usign/i, (msg) => {
 
 
 
- bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
+ 
+bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return; 
 
     let rawNum = match[1].replace(/[^0-9]/g, '');
+    let countryCode = '234'; 
     let localNum = rawNum;
 
     // Standard Nigerian number formatting
     if (rawNum.startsWith('234') && rawNum.length > 10) {
+        countryCode = '234';
         localNum = rawNum.substring(3);
     } else if (rawNum.startsWith('0')) {
+        countryCode = '234';
         localNum = rawNum.substring(1);
     }
 
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Launching Mobile-Scroll Strike for +234 ${localNum}...`);
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Launching Modal-Breaker Strike for +${countryCode} ${localNum}...`);
 
     const videoDir = path.join(__dirname, 'videos');
     if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
@@ -885,65 +889,118 @@ bot.onText(/\/m4usign/i, (msg) => {
         await page.goto('https://session.rgnk.site/pairing-code', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
 
-        // 2. OPEN DROPDOWN
-        await page.evaluate(() => {
-            const els = Array.from(document.querySelectorAll('div, span, button, p'));
-            const trigger = els.find(e => e.innerText?.trim() === '+1');
-            if (trigger) {
-                const ev = { bubbles: true, cancelable: true, view: window };
-                ['mousedown', 'mouseup', 'click'].forEach(t => trigger.dispatchEvent(new MouseEvent(t, ev)));
-                trigger.click();
-            }
-        });
-        await new Promise(r => setTimeout(r, 2000)); 
-
-        // 3. THE MOBILE SCROLL HUNTER (Targeting +234)
-        await bot.editMessageText(`[SYSTEM] Searching for +234 in mobile menu...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        // --- 2. FORCE OPEN DROPDOWN ---
+        await bot.editMessageText(`[SYSTEM] Forcing dropdown open...`, { chat_id: chatId, message_id: statusMsg.message_id });
         
-        let found = false;
-        for (let i = 0; i < 15; i++) { // Max 15 scrolls
-            found = await page.evaluate(() => {
+        // Strategy A: Native DOM Click
+        let opened = await page.evaluate(() => {
+            const els = Array.from(document.querySelectorAll('div, span, p'));
+            const trigger = els.find(e => e.innerText?.trim() === '+1' && e.offsetHeight > 0);
+            if (trigger) {
+                trigger.click();
+                if (trigger.parentElement) trigger.parentElement.click();
+                return true;
+            }
+            return false;
+        });
+
+        // Strategy B: Relative Coordinate Physical Tap (If A fails)
+        if (!opened) {
+            const inputCords = await page.evaluate(() => {
+                const input = document.querySelector('input[placeholder*="phone"], input[type="tel"]');
+                if (input) {
+                    const rect = input.getBoundingClientRect();
+                    return { x: rect.left - 30, y: rect.top + (rect.height / 2) };
+                }
+                return null;
+            });
+
+            if (inputCords) {
+                await page.mouse.click(inputCords.x, inputCords.y);
+            } else {
+                // Absolute blind fallback
+                await page.mouse.click(60, 520);
+            }
+        }
+        await new Promise(r => setTimeout(r, 2000)); // Wait for the modal animation
+
+
+        // --- 3. DEEP MODAL SCROLLER ---
+        await bot.editMessageText(`[SYSTEM] Scrolling deep modal to find +${countryCode}...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        
+        let ccFound = false;
+        for (let i = 0; i < 25; i++) { // Max 25 scrolls
+            ccFound = await page.evaluate((cc) => {
                 const items = Array.from(document.querySelectorAll('div, span, li, p'));
-                const target = items.find(el => el.innerText?.trim() === '+234');
+                const target = items.find(el => el.innerText?.trim() === '+' + cc);
+                
                 if (target) {
-                    target.scrollIntoView({ block: 'center' });
+                    // Force center, then click it and its parent to ensure selection
+                    target.scrollIntoView({ block: 'center', behavior: 'instant' });
                     const ev = { bubbles: true, cancelable: true, view: window };
                     ['mousedown', 'mouseup', 'click'].forEach(t => target.dispatchEvent(new MouseEvent(t, ev)));
                     target.click();
+                    if(target.parentElement) target.parentElement.click();
                     return true;
                 }
-                // Scroll down if not found
-                window.scrollBy(0, 400);
-                return false;
-            });
 
-            if (found) break;
-            await new Promise(r => setTimeout(r, 800)); // Wait for scroll to settle
+                // If not found, find ALL scrollable boxes on the screen and force them down
+                const scrollables = Array.from(document.querySelectorAll('*')).filter(el => 
+                    el.scrollHeight > el.clientHeight && 
+                    window.getComputedStyle(el).overflowY !== 'hidden'
+                );
+                
+                if (scrollables.length > 0) {
+                    // Scroll the deepest one (usually the active overlay)
+                    scrollables[scrollables.length - 1].scrollBy(0, 350);
+                } else {
+                    window.scrollBy(0, 350); // Fallback
+                }
+                
+                return false;
+            }, countryCode);
+
+            if (ccFound) break;
+            await new Promise(r => setTimeout(r, 600)); // Wait for virtual DOM to load new items
         }
 
-        if (!found) throw new Error("Could not find +234 in the list.");
+        if (!ccFound) throw new Error(`Could not find +${countryCode} in the modal list.`);
         await new Promise(r => setTimeout(r, 1500));
 
-        // 4. INPUT PHONE NUMBER
+
+        // --- 4. INPUT PHONE NUMBER ---
+        await bot.editMessageText(`[SYSTEM] Injecting local number: ${localNum}...`, { chat_id: chatId, message_id: statusMsg.message_id });
         const inputSelector = 'input[placeholder*="phone"], input[type="tel"]';
         await page.waitForSelector(inputSelector, { timeout: 10000 });
         await page.focus(inputSelector);
+        
         await page.evaluate((sel) => {
             const el = document.querySelector(sel);
             el.value = '';
             el.dispatchEvent(new Event('input', { bubbles: true }));
         }, inputSelector);
+        
         await page.keyboard.type(localNum, { delay: 100 });
+        await page.evaluate((sel) => {
+            document.querySelector(sel).dispatchEvent(new Event('change', { bubbles: true }));
+        }, inputSelector);
         await new Promise(r => setTimeout(r, 1000));
 
-        // 5. CLICK GET CODE
+
+        // --- 5. CLICK GET CODE ---
         await page.evaluate(() => {
             const btns = Array.from(document.querySelectorAll('button, div'));
             const getBtn = btns.find(b => b.innerText?.toUpperCase().includes('GET CODE'));
-            if (getBtn) getBtn.click();
+            if (getBtn) {
+                const ev = { bubbles: true, cancelable: true, view: window };
+                ['mousedown', 'mouseup', 'click'].forEach(t => getBtn.dispatchEvent(new MouseEvent(t, ev)));
+                getBtn.click();
+            }
         });
+        await bot.editMessageText(`[SYSTEM] Submitted. Monitoring for code...`, { chat_id: chatId, message_id: statusMsg.message_id });
 
-        // 6. EXTRACTION LOOP (Pairing Code)
+
+        // --- 6. EXTRACTION LOOP (Pairing Code) ---
         let pairingCode = null;
         for (let i = 0; i < 30; i++) {
             await new Promise(r => setTimeout(r, 1000));
@@ -951,7 +1008,7 @@ bot.onText(/\/m4usign/i, (msg) => {
                 const header = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.includes('Pairing Code Received'));
                 if (!header) return null;
 
-                const els = Array.from(document.querySelectorAll('input, textarea, div, span'));
+                const els = Array.from(document.querySelectorAll('input, textarea, div, span, p'));
                 const found = els.find(el => {
                     const val = el.value || el.innerText;
                     return val && val.trim().length === 8 && /^[A-Z0-9]{8}$/.test(val.trim());
@@ -961,19 +1018,49 @@ bot.onText(/\/m4usign/i, (msg) => {
             if (pairingCode) break;
         }
 
+        if (!pairingCode) throw new Error("Could not find the generated code.");
+
+        // Deliver Code Instantly
+        await bot.editMessageText(`[RAGANORK ACTIVE]\n\nCode: \`${pairingCode}\`\n\nWaiting for Session ID...`, { 
+            chat_id: chatId, 
+            message_id: statusMsg.message_id, 
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: [[{ text: `Copy Code: ${pairingCode}`, copy_text: { text: pairingCode } }]] }
+        });
+
+
+        // --- 7. WAIT FOR SESSION ID ---
+        let sessionId = null;
+        for (let i = 0; i < 120; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            sessionId = await page.evaluate(() => {
+                const els = Array.from(document.querySelectorAll('input, textarea, div, span, p'));
+                const found = els.find(el => (el.value || el.innerText || "").includes('RGNK~'));
+                if (found) {
+                    const txt = found.value || found.innerText;
+                    const m = txt.match(/RGNK~[a-zA-Z0-9]+/);
+                    return m ? m[0] : null;
+                }
+                return null;
+            });
+            if (sessionId) break;
+        }
+
         await recorder.stop();
 
-        if (pairingCode) {
-            await bot.editMessageText(`[RAGANORK SUCCESS]\n\nCode: \`${pairingCode}\``, { 
+        if (sessionId) {
+            await bot.editMessageText(`[RAGANORK SUCCESS]\n\nCode: \`${pairingCode}\`\nSession: \`${sessionId}\``, { 
                 chat_id: chatId, 
                 message_id: statusMsg.message_id, 
                 parse_mode: 'Markdown',
-                reply_markup: { inline_keyboard: [[{ text: `Copy Code`, copy_text: { text: pairingCode } }]] }
+                reply_markup: { inline_keyboard: [[{ text: `Copy Session ID`, copy_text: { text: sessionId } }]] }
             });
+        } else {
+            await bot.editMessageText(`[TIMEOUT] Grabbed code but session ID never appeared.`, { chat_id: chatId, message_id: statusMsg.message_id });
         }
 
         if (fs.existsSync(videoPath)) {
-            await bot.sendVideo(chatId, videoPath, { caption: `Raganork Mobile Process` });
+            await bot.sendVideo(chatId, videoPath, { caption: `Raganork Full Process Video` });
         }
 
     } catch (err) {
@@ -985,8 +1072,7 @@ bot.onText(/\/m4usign/i, (msg) => {
         if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
     }
 });
-      
-            
+          
         
 
 
