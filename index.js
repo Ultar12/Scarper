@@ -677,7 +677,7 @@ bot.onText(/\/m4usign/i, (msg) => {
 
 
 
-   bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
+ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return; 
 
@@ -721,68 +721,79 @@ bot.onText(/\/m4usign/i, (msg) => {
         await page.goto('https://session.rgnk.site/pairing-code', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
 
-        // 2. Open Country Code Dropdown
+        // 2. Open Country Code Dropdown (FIXED)
         await page.evaluate(() => {
-            const input = document.querySelector('input[placeholder*="phone"]');
-            if (input && input.previousElementSibling) {
-                input.previousElementSibling.click();
+            // Specifically look for the +1 box to click it
+            const elements = Array.from(document.querySelectorAll('button, div, span'));
+            const trigger = elements.find(el => el.innerText?.trim() === '+1');
+            if (trigger) {
+                trigger.click();
+                if (trigger.parentElement) trigger.parentElement.click();
             }
         });
-        await new Promise(r => setTimeout(r, 1500));
+        await new Promise(r => setTimeout(r, 2000)); // Wait for list to slide up
 
-        // 3. Select Target Country Code
+        // 3. Select Target Country Code (FIXED)
         await page.evaluate((cc) => {
-            const listItems = Array.from(document.querySelectorAll('div, span, li'));
-            const target = listItems.find(el => el.innerText && el.innerText.trim() === '+' + cc);
+            const listItems = Array.from(document.querySelectorAll('div, span, li, button'));
+            const target = listItems.find(el => el.innerText?.trim() === '+' + cc || el.innerText?.trim() === cc);
             if (target) {
+                target.scrollIntoView();
                 target.click();
-                if (target.parentElement) target.parentElement.click();
             }
         }, countryCode);
         await new Promise(r => setTimeout(r, 1500));
 
         // 4. Input Local Number
-        await page.focus('input[placeholder*="phone"]');
+        const inputSelector = 'input[placeholder*="phone"]';
+        await page.waitForSelector(inputSelector, { timeout: 10000 });
+        await page.focus(inputSelector);
         await page.keyboard.type(localNum, { delay: 100 });
         await new Promise(r => setTimeout(r, 1000));
 
         // 5. Click GET CODE
         await page.evaluate(() => {
             const btns = Array.from(document.querySelectorAll('button'));
-            const getBtn = btns.find(b => b.innerText && b.innerText.toUpperCase().includes('GET CODE'));
+            const getBtn = btns.find(b => b.innerText?.toUpperCase().includes('GET CODE'));
             if (getBtn) getBtn.click();
         });
 
-        await bot.editMessageText(`[SYSTEM] Number submitted. Waiting for pairing code...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        await bot.editMessageText(`[SYSTEM] Number submitted. Extracting code...`, { chat_id: chatId, message_id: statusMsg.message_id });
 
-        // 6. Wait for Pairing Code Modal
+        // 6. Wait for Pairing Code Modal & Extract (FIXED)
         let pairingCode = null;
         for (let i = 0; i < 30; i++) {
             await new Promise(r => setTimeout(r, 1000));
             pairingCode = await page.evaluate(() => {
-                const header = Array.from(document.querySelectorAll('*')).find(el => el.innerText && el.innerText.includes('Pairing Code Received'));
-                if (header) {
-                    const txtBox = document.querySelector('textarea') || document.querySelector('input[readonly]');
-                    if (txtBox && txtBox.value) return txtBox.value.trim();
-                    
-                    const textDivs = Array.from(document.querySelectorAll('div')).filter(el => el.innerText && el.innerText.length === 8 && !el.innerText.includes(' '));
-                    if (textDivs.length > 0) return textDivs[textDivs.length - 1].innerText.trim();
-                }
+                // Check if the success modal is on screen first
+                const header = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.includes('Pairing Code Received'));
+                if (!header) return null;
+
+                // Strategy A: Check inside all inputs
+                const inputs = Array.from(document.querySelectorAll('input, textarea'));
+                const validVal = inputs.find(i => i.value?.trim().length === 8 && /^[A-Z0-9]{8}$/.test(i.value.trim()));
+                if (validVal) return validVal.value.trim();
+
+                // Strategy B: Check standard text elements
+                const divs = Array.from(document.querySelectorAll('div, span, p'));
+                const validText = divs.find(el => el.innerText?.trim().length === 8 && /^[A-Z0-9]{8}$/.test(el.innerText.trim()));
+                if (validText) return validText.innerText.trim();
+
                 return null;
             });
             if (pairingCode) break;
         }
 
-        if (!pairingCode) throw new Error("Pairing Code modal did not appear.");
+        if (!pairingCode) throw new Error("Pairing Code failed to extract.");
 
-        // --- 7. NEW LOGIC: STOP RECORDER AND SEND VIDEO MID-PROCESS ---
+        // 7. STOP RECORDER AND SEND VIDEO MID-PROCESS
         await recorder.stop();
         if (fs.existsSync(videoPath)) {
-            await bot.sendVideo(chatId, videoPath, { caption: `[DIAGNOSTIC] Screen recording up to pairing code generation.` });
-            fs.unlinkSync(videoPath); // Delete part 1 to save space
+            await bot.sendVideo(chatId, videoPath, { caption: `[DIAGNOSTIC] Part 1: Code Generation` });
+            fs.unlinkSync(videoPath);
         }
 
-        // Deliver the code and update the status message
+        // Deliver the code
         await bot.editMessageText(`[RAGANORK ACTIVE]\n\nCode: \`${pairingCode}\`\n\nWaiting for WhatsApp linking confirmation to grab Session ID...`, { 
             chat_id: chatId, 
             message_id: statusMsg.message_id, 
@@ -792,14 +803,14 @@ bot.onText(/\/m4usign/i, (msg) => {
             }
         });
 
-        // Restart the recorder for the Session ID wait phase
+        // Restart recorder
         videoPath = path.join(videoDir, `raganork_pt2_${Date.now()}.mp4`);
         await recorder.start(videoPath);
 
         // 8. Click Close on the Pairing Code Modal
         await page.evaluate(() => {
             const btns = Array.from(document.querySelectorAll('button'));
-            const closeBtn = btns.find(b => b.innerText && b.innerText.includes('Close'));
+            const closeBtn = btns.find(b => b.innerText?.includes('Close'));
             if (closeBtn) closeBtn.click();
         });
 
@@ -808,14 +819,17 @@ bot.onText(/\/m4usign/i, (msg) => {
         for (let i = 0; i < 120; i++) { 
             await new Promise(r => setTimeout(r, 1000));
             sessionId = await page.evaluate(() => {
-                const header = Array.from(document.querySelectorAll('*')).find(el => el.innerText && el.innerText.includes('Your session ID'));
-                if (header) {
-                    const txtBox = document.querySelector('textarea') || document.querySelector('input[readonly]');
-                    if (txtBox && txtBox.value) return txtBox.value.trim();
+                const header = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.includes('Your session ID'));
+                if (!header) return null;
 
-                    const fallback = Array.from(document.querySelectorAll('div, p, span')).find(el => el.innerText && el.innerText.includes('RGNK~'));
-                    if (fallback) return fallback.innerText.trim();
-                }
+                const inputs = Array.from(document.querySelectorAll('input, textarea'));
+                const validVal = inputs.find(i => i.value?.includes('RGNK~'));
+                if (validVal) return validVal.value.trim();
+
+                const divs = Array.from(document.querySelectorAll('div, p, span'));
+                const fallback = divs.find(el => el.innerText?.includes('RGNK~'));
+                if (fallback) return fallback.innerText.trim();
+
                 return null;
             });
             if (sessionId) break;
@@ -850,7 +864,7 @@ bot.onText(/\/m4usign/i, (msg) => {
         if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
     }
 });
-     
+
 
 
 
