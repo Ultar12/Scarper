@@ -890,7 +890,6 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
 
 
 
-
 bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -921,7 +920,7 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
             }
         });
 
-        videoPath = path.join(videoDir, `levanter_${Date.now()}.mp4`);
+        videoPath = path.join(videoDir, `levanter_pt1_${Date.now()}.mp4`);
         recorder = new PuppeteerScreenRecorder(page, { fps: 30 });
         await recorder.start(videoPath);
 
@@ -953,30 +952,20 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
         });
         await new Promise(r => setTimeout(r, 2000)); 
 
-        // 3. STEP 2: AGGRESSIVE CHECKBOX STRIKE (FIXED)
-        // We find the coordinates of the text on the screen, then physically tap the box to its left
-        const boxCords = await page.evaluate(() => {
-            const els = Array.from(document.querySelectorAll('div, span'));
-            const target = els.find(e => e.innerText?.trim() === 'Receive Session on WhatsApp' && e.children.length === 0);
-            if (target) {
-                const r = target.getBoundingClientRect();
-                return { x: r.left, y: r.top + (r.height / 2) };
+        // 3. STEP 2: BRUTE-FORCE CHECKBOX STRIKE
+        await page.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('*'));
+            const textElement = elements.find(el => el.innerText?.trim() === 'Receive Session on WhatsApp' && el.children.length === 0);
+            
+            if (textElement && textElement.parentElement) {
+                // Finds the actual checkbox UI element next to the text and forces a click
+                const siblingBox = textElement.parentElement.querySelector('button, input, [role="checkbox"], div[class*="checkbox"], svg');
+                if (siblingBox) siblingBox.click();
+                // Backup clicks
+                textElement.parentElement.click();
+                textElement.click();
             }
-            return null;
         });
-
-        if (boxCords) {
-            await page.mouse.click(boxCords.x - 25, boxCords.y); // Taps the actual checkbox circle
-            await new Promise(r => setTimeout(r, 500));
-            await page.mouse.click(boxCords.x + 10, boxCords.y); // Taps the text just in case
-        } else {
-            // Backup DOM click
-            await page.evaluate(() => {
-                const els = Array.from(document.querySelectorAll('*'));
-                const target = els.find(e => e.innerText?.includes('Receive Session on WhatsApp'));
-                if (target && target.parentElement) target.parentElement.click();
-            });
-        }
         await new Promise(r => setTimeout(r, 1500));
 
         // 4. Click Pairing Code
@@ -993,22 +982,20 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
         await page.keyboard.type('+' + targetNumber, { delay: 100 });
         await new Promise(r => setTimeout(r, 1000));
 
-        // 6. CLICK GET PAIRING CODE (FIXED)
-        // Strictly targets the button, ignoring the instruction list below it
+        // 6. CLICK GET PAIRING CODE
         await page.evaluate(() => {
             const buttons = Array.from(document.querySelectorAll('button'));
             const getBtn = buttons.find(b => b.innerText?.includes('Get Pairing Code'));
             if (getBtn) {
                 getBtn.click();
             } else {
-                // Hard fallback if the button isn't a true <button> tag
                 const all = Array.from(document.querySelectorAll('div, span'));
                 const divBtn = all.find(el => el.innerText?.trim() === 'Get Pairing Code' && el.children.length === 0);
                 if (divBtn) divBtn.click();
             }
         });
 
-        // 7. Extraction Loop
+        // 7. Extraction Loop (Pairing Code)
         let pairingCode = null;
         for (let i = 0; i < 30; i++) {
             await new Promise(r => setTimeout(r, 1000));
@@ -1020,17 +1007,71 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
             if (pairingCode) break;
         }
 
+        if (!pairingCode) throw new Error("Target box found but code never generated.");
+
+        // --- 8. STOP RECORDER AND SEND VIDEO MID-PROCESS ---
+        await recorder.stop();
+        if (fs.existsSync(videoPath)) {
+            await bot.sendVideo(chatId, videoPath, { caption: `[DIAGNOSTIC] Part 1: Code Generation` });
+            fs.unlinkSync(videoPath);
+        }
+
+        // Deliver the code
+        await bot.editMessageText(`[LEVANTER ACTIVE]\n\nCode: \`${pairingCode}\`\n\nWaiting for WhatsApp linking confirmation to grab Session ID...`, { 
+            chat_id: chatId, 
+            message_id: statusMsg.message_id, 
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [[{ text: `Copy Code: ${pairingCode}`, copy_text: { text: pairingCode } }]]
+            }
+        });
+
+        // Restart recorder
+        videoPath = path.join(videoDir, `levanter_pt2_${Date.now()}.mp4`);
+        await recorder.start(videoPath);
+
+        // --- 9. WAIT FOR SESSION ID ---
+        let sessionId = null;
+        for (let i = 0; i < 120; i++) { 
+            await new Promise(r => setTimeout(r, 1000));
+            sessionId = await page.evaluate(() => {
+                // Hunts strictly for the "levanter_" prefix string
+                const elements = Array.from(document.querySelectorAll('input, textarea, div, span, p'));
+                const validEl = elements.find(el => {
+                    const txt = el.value || el.innerText;
+                    return txt && txt.includes('levanter_');
+                });
+
+                if (validEl) {
+                    const txt = validEl.value || validEl.innerText;
+                    // Extracts just the session ID regardless of surrounding text
+                    const match = txt.match(/levanter_[a-zA-Z0-9]+/);
+                    if (match) return match[0];
+                }
+                return null;
+            });
+            if (sessionId) break;
+        }
+
         await recorder.stop();
 
-        if (pairingCode) {
-            await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-            await bot.sendMessage(chatId, `[LEVANTER SUCCESS]\n\nNumber: \`+${targetNumber}\`\nCode: \`${pairingCode}\``, { 
-                parse_mode: 'Markdown',
-                reply_markup: { inline_keyboard: [[{ text: `Copy: ${pairingCode}`, copy_text: { text: pairingCode } }]] }
+        if (!sessionId) {
+            await bot.editMessageText(`[TIMEOUT] Successfully grabbed Pairing Code, but Session ID never generated. Did you link the device in time?`, { 
+                chat_id: chatId, 
+                message_id: statusMsg.message_id 
             });
-        } else {
-            throw new Error("Target box found but code never generated.");
+            return;
         }
+
+        // 10. Final Delivery
+        await bot.editMessageText(`[LEVANTER SUCCESS]\n\nCode Used: \`${pairingCode}\`\nSession ID: \`${sessionId}\``, { 
+            chat_id: chatId, 
+            message_id: statusMsg.message_id, 
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [[{ text: `Copy Session ID`, copy_text: { text: sessionId } }]]
+            }
+        });
 
     } catch (err) {
         if (recorder) await recorder.stop().catch(() => {});
