@@ -18,6 +18,7 @@ const axios = require('axios');
 
 const { PuppeteerScreenRecorder } = require('puppeteer-screen-recorder');
 
+app.use(express.json());
 
 
 
