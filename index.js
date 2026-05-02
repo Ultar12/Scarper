@@ -1051,7 +1051,7 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
     if (chatId !== ADMIN_ID) return;
 
     const targetNumber = match[1].replace(/[^0-9]/g, '');
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Initiating High-Precision Strike for +${targetNumber}...`);
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Engaging Universal Text-Hunter for +${targetNumber}...`);
 
     const videoDir = path.join(__dirname, 'videos');
     if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
@@ -1070,13 +1070,10 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
         const page = await browser.newPage();
         await page.setViewport({ width: 412, height: 915 });
 
-        // Anti-Ad Shield
+        // Shield for redirects
         page.on('framenavigated', async (frame) => {
-            if (frame === page.mainFrame()) {
-                const currentUrl = page.url();
-                if (currentUrl !== 'about:blank' && !currentUrl.includes('levanter.site')) {
-                    await page.goBack().catch(() => {});
-                }
+            if (frame === page.mainFrame() && !page.url().includes('levanter.site')) {
+                await page.goBack().catch(() => {});
             }
         });
 
@@ -1086,49 +1083,55 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
 
         // 1. Initial Load
         await page.goto('https://levanter.site/', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 4000));
+        await new Promise(r => setTimeout(r, 5000));
 
-        // 2. COORDINATE STRIKE: CLICK SESSION CARD
-        // Targets the approximate center-top area where the Session card lives
-        await page.mouse.click(200, 450); 
-        await new Promise(r => setTimeout(r, 4000));
+        // --- THE UNIVERSAL CLICKER FUNCTION ---
+        const clickText = async (targetText) => {
+            await page.evaluate((txt) => {
+                const elements = Array.from(document.querySelectorAll('div, span, p, h3, button, a'));
+                const found = elements.reverse().find(el => 
+                    el.innerText?.trim().includes(txt) && el.offsetHeight > 0
+                );
+                if (found) {
+                    const rect = found.getBoundingClientRect();
+                    const ev = { bubbles: true, cancelable: true, view: window, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+                    ['mousedown', 'mouseup', 'click'].forEach(t => found.dispatchEvent(new MouseEvent(t, ev)));
+                    found.click();
+                }
+            }, targetText);
+            await new Promise(r => setTimeout(r, 3000));
+        };
 
-        // 3. CLICK CHECKBOX: RECEIVE SESSION ON WHATSAPP
-        // Targets the second checkbox area
-        await page.mouse.click(150, 300);
-        await new Promise(r => setTimeout(r, 2000));
+        // 2. STEP 1: Click Session
+        await clickText('Session');
 
-        // 4. CLICK PAIRING CODE BUTTON
-        // Targets the bottom selection box
-        await page.mouse.click(200, 700);
-        await new Promise(r => setTimeout(r, 4000));
+        // 3. STEP 2: Click Checkbox
+        await clickText('Receive Session on WhatsApp');
 
-        // 5. INPUT NUMBER
-        // We hunt for the input specifically now that the modal is definitely open
-        const inputSelector = 'input[type="tel"], input';
-        await page.waitForSelector(inputSelector, { timeout: 10000 });
+        // 4. STEP 3: Click Pairing Code
+        await clickText('Pairing Code');
+
+        // 5. STEP 4: Number Injection
+        await bot.editMessageText(`[SYSTEM] Modal open. Injecting number...`, { chat_id: chatId, message_id: statusMsg.message_id });
         
-        await page.click(inputSelector, { clickCount: 3 }); // Highlight all
+        const inputSelector = 'input';
+        await page.waitForSelector(inputSelector, { timeout: 10000 });
+        await page.click(inputSelector, { clickCount: 3 });
         await page.keyboard.press('Backspace');
         await page.keyboard.type('+' + targetNumber, { delay: 100 });
         await new Promise(r => setTimeout(r, 1000));
 
-        // CLICK GET PAIRING CODE
-        await page.evaluate(() => {
-            const btns = Array.from(document.querySelectorAll('button'));
-            const getBtn = btns.find(el => el.innerText?.includes('Get'));
-            if (getBtn) getBtn.click();
-        });
+        // Click the final "Get" button
+        await clickText('Get Pairing Code');
 
-        // 6. EXTRACTION
-        await bot.editMessageText(`[SYSTEM] Submit successful. Extraction loop started...`, { chat_id: chatId, message_id: statusMsg.message_id });
-        
+        // 6. Extraction Loop
         let pairingCode = null;
         for (let i = 0; i < 30; i++) {
             await new Promise(r => setTimeout(r, 1000));
             pairingCode = await page.evaluate(() => {
-                // Look for the specific glowing box text
-                const codeDiv = Array.from(document.querySelectorAll('div')).find(el => 
+                // Find 8-char code that isn't the title
+                const divs = Array.from(document.querySelectorAll('div, span'));
+                const codeDiv = divs.find(el => 
                     el.innerText?.length === 8 && /^[A-Z0-9]+$/.test(el.innerText) && el.innerText !== 'LEVANTER'
                 );
                 return codeDiv ? codeDiv.innerText.trim() : null;
@@ -1147,19 +1150,18 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
                 }
             });
         } else {
-            throw new Error("Final pairing code box did not populate.");
+            throw new Error("Target box found but code never generated.");
         }
 
     } catch (err) {
         if (recorder) await recorder.stop().catch(() => {});
-        bot.editMessageText(`[FAILED] Strike failed. Diagnostic video sent.`, { chat_id: chatId, message_id: statusMsg.message_id });
+        bot.editMessageText(`[FAILED] Hunter lost the trail. Video sent.`, { chat_id: chatId, message_id: statusMsg.message_id });
         if (fs.existsSync(videoPath)) await bot.sendVideo(chatId, videoPath, { caption: `Error: ${err.message}` });
     } finally {
         if (browser) await browser.close();
         if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
     }
 });
-
 
 
 // --- M4U NUMBER EXTRACTION COMMAND ---
