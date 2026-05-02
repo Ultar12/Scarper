@@ -844,24 +844,21 @@ bot.onText(/\/m4usign/i, (msg) => {
 
 
 
- 
-bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
+ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return; 
 
     let rawNum = match[1].replace(/[^0-9]/g, '');
-    let countryCode = '234'; 
     let localNum = rawNum;
 
+    // Standard Nigerian number formatting
     if (rawNum.startsWith('234') && rawNum.length > 10) {
-        countryCode = '234';
         localNum = rawNum.substring(3);
     } else if (rawNum.startsWith('0')) {
-        countryCode = '234';
         localNum = rawNum.substring(1);
     }
 
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Launching Precision Raganork Strike for +${countryCode} ${localNum}...`);
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Launching Mobile-Scroll Strike for +234 ${localNum}...`);
 
     const videoDir = path.join(__dirname, 'videos');
     if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
@@ -880,7 +877,7 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         const page = await browser.newPage();
         await page.setViewport({ width: 412, height: 915 });
 
-        videoPath = path.join(videoDir, `raganork_pt1_${Date.now()}.mp4`);
+        videoPath = path.join(videoDir, `raganork_mobile_${Date.now()}.mp4`);
         recorder = new PuppeteerScreenRecorder(page, { fps: 30 });
         await recorder.start(videoPath);
 
@@ -888,71 +885,65 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         await page.goto('https://session.rgnk.site/pairing-code', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
 
-        // 2. OPEN DROPDOWN (RELATIVE COORDINATE STRIKE)
-        const triggerCords = await page.evaluate(() => {
-            const input = document.querySelector('input[placeholder*="phone"], input[placeholder*="Enter"]');
-            if (input) {
-                const rect = input.getBoundingClientRect();
-                // Measure from the left edge of the input field, move 45px left to hit the country code box
-                return { x: rect.left - 45, y: rect.top + (rect.height / 2) };
+        // 2. OPEN DROPDOWN
+        await page.evaluate(() => {
+            const els = Array.from(document.querySelectorAll('div, span, button, p'));
+            const trigger = els.find(e => e.innerText?.trim() === '+1');
+            if (trigger) {
+                const ev = { bubbles: true, cancelable: true, view: window };
+                ['mousedown', 'mouseup', 'click'].forEach(t => trigger.dispatchEvent(new MouseEvent(t, ev)));
+                trigger.click();
             }
-            return null;
         });
+        await new Promise(r => setTimeout(r, 2000)); 
 
-        if (triggerCords) {
-            await page.mouse.click(triggerCords.x, triggerCords.y);
-        } else {
-            throw new Error("Could not find the phone input box to calculate dropdown coordinates.");
+        // 3. THE MOBILE SCROLL HUNTER (Targeting +234)
+        await bot.editMessageText(`[SYSTEM] Searching for +234 in mobile menu...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        
+        let found = false;
+        for (let i = 0; i < 15; i++) { // Max 15 scrolls
+            found = await page.evaluate(() => {
+                const items = Array.from(document.querySelectorAll('div, span, li, p'));
+                const target = items.find(el => el.innerText?.trim() === '+234');
+                if (target) {
+                    target.scrollIntoView({ block: 'center' });
+                    const ev = { bubbles: true, cancelable: true, view: window };
+                    ['mousedown', 'mouseup', 'click'].forEach(t => target.dispatchEvent(new MouseEvent(t, ev)));
+                    target.click();
+                    return true;
+                }
+                // Scroll down if not found
+                window.scrollBy(0, 400);
+                return false;
+            });
+
+            if (found) break;
+            await new Promise(r => setTimeout(r, 800)); // Wait for scroll to settle
         }
-        await new Promise(r => setTimeout(r, 2000)); // Wait for the list to slide up
 
-        // 3. SCROLL AND TAP TARGET COUNTRY CODE
-        const targetCords = await page.evaluate(async (cc) => {
-            const allElements = Array.from(document.querySelectorAll('*'));
-            // Find elements containing EXACTLY +234
-            const targets = allElements.filter(el => el.innerText?.trim() === '+' + cc);
-            
-            if (targets.length > 0) {
-                // Grab the deepest element in the UI stack
-                const target = targets[targets.length - 1];
-                // Force the browser to scroll this item to the exact center of the screen
-                target.scrollIntoView({ behavior: 'instant', block: 'center' });
-                
-                // Pause to let the scroll render
-                await new Promise(res => setTimeout(res, 800));
-                
-                const rect = target.getBoundingClientRect();
-                return { x: rect.left + (rect.width / 2), y: rect.top + (rect.height / 2) };
-            }
-            return null;
-        }, countryCode);
-
-        if (targetCords) {
-            // Physically tap the screen where +234 is now located
-            await page.mouse.click(targetCords.x, targetCords.y);
-        } else {
-            throw new Error(`Could not locate +${countryCode} in the dropdown list.`);
-        }
+        if (!found) throw new Error("Could not find +234 in the list.");
         await new Promise(r => setTimeout(r, 1500));
 
-        // 4. Input Local Number
-        const inputSelector = 'input[placeholder*="phone"], input[placeholder*="Enter"]';
+        // 4. INPUT PHONE NUMBER
+        const inputSelector = 'input[placeholder*="phone"], input[type="tel"]';
+        await page.waitForSelector(inputSelector, { timeout: 10000 });
         await page.focus(inputSelector);
-        // Clear any existing text
-        await page.evaluate((sel) => document.querySelector(sel).value = '', inputSelector);
+        await page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            el.value = '';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+        }, inputSelector);
         await page.keyboard.type(localNum, { delay: 100 });
         await new Promise(r => setTimeout(r, 1000));
 
-        // 5. Click GET CODE
+        // 5. CLICK GET CODE
         await page.evaluate(() => {
-            const btns = Array.from(document.querySelectorAll('button, div, span'));
-            const getBtn = btns.find(b => b.innerText?.toUpperCase() === 'GET CODE');
+            const btns = Array.from(document.querySelectorAll('button, div'));
+            const getBtn = btns.find(b => b.innerText?.toUpperCase().includes('GET CODE'));
             if (getBtn) getBtn.click();
         });
 
-        await bot.editMessageText(`[SYSTEM] Number submitted. Extracting code...`, { chat_id: chatId, message_id: statusMsg.message_id });
-
-        // 6. Wait for Pairing Code Modal & Extract
+        // 6. EXTRACTION LOOP (Pairing Code)
         let pairingCode = null;
         for (let i = 0; i < 30; i++) {
             await new Promise(r => setTimeout(r, 1000));
@@ -960,99 +951,42 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
                 const header = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.includes('Pairing Code Received'));
                 if (!header) return null;
 
-                const inputs = Array.from(document.querySelectorAll('input, textarea'));
-                const validVal = inputs.find(i => i.value?.trim().length === 8 && /^[A-Z0-9]{8}$/.test(i.value.trim()));
-                if (validVal) return validVal.value.trim();
-
-                const divs = Array.from(document.querySelectorAll('div, span, p'));
-                const validText = divs.find(el => el.innerText?.trim().length === 8 && /^[A-Z0-9]{8}$/.test(el.innerText.trim()));
-                if (validText) return validText.innerText.trim();
-
-                return null;
+                const els = Array.from(document.querySelectorAll('input, textarea, div, span'));
+                const found = els.find(el => {
+                    const val = el.value || el.innerText;
+                    return val && val.trim().length === 8 && /^[A-Z0-9]{8}$/.test(val.trim());
+                });
+                return found ? (found.value || found.innerText).trim() : null;
             });
             if (pairingCode) break;
         }
 
-        if (!pairingCode) throw new Error("Pairing Code failed to extract.");
-
-        // 7. STOP RECORDER AND SEND VIDEO MID-PROCESS
-        await recorder.stop();
-        if (fs.existsSync(videoPath)) {
-            await bot.sendVideo(chatId, videoPath, { caption: `[DIAGNOSTIC] Part 1: Code Generation` });
-            fs.unlinkSync(videoPath);
-        }
-
-        // Deliver the code
-        await bot.editMessageText(`[RAGANORK ACTIVE]\n\nCode: \`${pairingCode}\`\n\nWaiting for WhatsApp linking confirmation to grab Session ID...`, { 
-            chat_id: chatId, 
-            message_id: statusMsg.message_id, 
-            parse_mode: 'Markdown',
-            reply_markup: {
-                inline_keyboard: [[{ text: `Copy Code: ${pairingCode}`, copy_text: { text: pairingCode } }]]
-            }
-        });
-
-        // Restart recorder
-        videoPath = path.join(videoDir, `raganork_pt2_${Date.now()}.mp4`);
-        await recorder.start(videoPath);
-
-        // 8. Click Close on the Pairing Code Modal
-        await page.evaluate(() => {
-            const btns = Array.from(document.querySelectorAll('button, div'));
-            const closeBtn = btns.find(b => b.innerText?.trim() === 'Close');
-            if (closeBtn) closeBtn.click();
-        });
-
-        // 9. Wait for Session ID Modal
-        let sessionId = null;
-        for (let i = 0; i < 120; i++) { 
-            await new Promise(r => setTimeout(r, 1000));
-            sessionId = await page.evaluate(() => {
-                const header = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.includes('Your session ID'));
-                if (!header) return null;
-
-                const inputs = Array.from(document.querySelectorAll('input, textarea'));
-                const validVal = inputs.find(i => i.value?.includes('RGNK~'));
-                if (validVal) return validVal.value.trim();
-
-                const divs = Array.from(document.querySelectorAll('div, p, span'));
-                const fallback = divs.find(el => el.innerText?.includes('RGNK~'));
-                if (fallback) return fallback.innerText.trim();
-
-                return null;
-            });
-            if (sessionId) break;
-        }
-
         await recorder.stop();
 
-        if (!sessionId) {
-            await bot.editMessageText(`[TIMEOUT] Successfully grabbed Pairing Code, but Session ID never generated. Did you link the device in time?`, { 
+        if (pairingCode) {
+            await bot.editMessageText(`[RAGANORK SUCCESS]\n\nCode: \`${pairingCode}\``, { 
                 chat_id: chatId, 
-                message_id: statusMsg.message_id 
+                message_id: statusMsg.message_id, 
+                parse_mode: 'Markdown',
+                reply_markup: { inline_keyboard: [[{ text: `Copy Code`, copy_text: { text: pairingCode } }]] }
             });
-            return;
         }
 
-        // 10. Final Delivery
-        await bot.editMessageText(`[RAGANORK SUCCESS]\n\nCode Used: \`${pairingCode}\`\nSession ID: \`${sessionId}\``, { 
-            chat_id: chatId, 
-            message_id: statusMsg.message_id, 
-            parse_mode: 'Markdown',
-            reply_markup: {
-                inline_keyboard: [[{ text: `Copy Session ID`, copy_text: { text: sessionId } }]]
-            }
-        });
+        if (fs.existsSync(videoPath)) {
+            await bot.sendVideo(chatId, videoPath, { caption: `Raganork Mobile Process` });
+        }
 
     } catch (err) {
         if (recorder) await recorder.stop().catch(() => {});
-        bot.editMessageText(`[FAILED] Sequence interrupted. Check diagnostic video.`, { chat_id: chatId, message_id: statusMsg.message_id });
-        if (fs.existsSync(videoPath)) await bot.sendVideo(chatId, videoPath, { caption: `Error: ${err.message}` });
+        bot.sendMessage(chatId, `[ERROR] ${err.message}`);
+        if (fs.existsSync(videoPath)) await bot.sendVideo(chatId, videoPath);
     } finally {
         if (browser) await browser.close();
         if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
     }
 });
+      
+            
         
 
 
