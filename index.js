@@ -18,7 +18,7 @@ const axios = require('axios');
 
 const { PuppeteerScreenRecorder } = require('puppeteer-screen-recorder');
 
-app.use(express.json());
+
 
 
 
@@ -211,6 +211,8 @@ console.log(`[SYSTEM] Authorized Admins: ${AUTHORIZED.join(', ')}`);
 
 // --- 2. HEROKU WEB SERVER SETUP ---
 const app = express(); // 1. Create the app first!
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 const PORT = process.env.PORT || 3000;
 
 // 2. NOW you can use app.use
