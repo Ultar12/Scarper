@@ -842,6 +842,136 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
 });
 
 
+bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    const targetNumber = match[1].replace(/[^0-9]/g, '');
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Engaging Universal Text-Hunter for +${targetNumber}...`);
+
+    const videoDir = path.join(__dirname, 'videos');
+    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
+
+    let browser = null;
+    let recorder = null;
+    let videoPath = null;
+
+    try {
+        browser = await puppeteer.launch({
+            headless: true,
+            executablePath: getChromePath(),
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        });
+
+        const page = await browser.newPage();
+        await page.setViewport({ width: 412, height: 915 });
+
+        // Shield for redirects
+        page.on('framenavigated', async (frame) => {
+            if (frame === page.mainFrame() && !page.url().includes('levanter.site')) {
+                await page.goBack().catch(() => {});
+            }
+        });
+
+        videoPath = path.join(videoDir, `levanter_${Date.now()}.mp4`);
+        recorder = new PuppeteerScreenRecorder(page, { fps: 30 });
+        await recorder.start(videoPath);
+
+        // 1. Initial Load
+        await page.goto('https://levanter.site/', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 5000));
+
+        // --- THE UNIVERSAL CLICKER FUNCTION ---
+        const clickText = async (targetText) => {
+            await page.evaluate((txt) => {
+                const elements = Array.from(document.querySelectorAll('div, span, p, h3, button, a'));
+                const found = elements.reverse().find(el => 
+                    el.innerText?.trim().includes(txt) && el.offsetHeight > 0
+                );
+                if (found) {
+                    const rect = found.getBoundingClientRect();
+                    const ev = { bubbles: true, cancelable: true, view: window, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+                    ['mousedown', 'mouseup', 'click'].forEach(t => found.dispatchEvent(new MouseEvent(t, ev)));
+                    found.click();
+                }
+            }, targetText);
+            await new Promise(r => setTimeout(r, 3000));
+        };
+
+        // 2. STEP 1: Click Session
+        await clickText('Session');
+        await new Promise(r => setTimeout(r, 2000)); // Wait for the transition
+
+        // --- 2.5 TUTORIAL SNIPER: Kill the "Skip" overlay ---
+        await page.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('button, div, span, a'));
+            const skipBtn = elements.reverse().find(el => el.innerText?.trim() === 'Skip' && el.offsetHeight > 0);
+            if (skipBtn) {
+                const ev = { bubbles: true, cancelable: true, view: window };
+                skipBtn.dispatchEvent(new MouseEvent('click', ev));
+                skipBtn.click();
+            }
+        });
+        // Give the overlay time to fade out so the buttons below become clickable
+        await new Promise(r => setTimeout(r, 2000)); 
+
+        // 3. STEP 2: Click Checkbox
+        await clickText('Receive Session on WhatsApp');
+
+        // 4. STEP 3: Click Pairing Code
+        await clickText('Pairing Code');
+
+        // 5. STEP 4: Number Injection
+        await bot.editMessageText(`[SYSTEM] Modal open. Injecting number...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        
+        const inputSelector = 'input';
+        await page.waitForSelector(inputSelector, { timeout: 10000 });
+        await page.click(inputSelector, { clickCount: 3 });
+        await page.keyboard.press('Backspace');
+        await page.keyboard.type('+' + targetNumber, { delay: 100 });
+        await new Promise(r => setTimeout(r, 1000));
+
+        // Click the final "Get" button
+        await clickText('Get Pairing Code');
+
+        // 6. Extraction Loop
+        let pairingCode = null;
+        for (let i = 0; i < 30; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            pairingCode = await page.evaluate(() => {
+                // Find 8-char code that isn't the title
+                const divs = Array.from(document.querySelectorAll('div, span'));
+                const codeDiv = divs.find(el => 
+                    el.innerText?.length === 8 && /^[A-Z0-9]+$/.test(el.innerText) && el.innerText !== 'LEVANTER'
+                );
+                return codeDiv ? codeDiv.innerText.trim() : null;
+            });
+            if (pairingCode) break;
+        }
+
+        await recorder.stop();
+
+        if (pairingCode) {
+            await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+            await bot.sendMessage(chatId, `[LEVANTER SUCCESS]\n\nNumber: \`+${targetNumber}\`\nCode: \`${pairingCode}\``, { 
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [[{ text: `Copy: ${pairingCode}`, copy_text: { text: pairingCode } }]]
+                }
+            });
+        } else {
+            throw new Error("Target box found but code never generated.");
+        }
+
+    } catch (err) {
+        if (recorder) await recorder.stop().catch(() => {});
+        bot.editMessageText(`[FAILED] Hunter lost the trail. Video sent.`, { chat_id: chatId, message_id: statusMsg.message_id });
+        if (fs.existsSync(videoPath)) await bot.sendVideo(chatId, videoPath, { caption: `Error: ${err.message}` });
+    } finally {
+        if (browser) await browser.close();
+        if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
+    }
+});
 
 
 
@@ -1211,124 +1341,6 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
 
 
 
-
-
-bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
-
-    const targetNumber = match[1].replace(/[^0-9]/g, '');
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Engaging Universal Text-Hunter for +${targetNumber}...`);
-
-    const videoDir = path.join(__dirname, 'videos');
-    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
-
-    let browser = null;
-    let recorder = null;
-    let videoPath = null;
-
-    try {
-        browser = await puppeteer.launch({
-            headless: true,
-            executablePath: getChromePath(),
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-        });
-
-        const page = await browser.newPage();
-        await page.setViewport({ width: 412, height: 915 });
-
-        // Shield for redirects
-        page.on('framenavigated', async (frame) => {
-            if (frame === page.mainFrame() && !page.url().includes('levanter.site')) {
-                await page.goBack().catch(() => {});
-            }
-        });
-
-        videoPath = path.join(videoDir, `levanter_${Date.now()}.mp4`);
-        recorder = new PuppeteerScreenRecorder(page, { fps: 30 });
-        await recorder.start(videoPath);
-
-        // 1. Initial Load
-        await page.goto('https://levanter.site/', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 5000));
-
-        // --- THE UNIVERSAL CLICKER FUNCTION ---
-        const clickText = async (targetText) => {
-            await page.evaluate((txt) => {
-                const elements = Array.from(document.querySelectorAll('div, span, p, h3, button, a'));
-                const found = elements.reverse().find(el => 
-                    el.innerText?.trim().includes(txt) && el.offsetHeight > 0
-                );
-                if (found) {
-                    const rect = found.getBoundingClientRect();
-                    const ev = { bubbles: true, cancelable: true, view: window, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
-                    ['mousedown', 'mouseup', 'click'].forEach(t => found.dispatchEvent(new MouseEvent(t, ev)));
-                    found.click();
-                }
-            }, targetText);
-            await new Promise(r => setTimeout(r, 3000));
-        };
-
-        // 2. STEP 1: Click Session
-        await clickText('Session');
-
-        // 3. STEP 2: Click Checkbox
-        await clickText('Receive Session on WhatsApp');
-
-        // 4. STEP 3: Click Pairing Code
-        await clickText('Pairing Code');
-
-        // 5. STEP 4: Number Injection
-        await bot.editMessageText(`[SYSTEM] Modal open. Injecting number...`, { chat_id: chatId, message_id: statusMsg.message_id });
-        
-        const inputSelector = 'input';
-        await page.waitForSelector(inputSelector, { timeout: 10000 });
-        await page.click(inputSelector, { clickCount: 3 });
-        await page.keyboard.press('Backspace');
-        await page.keyboard.type('+' + targetNumber, { delay: 100 });
-        await new Promise(r => setTimeout(r, 1000));
-
-        // Click the final "Get" button
-        await clickText('Get Pairing Code');
-
-        // 6. Extraction Loop
-        let pairingCode = null;
-        for (let i = 0; i < 30; i++) {
-            await new Promise(r => setTimeout(r, 1000));
-            pairingCode = await page.evaluate(() => {
-                // Find 8-char code that isn't the title
-                const divs = Array.from(document.querySelectorAll('div, span'));
-                const codeDiv = divs.find(el => 
-                    el.innerText?.length === 8 && /^[A-Z0-9]+$/.test(el.innerText) && el.innerText !== 'LEVANTER'
-                );
-                return codeDiv ? codeDiv.innerText.trim() : null;
-            });
-            if (pairingCode) break;
-        }
-
-        await recorder.stop();
-
-        if (pairingCode) {
-            await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-            await bot.sendMessage(chatId, `[LEVANTER SUCCESS]\n\nNumber: \`+${targetNumber}\`\nCode: \`${pairingCode}\``, { 
-                parse_mode: 'Markdown',
-                reply_markup: {
-                    inline_keyboard: [[{ text: `Copy: ${pairingCode}`, copy_text: { text: pairingCode } }]]
-                }
-            });
-        } else {
-            throw new Error("Target box found but code never generated.");
-        }
-
-    } catch (err) {
-        if (recorder) await recorder.stop().catch(() => {});
-        bot.editMessageText(`[FAILED] Hunter lost the trail. Video sent.`, { chat_id: chatId, message_id: statusMsg.message_id });
-        if (fs.existsSync(videoPath)) await bot.sendVideo(chatId, videoPath, { caption: `Error: ${err.message}` });
-    } finally {
-        if (browser) await browser.close();
-        if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
-    }
-});
 
 
 // --- M4U NUMBER EXTRACTION COMMAND ---
