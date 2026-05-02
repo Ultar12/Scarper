@@ -676,6 +676,173 @@ bot.onText(/\/m4usign/i, (msg) => {
 });
 
 
+bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return; // Ensure ADMIN_ID is defined in your global scope
+
+    let rawNum = match[1].replace(/[^0-9]/g, '');
+    let countryCode = '234'; // Default to Nigeria
+    let localNum = rawNum;
+
+    // Smart number parser: Separates the country code and removes the leading zero
+    if (rawNum.startsWith('234') && rawNum.length > 10) {
+        countryCode = '234';
+        localNum = rawNum.substring(3);
+    } else if (rawNum.startsWith('0')) {
+        countryCode = '234';
+        localNum = rawNum.substring(1);
+    }
+
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Launching Raganork Sequence for +${countryCode} ${localNum}...`);
+
+    const videoDir = path.join(__dirname, 'videos');
+    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
+
+    let browser = null;
+    let recorder = null;
+    let videoPath = null;
+
+    try {
+        browser = await puppeteer.launch({
+            headless: true,
+            executablePath: getChromePath(),
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        });
+
+        const page = await browser.newPage();
+        await page.setViewport({ width: 412, height: 915 });
+
+        videoPath = path.join(videoDir, `raganork_${Date.now()}.mp4`);
+        recorder = new PuppeteerScreenRecorder(page, { fps: 30 });
+        await recorder.start(videoPath);
+
+        // 1. Initial Load
+        await page.goto('https://session.rgnk.site/pairing-code', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 4000));
+
+        // 2. Open Country Code Dropdown
+        await page.evaluate(() => {
+            const input = document.querySelector('input[placeholder*="phone"]');
+            if (input && input.previousElementSibling) {
+                input.previousElementSibling.click();
+            }
+        });
+        await new Promise(r => setTimeout(r, 1500));
+
+        // 3. Select Target Country Code
+        await page.evaluate((cc) => {
+            const listItems = Array.from(document.querySelectorAll('div, span, li'));
+            const target = listItems.find(el => el.innerText && el.innerText.trim() === '+' + cc);
+            if (target) {
+                target.click();
+                if (target.parentElement) target.parentElement.click();
+            }
+        }, countryCode);
+        await new Promise(r => setTimeout(r, 1500));
+
+        // 4. Input Local Number (Without leading zero)
+        await page.focus('input[placeholder*="phone"]');
+        await page.keyboard.type(localNum, { delay: 100 });
+        await new Promise(r => setTimeout(r, 1000));
+
+        // 5. Click GET CODE
+        await page.evaluate(() => {
+            const btns = Array.from(document.querySelectorAll('button'));
+            const getBtn = btns.find(b => b.innerText && b.innerText.toUpperCase().includes('GET CODE'));
+            if (getBtn) getBtn.click();
+        });
+
+        await bot.editMessageText(`[SYSTEM] Number submitted. Waiting for pairing code...`, { chat_id: chatId, message_id: statusMsg.message_id });
+
+        // 6. Wait for Pairing Code Modal
+        let pairingCode = null;
+        for (let i = 0; i < 30; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            pairingCode = await page.evaluate(() => {
+                const header = Array.from(document.querySelectorAll('*')).find(el => el.innerText && el.innerText.includes('Pairing Code Received'));
+                if (header) {
+                    const txtBox = document.querySelector('textarea') || document.querySelector('input[readonly]');
+                    if (txtBox && txtBox.value) return txtBox.value.trim();
+                    
+                    // Fallback if it's a div
+                    const textDivs = Array.from(document.querySelectorAll('div')).filter(el => el.innerText && el.innerText.length === 8 && !el.innerText.includes(' '));
+                    if (textDivs.length > 0) return textDivs[textDivs.length - 1].innerText.trim();
+                }
+                return null;
+            });
+            if (pairingCode) break;
+        }
+
+        if (!pairingCode) throw new Error("Pairing Code modal did not appear.");
+
+        // 7. Send Pairing Code & Update User
+        await bot.editMessageText(`[RAGANORK ACTIVE]\n\nCode: \`${pairingCode}\`\n\nWaiting for WhatsApp linking confirmation to grab Session ID...`, { 
+            chat_id: chatId, 
+            message_id: statusMsg.message_id, 
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [[{ text: `Copy Code: ${pairingCode}`, copy_text: { text: pairingCode } }]]
+            }
+        });
+
+        // 8. Click Close on the Pairing Code Modal
+        await page.evaluate(() => {
+            const btns = Array.from(document.querySelectorAll('button'));
+            const closeBtn = btns.find(b => b.innerText && b.innerText.includes('Close'));
+            if (closeBtn) closeBtn.click();
+        });
+
+        // 9. Wait for Session ID Modal
+        let sessionId = null;
+        for (let i = 0; i < 120; i++) { // Gives you up to 2 minutes to link your device
+            await new Promise(r => setTimeout(r, 1000));
+            sessionId = await page.evaluate(() => {
+                const header = Array.from(document.querySelectorAll('*')).find(el => el.innerText && el.innerText.includes('Your session ID'));
+                if (header) {
+                    const txtBox = document.querySelector('textarea') || document.querySelector('input[readonly]');
+                    if (txtBox && txtBox.value) return txtBox.value.trim();
+
+                    // Fallback for raw text containing standard prefix
+                    const fallback = Array.from(document.querySelectorAll('div, p, span')).find(el => el.innerText && el.innerText.includes('RGNK~'));
+                    if (fallback) return fallback.innerText.trim();
+                }
+                return null;
+            });
+            if (sessionId) break;
+        }
+
+        await recorder.stop();
+
+        if (!sessionId) {
+            await bot.editMessageText(`[TIMEOUT] Successfully grabbed Pairing Code, but Session ID never generated. Did you link the device in time?`, { 
+                chat_id: chatId, 
+                message_id: statusMsg.message_id 
+            });
+            return;
+        }
+
+        // 10. Final Delivery
+        await bot.editMessageText(`[RAGANORK SUCCESS]\n\nCode Used: \`${pairingCode}\`\nSession ID: \`${sessionId}\``, { 
+            chat_id: chatId, 
+            message_id: statusMsg.message_id, 
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [[{ text: `Copy Session ID`, copy_text: { text: sessionId } }]]
+            }
+        });
+
+    } catch (err) {
+        if (recorder) await recorder.stop().catch(() => {});
+        bot.editMessageText(`[FAILED] Sequence interrupted. Check diagnostic video.`, { chat_id: chatId, message_id: statusMsg.message_id });
+        if (fs.existsSync(videoPath)) await bot.sendVideo(chatId, videoPath, { caption: `Error: ${err.message}` });
+    } finally {
+        if (browser) await browser.close();
+        if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
+    }
+});
+
+
+
 
 
 // --- THE WSTASK TOGGLE COMMAND ---
