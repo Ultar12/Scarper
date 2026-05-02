@@ -676,15 +676,16 @@ bot.onText(/\/m4usign/i, (msg) => {
 });
 
 
-bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
+
+   bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return; // Ensure ADMIN_ID is defined in your global scope
+    if (chatId !== ADMIN_ID) return; 
 
     let rawNum = match[1].replace(/[^0-9]/g, '');
-    let countryCode = '234'; // Default to Nigeria
+    let countryCode = '234'; 
     let localNum = rawNum;
 
-    // Smart number parser: Separates the country code and removes the leading zero
+    // Smart number parser
     if (rawNum.startsWith('234') && rawNum.length > 10) {
         countryCode = '234';
         localNum = rawNum.substring(3);
@@ -712,7 +713,7 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         const page = await browser.newPage();
         await page.setViewport({ width: 412, height: 915 });
 
-        videoPath = path.join(videoDir, `raganork_${Date.now()}.mp4`);
+        videoPath = path.join(videoDir, `raganork_pt1_${Date.now()}.mp4`);
         recorder = new PuppeteerScreenRecorder(page, { fps: 30 });
         await recorder.start(videoPath);
 
@@ -740,7 +741,7 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         }, countryCode);
         await new Promise(r => setTimeout(r, 1500));
 
-        // 4. Input Local Number (Without leading zero)
+        // 4. Input Local Number
         await page.focus('input[placeholder*="phone"]');
         await page.keyboard.type(localNum, { delay: 100 });
         await new Promise(r => setTimeout(r, 1000));
@@ -764,7 +765,6 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
                     const txtBox = document.querySelector('textarea') || document.querySelector('input[readonly]');
                     if (txtBox && txtBox.value) return txtBox.value.trim();
                     
-                    // Fallback if it's a div
                     const textDivs = Array.from(document.querySelectorAll('div')).filter(el => el.innerText && el.innerText.length === 8 && !el.innerText.includes(' '));
                     if (textDivs.length > 0) return textDivs[textDivs.length - 1].innerText.trim();
                 }
@@ -775,7 +775,14 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
 
         if (!pairingCode) throw new Error("Pairing Code modal did not appear.");
 
-        // 7. Send Pairing Code & Update User
+        // --- 7. NEW LOGIC: STOP RECORDER AND SEND VIDEO MID-PROCESS ---
+        await recorder.stop();
+        if (fs.existsSync(videoPath)) {
+            await bot.sendVideo(chatId, videoPath, { caption: `[DIAGNOSTIC] Screen recording up to pairing code generation.` });
+            fs.unlinkSync(videoPath); // Delete part 1 to save space
+        }
+
+        // Deliver the code and update the status message
         await bot.editMessageText(`[RAGANORK ACTIVE]\n\nCode: \`${pairingCode}\`\n\nWaiting for WhatsApp linking confirmation to grab Session ID...`, { 
             chat_id: chatId, 
             message_id: statusMsg.message_id, 
@@ -784,6 +791,10 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
                 inline_keyboard: [[{ text: `Copy Code: ${pairingCode}`, copy_text: { text: pairingCode } }]]
             }
         });
+
+        // Restart the recorder for the Session ID wait phase
+        videoPath = path.join(videoDir, `raganork_pt2_${Date.now()}.mp4`);
+        await recorder.start(videoPath);
 
         // 8. Click Close on the Pairing Code Modal
         await page.evaluate(() => {
@@ -794,7 +805,7 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
 
         // 9. Wait for Session ID Modal
         let sessionId = null;
-        for (let i = 0; i < 120; i++) { // Gives you up to 2 minutes to link your device
+        for (let i = 0; i < 120; i++) { 
             await new Promise(r => setTimeout(r, 1000));
             sessionId = await page.evaluate(() => {
                 const header = Array.from(document.querySelectorAll('*')).find(el => el.innerText && el.innerText.includes('Your session ID'));
@@ -802,7 +813,6 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
                     const txtBox = document.querySelector('textarea') || document.querySelector('input[readonly]');
                     if (txtBox && txtBox.value) return txtBox.value.trim();
 
-                    // Fallback for raw text containing standard prefix
                     const fallback = Array.from(document.querySelectorAll('div, p, span')).find(el => el.innerText && el.innerText.includes('RGNK~'));
                     if (fallback) return fallback.innerText.trim();
                 }
@@ -840,6 +850,7 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
     }
 });
+     
 
 
 bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
