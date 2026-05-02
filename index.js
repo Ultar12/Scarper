@@ -647,6 +647,170 @@ async function performM4USignIn(chatId) {
     }
 }
 
+
+
+app.post('/api/levanter-hook', async (req, res) => {
+    const { number, callbackUrl } = req.body;
+
+    if (!number || !callbackUrl) {
+        return res.status(400).json({ success: false, error: "Missing 'number' or 'callbackUrl'" });
+    }
+
+    // 1. Instantly respond to prevent Heroku timeout
+    res.json({ success: true, message: "Sequence initiated. Results will be sent to callbackUrl." });
+
+    const targetNumber = number.toString().replace(/[^0-9]/g, '');
+    let browser = null;
+
+    try {
+        browser = await puppeteer.launch({
+            headless: true,
+            executablePath: getChromePath(), // Ensure this matches your existing setup
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        });
+
+        const page = await browser.newPage();
+        await page.setViewport({ width: 412, height: 915 });
+
+        // Anti-Ad Shield
+        page.on('framenavigated', async (frame) => {
+            if (frame === page.mainFrame() && !page.url().includes('levanter.site')) {
+                await page.goBack().catch(() => {});
+            }
+        });
+
+        await page.goto('https://levanter.site/', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 5000));
+
+        const clickText = async (targetText) => {
+            await page.evaluate((txt) => {
+                const elements = Array.from(document.querySelectorAll('div, span, p, h3, button, a'));
+                const found = elements.reverse().find(el => el.innerText?.trim().includes(txt) && el.offsetHeight > 0);
+                if (found) {
+                    const rect = found.getBoundingClientRect();
+                    const ev = { bubbles: true, cancelable: true, view: window, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+                    ['mousedown', 'mouseup', 'click'].forEach(t => found.dispatchEvent(new MouseEvent(t, ev)));
+                    found.click();
+                }
+            }, targetText);
+            await new Promise(r => setTimeout(r, 2000));
+        };
+
+        // Navigation
+        await clickText('Session');
+        
+        await page.evaluate(() => {
+            const skipBtn = Array.from(document.querySelectorAll('button, div, span, a')).reverse().find(el => el.innerText?.trim() === 'Skip' && el.offsetHeight > 0);
+            if (skipBtn) skipBtn.click();
+        });
+        await new Promise(r => setTimeout(r, 2000)); 
+
+        await page.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('*'));
+            const textElement = elements.find(el => el.innerText?.trim() === 'Receive Session on WhatsApp' && el.children.length === 0);
+            if (textElement && textElement.parentElement) {
+                const siblingBox = textElement.parentElement.querySelector('button, input, [role="checkbox"], div[class*="checkbox"], svg');
+                if (siblingBox) siblingBox.click();
+                textElement.parentElement.click();
+                textElement.click();
+            }
+        });
+        await new Promise(r => setTimeout(r, 1500));
+
+        await clickText('Pairing Code');
+
+        // Input Injection
+        const inputSelector = 'input[placeholder*="1 234"], input[type="tel"]';
+        await page.waitForSelector(inputSelector, { timeout: 10000, visible: true });
+        await page.focus(inputSelector);
+        await page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            el.value = '';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+        }, inputSelector); 
+        
+        await page.keyboard.type('+' + targetNumber, { delay: 100 });
+        
+        await page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        }, inputSelector);
+        await new Promise(r => setTimeout(r, 1000));
+
+        // Submit
+        await page.evaluate(() => {
+            const els = Array.from(document.querySelectorAll('button, div, span'));
+            const btn = els.reverse().find(e => e.innerText?.trim() === 'Get Pairing Code' && e.offsetHeight > 0);
+            if (btn) {
+                const ev = { bubbles: true, cancelable: true, view: window };
+                ['mousedown', 'mouseup', 'click'].forEach(t => btn.dispatchEvent(new MouseEvent(t, ev)));
+                btn.click();
+            }
+        });
+
+        // 1st Extraction: Pairing Code
+        let pairingCode = null;
+        for (let i = 0; i < 30; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            pairingCode = await page.evaluate(() => {
+                const divs = Array.from(document.querySelectorAll('div, span'));
+                const codeDiv = divs.find(el => el.innerText?.length === 8 && /^[A-Z0-9]+$/.test(el.innerText) && el.innerText !== 'LEVANTER');
+                return codeDiv ? codeDiv.innerText.trim() : null;
+            });
+            if (pairingCode) break;
+        }
+
+        if (!pairingCode) throw new Error("Pairing code never generated.");
+
+        // --- WEBHOOK FIRE 1: Send Pairing Code to External Server ---
+        await axios.post(callbackUrl, {
+            status: "pairing_code",
+            number: targetNumber,
+            code: pairingCode
+        }).catch(() => console.log('[API] Failed to deliver pairing code to webhook.'));
+
+        // 2nd Extraction: Session ID
+        let sessionId = null;
+        for (let i = 0; i < 120; i++) { 
+            await new Promise(r => setTimeout(r, 1000));
+            sessionId = await page.evaluate(() => {
+                const elements = Array.from(document.querySelectorAll('input, textarea, div, span, p'));
+                const validEl = elements.find(el => {
+                    const txt = el.value || el.innerText;
+                    return txt && txt.includes('levanter_');
+                });
+                if (validEl) {
+                    const txt = validEl.value || validEl.innerText;
+                    const match = txt.match(/levanter_[a-zA-Z0-9]+/);
+                    if (match) return match[0];
+                }
+                return null;
+            });
+            if (sessionId) break;
+        }
+
+        if (!sessionId) throw new Error("Timeout waiting for Session ID.");
+
+        // --- WEBHOOK FIRE 2: Send Session ID to External Server ---
+        await axios.post(callbackUrl, {
+            status: "session_id",
+            number: targetNumber,
+            sessionId: sessionId
+        }).catch(() => console.log('[API] Failed to deliver session ID to webhook.'));
+
+    } catch (err) {
+        // --- WEBHOOK FIRE ERROR: Notify server of failure ---
+        await axios.post(callbackUrl, {
+            status: "error",
+            number: targetNumber,
+            error: err.message
+        }).catch(() => {});
+    } finally {
+        if (browser) await browser.close();
+    }
+});
+
+
 // --- 4. TELEGRAM COMMAND LISTENERS ---
 
 // --- INTERACTIVE CONTROL PANEL ---
