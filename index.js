@@ -1272,6 +1272,120 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
 });
 
 
+
+// Usage: /book [Title or Author]
+bot.onText(/\/book\s+(.+)/i, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    const query = match[1].trim();
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Searching Shadow Library for: "${query}"...`);
+
+    let browser = null;
+    try {
+        // Launch Puppeteer 
+        browser = await puppeteer.launch({
+            headless: true,
+            executablePath: getChromePath(),
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+        });
+
+        const page = await browser.newPage();
+        
+        // Speed Hack: Block images and CSS so the search is lightning fast
+        await page.setRequestInterception(true);
+        page.on('request', (req) => {
+            if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
+                req.abort();
+            } else {
+                req.continue();
+            }
+        });
+
+        // 1. Search Libgen Database
+        const searchUrl = `https://libgen.is/search.php?req=${encodeURIComponent(query)}&res=25&view=simple&phrase=1&column=def`;
+        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+        // 2. Extract Top Result (Preferably PDF or EPUB)
+        const bookData = await page.evaluate(() => {
+            // Grab all rows except the header
+            const rows = Array.from(document.querySelectorAll('table.c > tbody > tr')).slice(1); 
+            if (rows.length === 0) return null;
+
+            for (let row of rows) {
+                const cols = row.querySelectorAll('td');
+                if (cols.length < 10) continue;
+
+                const author = cols[1].innerText.trim();
+                // Clean up the title (removes publisher bracket tags)
+                const title = cols[2].innerText.replace(/\[.*?\]/g, '').trim(); 
+                const extension = cols[8].innerText.trim().toLowerCase();
+                // Grab the download mirror link
+                const mirrorLink = cols[9].querySelector('a')?.href; 
+
+                // We strictly want PDFs or EPUBs (standard novel formats)
+                if ((extension === 'pdf' || extension === 'epub') && mirrorLink) {
+                    return { author, title, extension, mirrorLink };
+                }
+            }
+            return null;
+        });
+
+        if (!bookData) {
+            throw new Error(`No PDF or EPUB found for "${query}". Try adding the author's name to be more specific.`);
+        }
+
+        await bot.editMessageText(`[SYSTEM] Match Found!\n\nTitle: ${bookData.title}\nAuthor: ${bookData.author}\nFormat: ${bookData.extension.toUpperCase()}\n\nBypassing mirrors to extract file...`, { chat_id: chatId, message_id: statusMsg.message_id });
+
+        // 3. Go to the download mirror (library.lol)
+        await page.goto(bookData.mirrorLink, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+        // 4. Extract the direct "GET" download link
+        const downloadUrl = await page.evaluate(() => {
+            const getBtn = document.querySelector('#download h2 a');
+            return getBtn ? getBtn.href : null;
+        });
+
+        if (!downloadUrl) throw new Error("Security blocked the mirror. Could not extract the final download link.");
+
+        await bot.editMessageText(`[SYSTEM] Direct link secured. Downloading to Heroku RAM...`, { chat_id: chatId, message_id: statusMsg.message_id });
+
+        // 5. Download the file into memory via Axios
+        const response = await axios.get(downloadUrl, { responseType: 'arraybuffer' });
+        const buffer = Buffer.from(response.data, 'binary');
+
+        // Telegram Bot API limit is 50MB. We must check the file size so the bot doesn't crash.
+        const fileSizeMB = buffer.length / (1024 * 1024);
+        if (fileSizeMB > 49.5) {
+            throw new Error(`File is too massive for Telegram (${fileSizeMB.toFixed(1)}MB). Here is the direct download link instead: ${downloadUrl}`);
+        }
+
+        await bot.editMessageText(`[SYSTEM] Download complete. Uploading ${fileSizeMB.toFixed(1)}MB to Telegram...`, { chat_id: chatId, message_id: statusMsg.message_id });
+
+        // Clean the filename so it doesn't cause formatting errors
+        const safeTitle = bookData.title.replace(/[^a-zA-Z0-9 ]/g, "").substring(0, 50);
+
+        // 6. Deliver the document
+        await bot.sendDocument(chatId, buffer, {
+            caption: `📚 *${bookData.title}*\n👤 Author: ${bookData.author}\n📄 Format: ${bookData.extension.toUpperCase()}`,
+            parse_mode: 'Markdown'
+        }, {
+            filename: `${safeTitle}.${bookData.extension}`,
+            contentType: bookData.extension === 'pdf' ? 'application/pdf' : 'application/epub+zip'
+        });
+
+        // Clean up the status message
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+
+    } catch (err) {
+        bot.editMessageText(`[ERROR] Book Engine: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+    } finally {
+        if (browser) await browser.close().catch(()=>{});
+    }
+});
+
+
+
 // --- THE WSTASK TOGGLE COMMAND ---
 bot.onText(/^\/wstask$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
