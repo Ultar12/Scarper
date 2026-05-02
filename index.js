@@ -837,6 +837,8 @@ bot.onText(/\/start/i, (msg) => {
 
 
 
+
+        
 bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return; 
@@ -885,19 +887,14 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         await bot.editMessageText(`[SYSTEM] Bypassing OS Menu to inject +${countryCode}...`, { chat_id: chatId, message_id: statusMsg.message_id });
         
         const injected = await page.evaluate((cc) => {
-            // Target the Native Select Element directly
             const selectEl = document.querySelector('select');
             if (selectEl) {
-                // Find the option containing the country code
                 const targetOpt = Array.from(selectEl.options).find(opt => 
                     opt.text.trim().includes(cc) || opt.value.includes(cc)
                 );
                 
                 if (targetOpt) {
-                    // Force the value to change silently
                     selectEl.value = targetOpt.value;
-                    
-                    // Fire React/Vue events so the website knows we changed it
                     selectEl.dispatchEvent(new Event('change', { bubbles: true }));
                     selectEl.dispatchEvent(new Event('input', { bubbles: true }));
                     return true;
@@ -930,16 +927,35 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         await new Promise(r => setTimeout(r, 1000));
 
 
-        // --- 4. CLICK GET CODE ---
-        await page.evaluate(() => {
-            const btns = Array.from(document.querySelectorAll('button, div'));
-            const getBtn = btns.find(b => b.innerText?.toUpperCase().includes('GET CODE'));
+        // --- 4. PHYSICAL CLICK ON GET CODE ---
+        await bot.editMessageText(`[SYSTEM] Executing physical tap on GET CODE...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        
+        // Find exact coordinates of the button on the screen
+        const btnCords = await page.evaluate(() => {
+            const btns = Array.from(document.querySelectorAll('button, div, span'));
+            const getBtn = btns.reverse().find(b => b.innerText?.toUpperCase().includes('GET CODE') && b.offsetHeight > 0);
             if (getBtn) {
-                const ev = { bubbles: true, cancelable: true, view: window };
-                ['mousedown', 'mouseup', 'click'].forEach(t => getBtn.dispatchEvent(new MouseEvent(t, ev)));
-                getBtn.click();
+                const rect = getBtn.getBoundingClientRect();
+                return { x: rect.left + (rect.width / 2), y: rect.top + (rect.height / 2) };
             }
+            return null;
         });
+
+        if (btnCords) {
+            // Send a genuine hardware-level mouse click to the button
+            await page.mouse.click(btnCords.x, btnCords.y);
+        } else {
+            // Absolute fallback: Force standard JavaScript click
+            await page.evaluate(() => {
+                const btns = Array.from(document.querySelectorAll('button, div'));
+                const getBtn = btns.reverse().find(b => b.innerText?.toUpperCase().includes('GET CODE'));
+                if (getBtn) getBtn.click();
+            });
+        }
+        
+        // Final fallback: Press Enter key to submit form
+        await page.keyboard.press('Enter');
+        
         await bot.editMessageText(`[SYSTEM] Submitted. Monitoring for code...`, { chat_id: chatId, message_id: statusMsg.message_id });
 
 
@@ -961,7 +977,7 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
             if (pairingCode) break;
         }
 
-        if (!pairingCode) throw new Error("Could not find the generated code.");
+        if (!pairingCode) throw new Error("Target button pressed, but the pairing code modal never appeared.");
 
         // Deliver Code Instantly
         await bot.editMessageText(`[RAGANORK ACTIVE]\n\nCode: \`${pairingCode}\`\n\nWaiting for Session ID...`, { 
@@ -1015,6 +1031,8 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
     }
 });
+        
+            
 
 
 
