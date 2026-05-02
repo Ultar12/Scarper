@@ -677,7 +677,8 @@ bot.onText(/\/m4usign/i, (msg) => {
 
 
 
- bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
+ 
+bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return; 
 
@@ -685,7 +686,6 @@ bot.onText(/\/m4usign/i, (msg) => {
     let countryCode = '234'; 
     let localNum = rawNum;
 
-    // Smart number parser
     if (rawNum.startsWith('234') && rawNum.length > 10) {
         countryCode = '234';
         localNum = rawNum.substring(3);
@@ -694,7 +694,7 @@ bot.onText(/\/m4usign/i, (msg) => {
         localNum = rawNum.substring(1);
     }
 
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Launching Raganork Sequence for +${countryCode} ${localNum}...`);
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Launching Precision Raganork Strike for +${countryCode} ${localNum}...`);
 
     const videoDir = path.join(__dirname, 'videos');
     if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
@@ -721,60 +721,82 @@ bot.onText(/\/m4usign/i, (msg) => {
         await page.goto('https://session.rgnk.site/pairing-code', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
 
-        // 2. Open Country Code Dropdown (FIXED)
-        await page.evaluate(() => {
-            // Specifically look for the +1 box to click it
-            const elements = Array.from(document.querySelectorAll('button, div, span'));
-            const trigger = elements.find(el => el.innerText?.trim() === '+1');
-            if (trigger) {
-                trigger.click();
-                if (trigger.parentElement) trigger.parentElement.click();
+        // 2. OPEN DROPDOWN (RELATIVE COORDINATE STRIKE)
+        const triggerCords = await page.evaluate(() => {
+            const input = document.querySelector('input[placeholder*="phone"], input[placeholder*="Enter"]');
+            if (input) {
+                const rect = input.getBoundingClientRect();
+                // Measure from the left edge of the input field, move 45px left to hit the country code box
+                return { x: rect.left - 45, y: rect.top + (rect.height / 2) };
             }
+            return null;
         });
-        await new Promise(r => setTimeout(r, 2000)); // Wait for list to slide up
 
-        // 3. Select Target Country Code (FIXED)
-        await page.evaluate((cc) => {
-            const listItems = Array.from(document.querySelectorAll('div, span, li, button'));
-            const target = listItems.find(el => el.innerText?.trim() === '+' + cc || el.innerText?.trim() === cc);
-            if (target) {
-                target.scrollIntoView();
-                target.click();
+        if (triggerCords) {
+            await page.mouse.click(triggerCords.x, triggerCords.y);
+        } else {
+            throw new Error("Could not find the phone input box to calculate dropdown coordinates.");
+        }
+        await new Promise(r => setTimeout(r, 2000)); // Wait for the list to slide up
+
+        // 3. SCROLL AND TAP TARGET COUNTRY CODE
+        const targetCords = await page.evaluate(async (cc) => {
+            const allElements = Array.from(document.querySelectorAll('*'));
+            // Find elements containing EXACTLY +234
+            const targets = allElements.filter(el => el.innerText?.trim() === '+' + cc);
+            
+            if (targets.length > 0) {
+                // Grab the deepest element in the UI stack
+                const target = targets[targets.length - 1];
+                // Force the browser to scroll this item to the exact center of the screen
+                target.scrollIntoView({ behavior: 'instant', block: 'center' });
+                
+                // Pause to let the scroll render
+                await new Promise(res => setTimeout(res, 800));
+                
+                const rect = target.getBoundingClientRect();
+                return { x: rect.left + (rect.width / 2), y: rect.top + (rect.height / 2) };
             }
+            return null;
         }, countryCode);
+
+        if (targetCords) {
+            // Physically tap the screen where +234 is now located
+            await page.mouse.click(targetCords.x, targetCords.y);
+        } else {
+            throw new Error(`Could not locate +${countryCode} in the dropdown list.`);
+        }
         await new Promise(r => setTimeout(r, 1500));
 
         // 4. Input Local Number
-        const inputSelector = 'input[placeholder*="phone"]';
-        await page.waitForSelector(inputSelector, { timeout: 10000 });
+        const inputSelector = 'input[placeholder*="phone"], input[placeholder*="Enter"]';
         await page.focus(inputSelector);
+        // Clear any existing text
+        await page.evaluate((sel) => document.querySelector(sel).value = '', inputSelector);
         await page.keyboard.type(localNum, { delay: 100 });
         await new Promise(r => setTimeout(r, 1000));
 
         // 5. Click GET CODE
         await page.evaluate(() => {
-            const btns = Array.from(document.querySelectorAll('button'));
-            const getBtn = btns.find(b => b.innerText?.toUpperCase().includes('GET CODE'));
+            const btns = Array.from(document.querySelectorAll('button, div, span'));
+            const getBtn = btns.find(b => b.innerText?.toUpperCase() === 'GET CODE');
             if (getBtn) getBtn.click();
         });
 
         await bot.editMessageText(`[SYSTEM] Number submitted. Extracting code...`, { chat_id: chatId, message_id: statusMsg.message_id });
 
-        // 6. Wait for Pairing Code Modal & Extract (FIXED)
+        // 6. Wait for Pairing Code Modal & Extract
         let pairingCode = null;
         for (let i = 0; i < 30; i++) {
             await new Promise(r => setTimeout(r, 1000));
             pairingCode = await page.evaluate(() => {
-                // Check if the success modal is on screen first
                 const header = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.includes('Pairing Code Received'));
                 if (!header) return null;
 
-                // Strategy A: Check inside all inputs
                 const inputs = Array.from(document.querySelectorAll('input, textarea'));
                 const validVal = inputs.find(i => i.value?.trim().length === 8 && /^[A-Z0-9]{8}$/.test(i.value.trim()));
                 if (validVal) return validVal.value.trim();
 
-                // Strategy B: Check standard text elements
                 const divs = Array.from(document.querySelectorAll('div, span, p'));
                 const validText = divs.find(el => el.innerText?.trim().length === 8 && /^[A-Z0-9]{8}$/.test(el.innerText.trim()));
                 if (validText) return validText.innerText.trim();
@@ -809,8 +831,8 @@ bot.onText(/\/m4usign/i, (msg) => {
 
         // 8. Click Close on the Pairing Code Modal
         await page.evaluate(() => {
-            const btns = Array.from(document.querySelectorAll('button'));
-            const closeBtn = btns.find(b => b.innerText?.includes('Close'));
+            const btns = Array.from(document.querySelectorAll('button, div'));
+            const closeBtn = btns.find(b => b.innerText?.trim() === 'Close');
             if (closeBtn) closeBtn.click();
         });
 
@@ -864,6 +886,7 @@ bot.onText(/\/m4usign/i, (msg) => {
         if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
     }
 });
+        
 
 
 
@@ -873,7 +896,7 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
     if (chatId !== ADMIN_ID) return;
 
     const targetNumber = match[1].replace(/[^0-9]/g, '');
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Engaging Universal Text-Hunter for +${targetNumber}...`);
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Engaging Precision Sequence for +${targetNumber}...`);
 
     const videoDir = path.join(__dirname, 'videos');
     if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
@@ -892,7 +915,6 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
         const page = await browser.newPage();
         await page.setViewport({ width: 412, height: 915 });
 
-        // Shield for redirects
         page.on('framenavigated', async (frame) => {
             if (frame === page.mainFrame() && !page.url().includes('levanter.site')) {
                 await page.goBack().catch(() => {});
@@ -907,13 +929,10 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
         await page.goto('https://levanter.site/', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 5000));
 
-        // --- THE UNIVERSAL CLICKER FUNCTION ---
         const clickText = async (targetText) => {
             await page.evaluate((txt) => {
                 const elements = Array.from(document.querySelectorAll('div, span, p, h3, button, a'));
-                const found = elements.reverse().find(el => 
-                    el.innerText?.trim().includes(txt) && el.offsetHeight > 0
-                );
+                const found = elements.reverse().find(el => el.innerText?.trim().includes(txt) && el.offsetHeight > 0);
                 if (found) {
                     const rect = found.getBoundingClientRect();
                     const ev = { bubbles: true, cancelable: true, view: window, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
@@ -921,69 +940,81 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
                     found.click();
                 }
             }, targetText);
-            await new Promise(r => setTimeout(r, 3000));
+            await new Promise(r => setTimeout(r, 2000));
         };
 
-        // 2. STEP 1: Click Session
+        // 2. Click Session
         await clickText('Session');
-        await new Promise(r => setTimeout(r, 2000));
 
         // --- 2.5 TUTORIAL SNIPER ---
         await page.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('button, div, span, a'));
-            const skipBtn = elements.reverse().find(el => el.innerText?.trim() === 'Skip' && el.offsetHeight > 0);
-            if (skipBtn) {
-                const ev = { bubbles: true, cancelable: true, view: window };
-                skipBtn.dispatchEvent(new MouseEvent('click', ev));
-                skipBtn.click();
-            }
+            const skipBtn = Array.from(document.querySelectorAll('button, div, span, a')).reverse().find(el => el.innerText?.trim() === 'Skip' && el.offsetHeight > 0);
+            if (skipBtn) skipBtn.click();
         });
         await new Promise(r => setTimeout(r, 2000)); 
 
-        // 3. STEP 2: Click Checkbox (FIXED)
-        await page.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('div, span, label'));
-            const textEl = elements.find(el => el.innerText?.includes('Receive Session on WhatsApp'));
-            if (textEl) {
-                // Click the parent row container to ensure the checkbox triggers
-                const parentRow = textEl.parentElement;
-                if (parentRow) parentRow.click();
-                
-                // Backup: Click the little box icon next to it directly
-                if (textEl.previousElementSibling) textEl.previousElementSibling.click();
+        // 3. STEP 2: AGGRESSIVE CHECKBOX STRIKE (FIXED)
+        // We find the coordinates of the text on the screen, then physically tap the box to its left
+        const boxCords = await page.evaluate(() => {
+            const els = Array.from(document.querySelectorAll('div, span'));
+            const target = els.find(e => e.innerText?.trim() === 'Receive Session on WhatsApp' && e.children.length === 0);
+            if (target) {
+                const r = target.getBoundingClientRect();
+                return { x: r.left, y: r.top + (r.height / 2) };
             }
+            return null;
         });
+
+        if (boxCords) {
+            await page.mouse.click(boxCords.x - 25, boxCords.y); // Taps the actual checkbox circle
+            await new Promise(r => setTimeout(r, 500));
+            await page.mouse.click(boxCords.x + 10, boxCords.y); // Taps the text just in case
+        } else {
+            // Backup DOM click
+            await page.evaluate(() => {
+                const els = Array.from(document.querySelectorAll('*'));
+                const target = els.find(e => e.innerText?.includes('Receive Session on WhatsApp'));
+                if (target && target.parentElement) target.parentElement.click();
+            });
+        }
         await new Promise(r => setTimeout(r, 1500));
 
-        // 4. STEP 3: Click Pairing Code
+        // 4. Click Pairing Code
         await clickText('Pairing Code');
-        await new Promise(r => setTimeout(r, 2000)); // Wait for the transition to finish
 
-        // 5. STEP 4: Number Injection (FIXED)
+        // 5. Number Injection
         await bot.editMessageText(`[SYSTEM] Modal open. Injecting number...`, { chat_id: chatId, message_id: statusMsg.message_id });
         
-        // We now target the specific placeholder shown in your video
         const inputSelector = 'input[placeholder*="1 234"], input[type="tel"]';
         await page.waitForSelector(inputSelector, { timeout: 10000, visible: true });
         
         await page.focus(inputSelector);
-        // Ensure field is totally empty before typing
         await page.evaluate((sel) => document.querySelector(sel).value = '', inputSelector); 
         await page.keyboard.type('+' + targetNumber, { delay: 100 });
         await new Promise(r => setTimeout(r, 1000));
 
-        // Click the final "Get" button
-        await clickText('Get Pairing Code');
+        // 6. CLICK GET PAIRING CODE (FIXED)
+        // Strictly targets the button, ignoring the instruction list below it
+        await page.evaluate(() => {
+            const buttons = Array.from(document.querySelectorAll('button'));
+            const getBtn = buttons.find(b => b.innerText?.includes('Get Pairing Code'));
+            if (getBtn) {
+                getBtn.click();
+            } else {
+                // Hard fallback if the button isn't a true <button> tag
+                const all = Array.from(document.querySelectorAll('div, span'));
+                const divBtn = all.find(el => el.innerText?.trim() === 'Get Pairing Code' && el.children.length === 0);
+                if (divBtn) divBtn.click();
+            }
+        });
 
-        // 6. Extraction Loop
+        // 7. Extraction Loop
         let pairingCode = null;
         for (let i = 0; i < 30; i++) {
             await new Promise(r => setTimeout(r, 1000));
             pairingCode = await page.evaluate(() => {
                 const divs = Array.from(document.querySelectorAll('div, span'));
-                const codeDiv = divs.find(el => 
-                    el.innerText?.length === 8 && /^[A-Z0-9]+$/.test(el.innerText) && el.innerText !== 'LEVANTER'
-                );
+                const codeDiv = divs.find(el => el.innerText?.length === 8 && /^[A-Z0-9]+$/.test(el.innerText) && el.innerText !== 'LEVANTER');
                 return codeDiv ? codeDiv.innerText.trim() : null;
             });
             if (pairingCode) break;
@@ -995,9 +1026,7 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
             await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
             await bot.sendMessage(chatId, `[LEVANTER SUCCESS]\n\nNumber: \`+${targetNumber}\`\nCode: \`${pairingCode}\``, { 
                 parse_mode: 'Markdown',
-                reply_markup: {
-                    inline_keyboard: [[{ text: `Copy: ${pairingCode}`, copy_text: { text: pairingCode } }]]
-                }
+                reply_markup: { inline_keyboard: [[{ text: `Copy: ${pairingCode}`, copy_text: { text: pairingCode } }]] }
             });
         } else {
             throw new Error("Target box found but code never generated.");
@@ -1012,7 +1041,6 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
         if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
     }
 });
-
 
 
 
