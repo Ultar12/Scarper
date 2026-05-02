@@ -836,15 +836,8 @@ bot.onText(/\/start/i, (msg) => {
 });
 
 
-bot.onText(/\/m4usign/i, (msg) => {
-    if (msg.chat.id.toString() !== ADMIN_ID) return;
-    bot.sendMessage(ADMIN_ID, "[SYSTEM] Manually triggering M4U Sign-in sequence...");
-    performM4USignIn(ADMIN_ID);
-});
 
 
-
- 
 bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return; 
@@ -889,83 +882,77 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         await page.goto('https://session.rgnk.site/pairing-code', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
 
-        // --- 2. FORCE OPEN DROPDOWN ---
-        await bot.editMessageText(`[SYSTEM] Forcing dropdown open...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        // --- 2. THE GUARANTEED DROPDOWN OPENER ---
+        await bot.editMessageText(`[SYSTEM] Accessing country selector...`, { chat_id: chatId, message_id: statusMsg.message_id });
         
-        // Strategy A: Native DOM Click
-        let opened = await page.evaluate(() => {
-            const els = Array.from(document.querySelectorAll('div, span, p'));
-            const trigger = els.find(e => e.innerText?.trim() === '+1' && e.offsetHeight > 0);
-            if (trigger) {
-                trigger.click();
-                if (trigger.parentElement) trigger.parentElement.click();
-                return true;
+        const boxOpenCords = await page.evaluate(() => {
+            const input = document.querySelector('input[placeholder*="phone"], input[type="tel"]');
+            if (input) {
+                const rect = input.getBoundingClientRect();
+                return { 
+                    // Hits the exact center of the space to the left of the input field
+                    x: Math.max(15, rect.left / 2), 
+                    y: rect.top + (rect.height / 2) 
+                };
             }
-            return false;
+            return { x: 40, y: 300 }; // Blind fallback
         });
 
-        // Strategy B: Relative Coordinate Physical Tap (If A fails)
-        if (!opened) {
-            const inputCords = await page.evaluate(() => {
-                const input = document.querySelector('input[placeholder*="phone"], input[type="tel"]');
-                if (input) {
-                    const rect = input.getBoundingClientRect();
-                    return { x: rect.left - 30, y: rect.top + (rect.height / 2) };
-                }
-                return null;
-            });
+        // Physically tap the screen
+        await page.mouse.click(boxOpenCords.x, boxOpenCords.y);
+        await new Promise(r => setTimeout(r, 2000)); // Wait for modal slide animation
 
-            if (inputCords) {
-                await page.mouse.click(inputCords.x, inputCords.y);
-            } else {
-                // Absolute blind fallback
-                await page.mouse.click(60, 520);
-            }
-        }
-        await new Promise(r => setTimeout(r, 2000)); // Wait for the modal animation
-
-
-        // --- 3. DEEP MODAL SCROLLER ---
-        await bot.editMessageText(`[SYSTEM] Scrolling deep modal to find +${countryCode}...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        // --- 3. THE VIRTUALIZED SCROLL HUNTER ---
+        await bot.editMessageText(`[SYSTEM] Hunting for +${countryCode} in virtualized list...`, { chat_id: chatId, message_id: statusMsg.message_id });
         
+        // Strategy A: Keyboard jump
+        await page.keyboard.type('Nigeria', { delay: 50 });
+        await new Promise(r => setTimeout(r, 500));
+        await page.keyboard.press('Enter');
+        await new Promise(r => setTimeout(r, 1000));
+
+        // Strategy B: Deep Modal Scrolling
         let ccFound = false;
-        for (let i = 0; i < 25; i++) { // Max 25 scrolls
+        for (let i = 0; i < 30; i++) { // Max 30 scrolls
             ccFound = await page.evaluate((cc) => {
                 const items = Array.from(document.querySelectorAll('div, span, li, p'));
                 const target = items.find(el => el.innerText?.trim() === '+' + cc);
                 
-                if (target) {
-                    // Force center, then click it and its parent to ensure selection
-                    target.scrollIntoView({ block: 'center', behavior: 'instant' });
-                    const ev = { bubbles: true, cancelable: true, view: window };
+                if (target && target.offsetHeight > 0) {
+                    target.scrollIntoView({ block: 'center' });
+                    const rect = target.getBoundingClientRect();
+                    const ev = { bubbles: true, cancelable: true, view: window, clientX: rect.left + rect.width/2, clientY: rect.top + rect.height/2 };
                     ['mousedown', 'mouseup', 'click'].forEach(t => target.dispatchEvent(new MouseEvent(t, ev)));
                     target.click();
                     if(target.parentElement) target.parentElement.click();
                     return true;
                 }
 
-                // If not found, find ALL scrollable boxes on the screen and force them down
-                const scrollables = Array.from(document.querySelectorAll('*')).filter(el => 
+                // Find the internal modal box and force it to scroll down
+                const listContainers = Array.from(document.querySelectorAll('[role="listbox"], ul, div')).filter(el => 
                     el.scrollHeight > el.clientHeight && 
                     window.getComputedStyle(el).overflowY !== 'hidden'
                 );
                 
-                if (scrollables.length > 0) {
-                    // Scroll the deepest one (usually the active overlay)
-                    scrollables[scrollables.length - 1].scrollBy(0, 350);
+                if (listContainers.length > 0) {
+                    // Scroll the deepest one (usually the active overlay modal)
+                    listContainers[listContainers.length - 1].scrollBy(0, 400);
                 } else {
-                    window.scrollBy(0, 350); // Fallback
+                    window.scrollBy(0, 400); // Fallback
                 }
                 
                 return false;
             }, countryCode);
 
             if (ccFound) break;
-            await new Promise(r => setTimeout(r, 600)); // Wait for virtual DOM to load new items
+            await new Promise(r => setTimeout(r, 500)); // Wait for React to render the newly scrolled items
         }
 
-        if (!ccFound) throw new Error(`Could not find +${countryCode} in the modal list.`);
-        await new Promise(r => setTimeout(r, 1500));
+        if (!ccFound) {
+            // Failsafe: Tap outside to close the menu if it failed to find the country
+            await page.mouse.click(10, 10);
+            await new Promise(r => setTimeout(r, 1000));
+        }
 
 
         // --- 4. INPUT PHONE NUMBER ---
@@ -1072,6 +1059,8 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
     }
 });
+
+                
           
         
 
@@ -1272,8 +1261,6 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
 });
 
 
-
-// Usage: /book [Title or Author]
 bot.onText(/\/book\s+(.+)/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -1281,18 +1268,32 @@ bot.onText(/\/book\s+(.+)/i, async (msg, match) => {
     const query = match[1].trim();
     let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Searching Shadow Library for: "${query}"...`);
 
+    const videoDir = path.join(__dirname, 'videos');
+    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
+
     let browser = null;
+    let recorder = null;
+    let videoPath = null;
+
     try {
-        // Launch Puppeteer 
         browser = await puppeteer.launch({
             headless: true,
             executablePath: getChromePath(),
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
         });
 
         const page = await browser.newPage();
+        await page.setViewport({ width: 1280, height: 800 }); // Desktop view for Libgen
         
-        // Speed Hack: Block images and CSS so the search is lightning fast
+        // Spoof a real desktop browser to bypass basic anti-bot blocks
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+        // --- START RECORDER ---
+        videoPath = path.join(videoDir, `book_search_${Date.now()}.mp4`);
+        recorder = new PuppeteerScreenRecorder(page, { fps: 30 });
+        await recorder.start(videoPath);
+
+        // Speed Hack: Block heavy resources, but keep HTML/Scripts for Cloudflare
         await page.setRequestInterception(true);
         page.on('request', (req) => {
             if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
@@ -1302,13 +1303,13 @@ bot.onText(/\/book\s+(.+)/i, async (msg, match) => {
             }
         });
 
-        // 1. Search Libgen Database
+        // 1. Search Libgen (Timeout doubled to 60 seconds)
+        await bot.editMessageText(`[SYSTEM] Connecting to Database...`, { chat_id: chatId, message_id: statusMsg.message_id });
         const searchUrl = `https://libgen.is/search.php?req=${encodeURIComponent(query)}&res=25&view=simple&phrase=1&column=def`;
-        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        // 2. Extract Top Result (Preferably PDF or EPUB)
+        // 2. Extract Result
         const bookData = await page.evaluate(() => {
-            // Grab all rows except the header
             const rows = Array.from(document.querySelectorAll('table.c > tbody > tr')).slice(1); 
             if (rows.length === 0) return null;
 
@@ -1317,13 +1318,10 @@ bot.onText(/\/book\s+(.+)/i, async (msg, match) => {
                 if (cols.length < 10) continue;
 
                 const author = cols[1].innerText.trim();
-                // Clean up the title (removes publisher bracket tags)
                 const title = cols[2].innerText.replace(/\[.*?\]/g, '').trim(); 
                 const extension = cols[8].innerText.trim().toLowerCase();
-                // Grab the download mirror link
                 const mirrorLink = cols[9].querySelector('a')?.href; 
 
-                // We strictly want PDFs or EPUBs (standard novel formats)
                 if ((extension === 'pdf' || extension === 'epub') && mirrorLink) {
                     return { author, title, extension, mirrorLink };
                 }
@@ -1331,16 +1329,14 @@ bot.onText(/\/book\s+(.+)/i, async (msg, match) => {
             return null;
         });
 
-        if (!bookData) {
-            throw new Error(`No PDF or EPUB found for "${query}". Try adding the author's name to be more specific.`);
-        }
+        if (!bookData) throw new Error(`No PDF or EPUB found for "${query}".`);
 
-        await bot.editMessageText(`[SYSTEM] Match Found!\n\nTitle: ${bookData.title}\nAuthor: ${bookData.author}\nFormat: ${bookData.extension.toUpperCase()}\n\nBypassing mirrors to extract file...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        await bot.editMessageText(`[SYSTEM] Match Found!\n\nTitle: ${bookData.title}\nFormat: ${bookData.extension.toUpperCase()}\n\nBypassing mirror site...`, { chat_id: chatId, message_id: statusMsg.message_id });
 
-        // 3. Go to the download mirror (library.lol)
-        await page.goto(bookData.mirrorLink, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        // 3. Go to the download mirror (library.lol) - Extended Timeout
+        await page.goto(bookData.mirrorLink, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        // 4. Extract the direct "GET" download link
+        // 4. Extract direct link
         const downloadUrl = await page.evaluate(() => {
             const getBtn = document.querySelector('#download h2 a');
             return getBtn ? getBtn.href : null;
@@ -1348,21 +1344,22 @@ bot.onText(/\/book\s+(.+)/i, async (msg, match) => {
 
         if (!downloadUrl) throw new Error("Security blocked the mirror. Could not extract the final download link.");
 
-        await bot.editMessageText(`[SYSTEM] Direct link secured. Downloading to Heroku RAM...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        await bot.editMessageText(`[SYSTEM] Direct link secured. Downloading file to RAM...`, { chat_id: chatId, message_id: statusMsg.message_id });
 
-        // 5. Download the file into memory via Axios
-        const response = await axios.get(downloadUrl, { responseType: 'arraybuffer' });
+        // We can stop the video here because the visual part is done
+        await recorder.stop();
+
+        // 5. Download the file via Axios (Extended Timeout)
+        const response = await axios.get(downloadUrl, { responseType: 'arraybuffer', timeout: 60000 });
         const buffer = Buffer.from(response.data, 'binary');
 
-        // Telegram Bot API limit is 50MB. We must check the file size so the bot doesn't crash.
         const fileSizeMB = buffer.length / (1024 * 1024);
         if (fileSizeMB > 49.5) {
-            throw new Error(`File is too massive for Telegram (${fileSizeMB.toFixed(1)}MB). Here is the direct download link instead: ${downloadUrl}`);
+            throw new Error(`File is too massive for Telegram (${fileSizeMB.toFixed(1)}MB). Direct Link: ${downloadUrl}`);
         }
 
         await bot.editMessageText(`[SYSTEM] Download complete. Uploading ${fileSizeMB.toFixed(1)}MB to Telegram...`, { chat_id: chatId, message_id: statusMsg.message_id });
 
-        // Clean the filename so it doesn't cause formatting errors
         const safeTitle = bookData.title.replace(/[^a-zA-Z0-9 ]/g, "").substring(0, 50);
 
         // 6. Deliver the document
@@ -1374,13 +1371,24 @@ bot.onText(/\/book\s+(.+)/i, async (msg, match) => {
             contentType: bookData.extension === 'pdf' ? 'application/pdf' : 'application/epub+zip'
         });
 
-        // Clean up the status message
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
 
+        // Optional: Send the success video just so you can see how fast it scraped
+        if (fs.existsSync(videoPath)) {
+            await bot.sendVideo(chatId, videoPath, { caption: `[DIAGNOSTIC] Libgen Search Sequence` });
+        }
+
     } catch (err) {
+        if (recorder) await recorder.stop().catch(() => {});
         bot.editMessageText(`[ERROR] Book Engine: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+        
+        // Send the crash video so we can see if it was a Cloudflare block or just a slow load
+        if (fs.existsSync(videoPath)) {
+            await bot.sendVideo(chatId, videoPath, { caption: `Error Video: ${err.message}` });
+        }
     } finally {
         if (browser) await browser.close().catch(()=>{});
+        if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
     }
 });
 
