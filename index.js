@@ -837,7 +837,6 @@ bot.onText(/\/start/i, (msg) => {
 
 
 
-
 bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return; 
@@ -855,7 +854,7 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         localNum = rawNum.substring(1);
     }
 
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Launching Modal-Breaker Strike for +${countryCode} ${localNum}...`);
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Launching Direct DOM-Injection Strike for +${countryCode} ${localNum}...`);
 
     const videoDir = path.join(__dirname, 'videos');
     if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
@@ -874,7 +873,7 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         const page = await browser.newPage();
         await page.setViewport({ width: 412, height: 915 });
 
-        videoPath = path.join(videoDir, `raganork_mobile_${Date.now()}.mp4`);
+        videoPath = path.join(videoDir, `raganork_injection_${Date.now()}.mp4`);
         recorder = new PuppeteerScreenRecorder(page, { fps: 30 });
         await recorder.start(videoPath);
 
@@ -882,82 +881,39 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         await page.goto('https://session.rgnk.site/pairing-code', { waitUntil: 'networkidle2' });
         await new Promise(r => setTimeout(r, 4000));
 
-        // --- 2. THE GUARANTEED DROPDOWN OPENER ---
-        await bot.editMessageText(`[SYSTEM] Accessing country selector...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        // --- 2. THE DOM INJECTION (BYPASSING NATIVE UI) ---
+        await bot.editMessageText(`[SYSTEM] Bypassing OS Menu to inject +${countryCode}...`, { chat_id: chatId, message_id: statusMsg.message_id });
         
-        const boxOpenCords = await page.evaluate(() => {
-            const input = document.querySelector('input[placeholder*="phone"], input[type="tel"]');
-            if (input) {
-                const rect = input.getBoundingClientRect();
-                return { 
-                    // Hits the exact center of the space to the left of the input field
-                    x: Math.max(15, rect.left / 2), 
-                    y: rect.top + (rect.height / 2) 
-                };
-            }
-            return { x: 40, y: 300 }; // Blind fallback
-        });
-
-        // Physically tap the screen
-        await page.mouse.click(boxOpenCords.x, boxOpenCords.y);
-        await new Promise(r => setTimeout(r, 2000)); // Wait for modal slide animation
-
-        // --- 3. THE VIRTUALIZED SCROLL HUNTER ---
-        await bot.editMessageText(`[SYSTEM] Hunting for +${countryCode} in virtualized list...`, { chat_id: chatId, message_id: statusMsg.message_id });
-        
-        // Strategy A: Keyboard jump
-        await page.keyboard.type('Nigeria', { delay: 50 });
-        await new Promise(r => setTimeout(r, 500));
-        await page.keyboard.press('Enter');
-        await new Promise(r => setTimeout(r, 1000));
-
-        // Strategy B: Deep Modal Scrolling
-        let ccFound = false;
-        for (let i = 0; i < 30; i++) { // Max 30 scrolls
-            ccFound = await page.evaluate((cc) => {
-                const items = Array.from(document.querySelectorAll('div, span, li, p'));
-                const target = items.find(el => el.innerText?.trim() === '+' + cc);
-                
-                if (target && target.offsetHeight > 0) {
-                    target.scrollIntoView({ block: 'center' });
-                    const rect = target.getBoundingClientRect();
-                    const ev = { bubbles: true, cancelable: true, view: window, clientX: rect.left + rect.width/2, clientY: rect.top + rect.height/2 };
-                    ['mousedown', 'mouseup', 'click'].forEach(t => target.dispatchEvent(new MouseEvent(t, ev)));
-                    target.click();
-                    if(target.parentElement) target.parentElement.click();
-                    return true;
-                }
-
-                // Find the internal modal box and force it to scroll down
-                const listContainers = Array.from(document.querySelectorAll('[role="listbox"], ul, div')).filter(el => 
-                    el.scrollHeight > el.clientHeight && 
-                    window.getComputedStyle(el).overflowY !== 'hidden'
+        const injected = await page.evaluate((cc) => {
+            // Target the Native Select Element directly
+            const selectEl = document.querySelector('select');
+            if (selectEl) {
+                // Find the option containing the country code
+                const targetOpt = Array.from(selectEl.options).find(opt => 
+                    opt.text.trim().includes(cc) || opt.value.includes(cc)
                 );
                 
-                if (listContainers.length > 0) {
-                    // Scroll the deepest one (usually the active overlay modal)
-                    listContainers[listContainers.length - 1].scrollBy(0, 400);
-                } else {
-                    window.scrollBy(0, 400); // Fallback
+                if (targetOpt) {
+                    // Force the value to change silently
+                    selectEl.value = targetOpt.value;
+                    
+                    // Fire React/Vue events so the website knows we changed it
+                    selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+                    selectEl.dispatchEvent(new Event('input', { bubbles: true }));
+                    return true;
                 }
-                
-                return false;
-            }, countryCode);
+            }
+            return false;
+        }, countryCode);
 
-            if (ccFound) break;
-            await new Promise(r => setTimeout(r, 500)); // Wait for React to render the newly scrolled items
+        if (!injected) {
+            throw new Error(`Failed to inject +${countryCode}. The native <select> element was not found on the page.`);
         }
+        await new Promise(r => setTimeout(r, 1000));
 
-        if (!ccFound) {
-            // Failsafe: Tap outside to close the menu if it failed to find the country
-            await page.mouse.click(10, 10);
-            await new Promise(r => setTimeout(r, 1000));
-        }
-
-
-        // --- 4. INPUT PHONE NUMBER ---
+        // --- 3. INPUT PHONE NUMBER ---
         await bot.editMessageText(`[SYSTEM] Injecting local number: ${localNum}...`, { chat_id: chatId, message_id: statusMsg.message_id });
-        const inputSelector = 'input[placeholder*="phone"], input[type="tel"]';
+        const inputSelector = 'input[placeholder*="phone"], input[type="tel"], input[type="number"]';
         await page.waitForSelector(inputSelector, { timeout: 10000 });
         await page.focus(inputSelector);
         
@@ -974,7 +930,7 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         await new Promise(r => setTimeout(r, 1000));
 
 
-        // --- 5. CLICK GET CODE ---
+        // --- 4. CLICK GET CODE ---
         await page.evaluate(() => {
             const btns = Array.from(document.querySelectorAll('button, div'));
             const getBtn = btns.find(b => b.innerText?.toUpperCase().includes('GET CODE'));
@@ -987,7 +943,7 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         await bot.editMessageText(`[SYSTEM] Submitted. Monitoring for code...`, { chat_id: chatId, message_id: statusMsg.message_id });
 
 
-        // --- 6. EXTRACTION LOOP (Pairing Code) ---
+        // --- 5. EXTRACTION LOOP (Pairing Code) ---
         let pairingCode = null;
         for (let i = 0; i < 30; i++) {
             await new Promise(r => setTimeout(r, 1000));
@@ -1016,7 +972,7 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         });
 
 
-        // --- 7. WAIT FOR SESSION ID ---
+        // --- 6. WAIT FOR SESSION ID ---
         let sessionId = null;
         for (let i = 0; i < 120; i++) {
             await new Promise(r => setTimeout(r, 1000));
@@ -1060,9 +1016,7 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
     }
 });
 
-                
-          
-        
+
 
 
 bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
