@@ -652,6 +652,233 @@ async function performM4USignIn(chatId) {
 
 
 
+// --- GLOBAL CONCURRENCY MANAGER ---
+let sharedRaganorkBrowser = null;
+const activeRaganorkTabs = new Map(); // Tracks tabs by phone number
+let raganorkBrowserTimer = null; // Controls the 10-second browser shutdown
+
+app.post('/api/raganork-hook', async (req, res) => {
+    // 1. Safety Check
+    if (!req.body || !req.body.number || !req.body.callbackUrl) {
+        return res.status(400).json({ success: false, error: "Missing number or callbackUrl in request body." });
+    }
+
+    const { number, callbackUrl } = req.body;
+    let input = number.toString().trim();
+    
+    // --- 2. THE SMART PARSER ---
+    let countryCode = '234'; 
+    let localNum = input.replace(/[^0-9]/g, '');
+
+    if (input.includes(' ')) {
+        const parts = input.split(/\s+/);
+        countryCode = parts[0].replace(/[^0-9]/g, '');
+        localNum = parts.slice(1).join('').replace(/[^0-9]/g, '');
+    } else {
+        const cleanNum = input.replace(/[^0-9]/g, '');
+        if (cleanNum.startsWith('0')) {
+            countryCode = '234';
+            localNum = cleanNum.substring(1);
+        } else {
+            const globalCodes = [
+                '880', '254', '256', '263', '225', '221', '228', '233', '971', '966', 
+                '234', '58', '91', '92', '62', '55', '44', '27', '20', '1'
+            ];
+            let found = false;
+            for (let code of globalCodes) {
+                if (cleanNum.startsWith(code) && cleanNum.length > code.length + 5) {
+                    countryCode = code;
+                    localNum = cleanNum.substring(code.length);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                countryCode = '234';
+                localNum = cleanNum;
+            }
+        }
+    }
+
+    const fullNumber = `${countryCode}${localNum}`;
+
+    // --- 3. THE "KILL DUPLICATE" LOGIC ---
+    if (activeRaganorkTabs.has(fullNumber)) {
+        console.log(`[SYSTEM] Duplicate request detected for +${fullNumber}. Killing previous tab...`);
+        try {
+            const oldPage = activeRaganorkTabs.get(fullNumber);
+            if (oldPage && !oldPage.isClosed()) {
+                await oldPage.close();
+            }
+        } catch (e) {}
+        // Remove the dead tab from the map
+        activeRaganorkTabs.delete(fullNumber);
+    }
+
+    // Cancel the browser shutdown timer if it was counting down
+    if (raganorkBrowserTimer) {
+        clearTimeout(raganorkBrowserTimer);
+        raganorkBrowserTimer = null;
+    }
+
+    // 4. Instantly respond to prevent Heroku Timeout
+    res.json({ 
+        success: true, 
+        message: `Sequence initiated for +${fullNumber}.`,
+        callback_target: callbackUrl 
+    });
+
+    let page = null;
+
+    try {
+        // --- 5. SHARED BROWSER LOGIC ---
+        if (!sharedRaganorkBrowser || !sharedRaganorkBrowser.isConnected()) {
+            console.log("[SYSTEM] Launching Master Browser for Raganork API...");
+            sharedRaganorkBrowser = await puppeteer.launch({
+                headless: true,
+                executablePath: getChromePath(),
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+            });
+        }
+
+        page = await sharedRaganorkBrowser.newPage();
+        
+        // Register this new page in the map under the user's phone number
+        activeRaganorkTabs.set(fullNumber, page);
+        
+        await page.setUserAgent('Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+        await page.setViewport({ width: 412, height: 915 });
+
+        await page.goto('https://session.rgnk.site/pairing-code', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 4000));
+
+        // --- DOM INJECTION ---
+        const injected = await page.evaluate((cc) => {
+            const selectEl = document.querySelector('select');
+            if (selectEl) {
+                const targetOpt = Array.from(selectEl.options).find(opt => opt.text.includes(cc) || opt.value.includes(cc));
+                if (targetOpt) {
+                    selectEl.value = targetOpt.value;
+                    selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+                    selectEl.dispatchEvent(new Event('input', { bubbles: true }));
+                    return true;
+                }
+            }
+            return false;
+        }, countryCode);
+
+        if (!injected) throw new Error(`Failed to inject country code +${countryCode}.`);
+        await new Promise(r => setTimeout(r, 1000));
+
+        // --- NUMBER INPUT ---
+        const inputSelector = 'input[placeholder*="phone"], input[type="tel"], input[type="number"]';
+        await page.waitForSelector(inputSelector, { timeout: 10000 });
+        await page.focus(inputSelector);
+        
+        await page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            el.value = '';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+        }, inputSelector);
+        
+        await page.keyboard.type(localNum, { delay: 100 });
+        await page.evaluate((sel) => document.querySelector(sel).dispatchEvent(new Event('change', { bubbles: true })), inputSelector);
+        await new Promise(r => setTimeout(r, 1000));
+
+        // --- PHYSICAL STRIKE ---
+        const btnCords = await page.evaluate(() => {
+            const btns = Array.from(document.querySelectorAll('button, div, span'));
+            const getBtn = btns.reverse().find(b => b.innerText?.toUpperCase().includes('GET CODE') && b.offsetHeight > 0);
+            return getBtn ? { x: getBtn.getBoundingClientRect().left + (getBtn.getBoundingClientRect().width / 2), y: getBtn.getBoundingClientRect().top + (getBtn.getBoundingClientRect().height / 2) } : null;
+        });
+
+        if (btnCords) await page.mouse.click(btnCords.x, btnCords.y);
+        else {
+            await page.evaluate(() => {
+                const getBtn = Array.from(document.querySelectorAll('button, div')).reverse().find(b => b.innerText?.toUpperCase().includes('GET CODE'));
+                if (getBtn) getBtn.click();
+            });
+        }
+        await page.keyboard.press('Enter');
+
+        // --- PHASE 1: WEBHOOK PAIRING CODE ---
+        let pairingCode = null;
+        for (let i = 0; i < 30; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            pairingCode = await page.evaluate(() => {
+                const header = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.includes('Pairing Code Received'));
+                if (!header) return null;
+                const found = Array.from(document.querySelectorAll('input, textarea, div, span, p')).find(el => (el.value || el.innerText || "").trim().length === 8 && /^[A-Z0-9]{8}$/.test((el.value || el.innerText).trim()));
+                return found ? (found.value || found.innerText).trim() : null;
+            });
+            if (pairingCode) break;
+        }
+
+        if (pairingCode) {
+            await axios.post(callbackUrl, {
+                status: "pairing_code",
+                number: `+${fullNumber}`,
+                code: pairingCode
+            }).catch(e => console.log(`[API] Webhook 1 failed for ${localNum}:`, e.message));
+        } else {
+            throw new Error("Pairing code timed out.");
+        }
+
+        // --- PHASE 2: WEBHOOK SESSION ID ---
+        let sessionId = null;
+        for (let i = 0; i < 120; i++) { 
+            await new Promise(r => setTimeout(r, 1000));
+            sessionId = await page.evaluate(() => {
+                const found = Array.from(document.querySelectorAll('input, textarea, div, span, p')).find(el => (el.value || el.innerText || "").includes('RGNK~'));
+                if (found) {
+                    const m = (found.value || found.innerText).match(/RGNK~[a-zA-Z0-9]+/);
+                    return m ? m[0] : null;
+                }
+                return null;
+            });
+            if (sessionId) break;
+        }
+
+        if (sessionId) {
+            await axios.post(callbackUrl, {
+                status: "session_id",
+                number: `+${fullNumber}`,
+                sessionId: sessionId
+            }).catch(e => console.log(`[API] Webhook 2 failed for ${localNum}:`, e.message));
+        } else {
+            throw new Error("Timeout waiting for Session ID.");
+        }
+
+    } catch (err) {
+        // --- WEBHOOK FIRE ERROR ---
+        await axios.post(callbackUrl, {
+            status: "error",
+            number: input,
+            error: err.message
+        }).catch(() => {});
+    } finally {
+        // 1. Ensure THIS exact page is the one still in the map (it wasn't replaced by a duplicate)
+        if (activeRaganorkTabs.get(fullNumber) === page) {
+            if (page && !page.isClosed()) await page.close().catch(() => {});
+            activeRaganorkTabs.delete(fullNumber);
+        }
+
+        // 2. If no more tabs are open, wait 10 seconds and kill the browser
+        if (activeRaganorkTabs.size === 0 && sharedRaganorkBrowser) {
+            raganorkBrowserTimer = setTimeout(async () => {
+                if (activeRaganorkTabs.size === 0 && sharedRaganorkBrowser) {
+                    console.log("[SYSTEM] All Raganork tasks finished. Shutting down Master Browser.");
+                    await sharedRaganorkBrowser.close().catch(() => {});
+                    sharedRaganorkBrowser = null;
+                }
+            }, 10000); 
+        }
+    }
+});
+
+
+
+
 app.post('/api/levanter-hook', async (req, res) => {
     const { number, callbackUrl } = req.body;
 
@@ -843,20 +1070,44 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return; 
 
-    let rawNum = match[1].replace(/[^0-9]/g, '');
+    let input = match[1].trim();
+    
+    // --- SMART PARSER ---
     let countryCode = '234'; 
-    let localNum = rawNum;
+    let localNum = input.replace(/[^0-9]/g, '');
 
-    // Standard Nigerian number formatting
-    if (rawNum.startsWith('234') && rawNum.length > 10) {
-        countryCode = '234';
-        localNum = rawNum.substring(3);
-    } else if (rawNum.startsWith('0')) {
-        countryCode = '234';
-        localNum = rawNum.substring(1);
+    if (input.includes(' ')) {
+        const parts = input.split(/\s+/);
+        countryCode = parts[0].replace(/[^0-9]/g, '');
+        localNum = parts.slice(1).join('').replace(/[^0-9]/g, '');
+    } else {
+        const cleanNum = input.replace(/[^0-9]/g, '');
+        if (cleanNum.startsWith('0')) {
+            countryCode = '234';
+            localNum = cleanNum.substring(1);
+        } else {
+            const globalCodes = [
+                '880', '254', '256', '263', '225', '221', '228', '233', '971', '966', 
+                '234', '58', '91', '92', '62', '55', '44', '27', '20', '1'
+            ];
+            let found = false;
+            for (let code of globalCodes) {
+                if (cleanNum.startsWith(code) && cleanNum.length > code.length + 5) {
+                    countryCode = code;
+                    localNum = cleanNum.substring(code.length);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                countryCode = '234';
+                localNum = cleanNum;
+            }
+        }
     }
 
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Launching Direct DOM-Injection Strike for +${countryCode} ${localNum}...`);
+    const fullNumber = `+${countryCode} ${localNum}`;
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Launching Direct DOM-Injection Strike for ${fullNumber}...`);
 
     const videoDir = path.join(__dirname, 'videos');
     if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
@@ -904,7 +1155,7 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         }, countryCode);
 
         if (!injected) {
-            throw new Error(`Failed to inject +${countryCode}. The native <select> element was not found on the page.`);
+            throw new Error(`Failed to inject +${countryCode}. Code might be invalid or not in their list.`);
         }
         await new Promise(r => setTimeout(r, 1000));
 
@@ -930,7 +1181,6 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         // --- 4. PHYSICAL CLICK ON GET CODE ---
         await bot.editMessageText(`[SYSTEM] Executing physical tap on GET CODE...`, { chat_id: chatId, message_id: statusMsg.message_id });
         
-        // Find exact coordinates of the button on the screen
         const btnCords = await page.evaluate(() => {
             const btns = Array.from(document.querySelectorAll('button, div, span'));
             const getBtn = btns.reverse().find(b => b.innerText?.toUpperCase().includes('GET CODE') && b.offsetHeight > 0);
@@ -942,10 +1192,8 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         });
 
         if (btnCords) {
-            // Send a genuine hardware-level mouse click to the button
             await page.mouse.click(btnCords.x, btnCords.y);
         } else {
-            // Absolute fallback: Force standard JavaScript click
             await page.evaluate(() => {
                 const btns = Array.from(document.querySelectorAll('button, div'));
                 const getBtn = btns.reverse().find(b => b.innerText?.toUpperCase().includes('GET CODE'));
@@ -953,9 +1201,7 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
             });
         }
         
-        // Final fallback: Press Enter key to submit form
         await page.keyboard.press('Enter');
-        
         await bot.editMessageText(`[SYSTEM] Submitted. Monitoring for code...`, { chat_id: chatId, message_id: statusMsg.message_id });
 
 
@@ -1031,8 +1277,6 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
     }
 });
-        
-            
 
 
 
