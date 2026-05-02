@@ -853,6 +853,7 @@ bot.onText(/\/m4usign/i, (msg) => {
      
 
 
+
 bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -911,9 +912,9 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
 
         // 2. STEP 1: Click Session
         await clickText('Session');
-        await new Promise(r => setTimeout(r, 2000)); // Wait for the transition
+        await new Promise(r => setTimeout(r, 2000));
 
-        // --- 2.5 TUTORIAL SNIPER: Kill the "Skip" overlay ---
+        // --- 2.5 TUTORIAL SNIPER ---
         await page.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('button, div, span, a'));
             const skipBtn = elements.reverse().find(el => el.innerText?.trim() === 'Skip' && el.offsetHeight > 0);
@@ -923,22 +924,37 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
                 skipBtn.click();
             }
         });
-        // Give the overlay time to fade out so the buttons below become clickable
         await new Promise(r => setTimeout(r, 2000)); 
 
-        // 3. STEP 2: Click Checkbox
-        await clickText('Receive Session on WhatsApp');
+        // 3. STEP 2: Click Checkbox (FIXED)
+        await page.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('div, span, label'));
+            const textEl = elements.find(el => el.innerText?.includes('Receive Session on WhatsApp'));
+            if (textEl) {
+                // Click the parent row container to ensure the checkbox triggers
+                const parentRow = textEl.parentElement;
+                if (parentRow) parentRow.click();
+                
+                // Backup: Click the little box icon next to it directly
+                if (textEl.previousElementSibling) textEl.previousElementSibling.click();
+            }
+        });
+        await new Promise(r => setTimeout(r, 1500));
 
         // 4. STEP 3: Click Pairing Code
         await clickText('Pairing Code');
+        await new Promise(r => setTimeout(r, 2000)); // Wait for the transition to finish
 
-        // 5. STEP 4: Number Injection
+        // 5. STEP 4: Number Injection (FIXED)
         await bot.editMessageText(`[SYSTEM] Modal open. Injecting number...`, { chat_id: chatId, message_id: statusMsg.message_id });
         
-        const inputSelector = 'input';
-        await page.waitForSelector(inputSelector, { timeout: 10000 });
-        await page.click(inputSelector, { clickCount: 3 });
-        await page.keyboard.press('Backspace');
+        // We now target the specific placeholder shown in your video
+        const inputSelector = 'input[placeholder*="1 234"], input[type="tel"]';
+        await page.waitForSelector(inputSelector, { timeout: 10000, visible: true });
+        
+        await page.focus(inputSelector);
+        // Ensure field is totally empty before typing
+        await page.evaluate((sel) => document.querySelector(sel).value = '', inputSelector); 
         await page.keyboard.type('+' + targetNumber, { delay: 100 });
         await new Promise(r => setTimeout(r, 1000));
 
@@ -950,7 +966,6 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
         for (let i = 0; i < 30; i++) {
             await new Promise(r => setTimeout(r, 1000));
             pairingCode = await page.evaluate(() => {
-                // Find 8-char code that isn't the title
                 const divs = Array.from(document.querySelectorAll('div, span'));
                 const codeDiv = divs.find(el => 
                     el.innerText?.length === 8 && /^[A-Z0-9]+$/.test(el.innerText) && el.innerText !== 'LEVANTER'
@@ -976,13 +991,14 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
 
     } catch (err) {
         if (recorder) await recorder.stop().catch(() => {});
-        bot.editMessageText(`[FAILED] Hunter lost the trail. Video sent.`, { chat_id: chatId, message_id: statusMsg.message_id });
+        bot.editMessageText(`[FAILED] Sequence interrupted. Check diagnostic video.`, { chat_id: chatId, message_id: statusMsg.message_id });
         if (fs.existsSync(videoPath)) await bot.sendVideo(chatId, videoPath, { caption: `Error: ${err.message}` });
     } finally {
         if (browser) await browser.close();
         if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
     }
 });
+
 
 
 
