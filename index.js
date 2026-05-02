@@ -654,8 +654,8 @@ async function performM4USignIn(chatId) {
 
 // --- GLOBAL CONCURRENCY MANAGER ---
 let sharedRaganorkBrowser = null;
-const activeRaganorkTabs = new Map(); // Tracks tabs by phone number
-let raganorkBrowserTimer = null; // Controls the 10-second browser shutdown
+const activeRaganorkTabs = new Map(); // Now tracks an object: { page, reqId }
+let raganorkBrowserTimer = null; 
 
 app.post('/api/raganork-hook', async (req, res) => {
     // 1. Safety Check
@@ -701,19 +701,7 @@ app.post('/api/raganork-hook', async (req, res) => {
     }
 
     const fullNumber = `${countryCode}${localNum}`;
-
-    // --- 3. THE "KILL DUPLICATE" LOGIC ---
-    if (activeRaganorkTabs.has(fullNumber)) {
-        console.log(`[SYSTEM] Duplicate request detected for +${fullNumber}. Killing previous tab...`);
-        try {
-            const oldPage = activeRaganorkTabs.get(fullNumber);
-            if (oldPage && !oldPage.isClosed()) {
-                await oldPage.close();
-            }
-        } catch (e) {}
-        // Remove the dead tab from the map
-        activeRaganorkTabs.delete(fullNumber);
-    }
+    const myReqId = Date.now(); // Unique timestamp ID for this specific API call
 
     // Cancel the browser shutdown timer if it was counting down
     if (raganorkBrowserTimer) {
@@ -721,7 +709,7 @@ app.post('/api/raganork-hook', async (req, res) => {
         raganorkBrowserTimer = null;
     }
 
-    // 4. Instantly respond to prevent Heroku Timeout
+    // Instantly respond to prevent Heroku Timeout
     res.json({ 
         success: true, 
         message: `Sequence initiated for +${fullNumber}.`,
@@ -731,7 +719,7 @@ app.post('/api/raganork-hook', async (req, res) => {
     let page = null;
 
     try {
-        // --- 5. SHARED BROWSER LOGIC ---
+        // --- 3. BROWSER WARM-UP ---
         if (!sharedRaganorkBrowser || !sharedRaganorkBrowser.isConnected()) {
             console.log("[SYSTEM] Launching Master Browser for Raganork API...");
             sharedRaganorkBrowser = await puppeteer.launch({
@@ -741,16 +729,46 @@ app.post('/api/raganork-hook', async (req, res) => {
             });
         }
 
-        page = await sharedRaganorkBrowser.newPage();
-        
-        // Register this new page in the map under the user's phone number
-        activeRaganorkTabs.set(fullNumber, page);
-        
-        await page.setUserAgent('Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
-        await page.setViewport({ width: 412, height: 915 });
+        // --- 4. REFRESH EXISTING TAB OR CREATE NEW ---
+        if (activeRaganorkTabs.has(fullNumber)) {
+            const session = activeRaganorkTabs.get(fullNumber);
+            
+            // Check if the tab actually exists and hasn't been closed
+            if (session.page && !session.page.isClosed()) {
+                console.log(`[SYSTEM] Duplicate request detected for +${fullNumber}. Refreshing existing tab...`);
+                page = session.page;
+                
+                // Update the Map with the NEW reqId so the old process knows to abort
+                activeRaganorkTabs.set(fullNumber, { page: page, reqId: myReqId });
+                
+                // Refresh the tab instead of killing it
+                await page.reload({ waitUntil: 'networkidle2' });
+            } else {
+                // Tab was dead, make a new one
+                page = await sharedRaganorkBrowser.newPage();
+                activeRaganorkTabs.set(fullNumber, { page: page, reqId: myReqId });
+                await page.setUserAgent('Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+                await page.setViewport({ width: 412, height: 915 });
+                await page.goto('https://session.rgnk.site/pairing-code', { waitUntil: 'networkidle2' });
+            }
+        } else {
+            // Completely new number, make a new tab
+            page = await sharedRaganorkBrowser.newPage();
+            activeRaganorkTabs.set(fullNumber, { page: page, reqId: myReqId });
+            await page.setUserAgent('Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+            await page.setViewport({ width: 412, height: 915 });
+            await page.goto('https://session.rgnk.site/pairing-code', { waitUntil: 'networkidle2' });
+        }
 
-        await page.goto('https://session.rgnk.site/pairing-code', { waitUntil: 'networkidle2' });
+        // --- SILENT ABORT HELPER ---
+        // We will call this inside our loops. If a new request takes over our tab, we silently kill this old script.
+        const isOverridden = () => {
+            const currentSession = activeRaganorkTabs.get(fullNumber);
+            return !currentSession || currentSession.reqId !== myReqId;
+        };
+
         await new Promise(r => setTimeout(r, 4000));
+        if (isOverridden()) return; // Stop executing if we've been refreshed
 
         // --- DOM INJECTION ---
         const injected = await page.evaluate((cc) => {
@@ -769,6 +787,7 @@ app.post('/api/raganork-hook', async (req, res) => {
 
         if (!injected) throw new Error(`Failed to inject country code +${countryCode}.`);
         await new Promise(r => setTimeout(r, 1000));
+        if (isOverridden()) return;
 
         // --- NUMBER INPUT ---
         const inputSelector = 'input[placeholder*="phone"], input[type="tel"], input[type="number"]';
@@ -804,6 +823,7 @@ app.post('/api/raganork-hook', async (req, res) => {
         // --- PHASE 1: WEBHOOK PAIRING CODE ---
         let pairingCode = null;
         for (let i = 0; i < 30; i++) {
+            if (isOverridden()) return; // Abort loop if refreshed
             await new Promise(r => setTimeout(r, 1000));
             pairingCode = await page.evaluate(() => {
                 const header = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.includes('Pairing Code Received'));
@@ -813,6 +833,8 @@ app.post('/api/raganork-hook', async (req, res) => {
             });
             if (pairingCode) break;
         }
+
+        if (isOverridden()) return; 
 
         if (pairingCode) {
             await axios.post(callbackUrl, {
@@ -827,6 +849,7 @@ app.post('/api/raganork-hook', async (req, res) => {
         // --- PHASE 2: WEBHOOK SESSION ID ---
         let sessionId = null;
         for (let i = 0; i < 120; i++) { 
+            if (isOverridden()) return; // Abort loop if refreshed
             await new Promise(r => setTimeout(r, 1000));
             sessionId = await page.evaluate(() => {
                 const found = Array.from(document.querySelectorAll('input, textarea, div, span, p')).find(el => (el.value || el.innerText || "").includes('RGNK~'));
@@ -839,6 +862,8 @@ app.post('/api/raganork-hook', async (req, res) => {
             if (sessionId) break;
         }
 
+        if (isOverridden()) return;
+
         if (sessionId) {
             await axios.post(callbackUrl, {
                 status: "session_id",
@@ -850,20 +875,29 @@ app.post('/api/raganork-hook', async (req, res) => {
         }
 
     } catch (err) {
-        // --- WEBHOOK FIRE ERROR ---
+        // Did it crash because a new request reloaded the page from underneath us?
+        const currentSession = activeRaganorkTabs.get(fullNumber);
+        if (currentSession && currentSession.reqId !== myReqId) {
+            // Yes. Silently ignore the crash, because the new request is handling it now.
+            return; 
+        }
+
+        // It was a real error, send the webhook.
         await axios.post(callbackUrl, {
             status: "error",
             number: input,
             error: err.message
         }).catch(() => {});
+
     } finally {
-        // 1. Ensure THIS exact page is the one still in the map (it wasn't replaced by a duplicate)
-        if (activeRaganorkTabs.get(fullNumber) === page) {
+        // ONLY clean up the tab if this exact request is still the active owner
+        const currentSession = activeRaganorkTabs.get(fullNumber);
+        if (currentSession && currentSession.reqId === myReqId) {
             if (page && !page.isClosed()) await page.close().catch(() => {});
             activeRaganorkTabs.delete(fullNumber);
         }
 
-        // 2. If no more tabs are open, wait 10 seconds and kill the browser
+        // If no more tabs are open across the whole app, wait 10 seconds and kill Chrome
         if (activeRaganorkTabs.size === 0 && sharedRaganorkBrowser) {
             raganorkBrowserTimer = setTimeout(async () => {
                 if (activeRaganorkTabs.size === 0 && sharedRaganorkBrowser) {
@@ -875,7 +909,6 @@ app.post('/api/raganork-hook', async (req, res) => {
         }
     }
 });
-
 
 
 
