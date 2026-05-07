@@ -238,73 +238,91 @@ const userState = {};
 // --- THE AUTONOMOUS MEME COIN RADAR ---
 // This runs 24/7 in the background.
 
-// Keep track of coins we already alerted you about so it doesn't spam you
-const alertedCoins = new Set(); 
+// Map to track alerted coins and the exact time they were alerted
+const alertedCoins = new Map(); 
+const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
 
 async function runMemeRadar() {
     try {
-        // 1. Fetch the latest updated token profiles from DexScreener
+        const now = Date.now();
+        
+        // Memory Cleanup: Sweep the memory bank and delete coins older than 24 hours
+        for (let [address, timestamp] of alertedCoins.entries()) {
+            if (now - timestamp >= TWENTY_FOUR_HOURS) {
+                alertedCoins.delete(address);
+            }
+        }
+
+        // 1. Fetch the latest updated token profiles
         const response = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
         if (!response.ok) return;
         const newTokens = await response.json();
 
+        // 2. Extract addresses we haven't alerted you about in the last 24h (Max 30)
+        const addressesToScan = [];
         for (let token of newTokens) {
-            // Skip if we already alerted you about this coin
-            if (alertedCoins.has(token.tokenAddress)) continue;
+            if (!alertedCoins.has(token.tokenAddress)) {
+                addressesToScan.push(token.tokenAddress);
+                // Temporarily mark as scanned so we don't duplicate fetches in this exact loop
+                alertedCoins.set(token.tokenAddress, now); 
+            }
+            if (addressesToScan.length >= 30) break;
+        }
 
-            // 2. Fetch the actual trading math for this specific new token
-            const mathRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${token.tokenAddress}`);
-            const mathData = await mathRes.json();
-            
-            if (!mathData.pairs || mathData.pairs.length === 0) continue;
-            const pair = mathData.pairs[0];
+        if (addressesToScan.length === 0) return; // Nothing new to scan
 
-            // 3. THE GAUNTLET (Your strict requirements)
+        // 3. BATCH FETCH: Ask DexScreener for all 30 coins in ONE single request
+        const mathRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addressesToScan.join(',')}`);
+        const mathData = await mathRes.json();
+        
+        if (!mathData.pairs) return;
+
+        // 4. THE GAUNTLET (Adjusted for testing)
+        for (let pair of mathData.pairs) {
             const liquidity = pair.liquidity?.usd || 0;
             const volume = pair.volume?.h24 || 0;
-            const fdv = pair.fdv || 0; // Fully Diluted Valuation (Market Cap)
+            const fdv = pair.fdv || 0; 
 
-            // Requirement 1: Must have at least $15,000 in real liquidity (avoids instant rugs)
-            if (liquidity < 15000) continue;
+            // --- TESTING FILTERS ---
+            if (liquidity < 2000) continue;
+            if (volume < 5000) continue;
+            if (fdv > 2000000) continue;
 
-            // Requirement 2: Must have at least $50,000 in 24h volume (proves humans are buying it)
-            if (volume < 50000) continue;
-
-            // Requirement 3: Market cap must be under $500k (so you are still "early")
-            if (fdv > 500000) continue;
-
-            // --- IF IT SURVIVES THE GAUNTLET, SEND THE ALERT ---
-            
+            // --- IF IT SURVIVES, SEND THE ALERT ---
             const alertMsg = `
-🚨 **NEW GEM DETECTED by Radar** 🚨
+NEW GEM DETECTED by Radar
 
-**Token:** ${pair.baseToken.name} (${pair.baseToken.symbol})
-**Network:** ${pair.chainId.toUpperCase()}
+Token: ${pair.baseToken.name} (${pair.baseToken.symbol})
+Chain: ${pair.chainId.toUpperCase()}
 
-🏢 **Market Cap:** $${fdv.toLocaleString()}
-💧 **Liquidity:** $${liquidity.toLocaleString()}
-🔄 **Volume:** $${volume.toLocaleString()}
+Market Cap: $${fdv.toLocaleString()}
+Liquidity: $${liquidity.toLocaleString()}
+Volume: $${volume.toLocaleString()}
 
-**Contract Address (Tap to copy):**
-\`${token.tokenAddress}\`
+Contract Address (Tap to copy):
+\`${pair.baseToken.address}\`
 
-*Analyze this carefully before buying!*
+[View on DexScreener](https://dexscreener.com/${pair.chainId}/${pair.pairAddress})
             `;
 
-            // Send to your specific Admin Telegram ID
-            bot.sendMessage(process.env.ADMIN_ID, alertMsg, { parse_mode: 'Markdown' });
+            const targetAdmin = process.env.ADMIN_ID || '7710721646'; 
+            
+            bot.sendMessage(targetAdmin, alertMsg, { parse_mode: 'Markdown', disable_web_page_preview: true }).catch((err) => {
+                console.log("[Radar Error] Failed to send message to Telegram:", err.message);
+            });
 
-            // Add to the set so we don't alert you about this exact coin again
-            alertedCoins.add(token.tokenAddress);
+            // Update the exact timestamp for when this alert actually fired
+            alertedCoins.set(pair.baseToken.address, Date.now());
         }
 
     } catch (err) {
-        console.log("Radar Scan Error:", err.message);
+        console.log("[Radar Error]", err.message);
     }
 }
 
-// Start the Radar! Runs every 60 seconds (60000 milliseconds)
+// Start the Radar! Runs every 60 seconds.
 setInterval(runMemeRadar, 60000);
+
 
 
 // --- AUTOMATIC ONBOARDING SWEEPER (BACKGROUND ENGINE) ---
@@ -1985,6 +2003,69 @@ bot.on('message', async (msg) => {
         initializeWhatsApp(chatId, phoneNumber);
     }
 });
+
+
+
+bot.onText(/\/analyze (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const contractAddress = match[1].trim(); 
+
+    // Clean loading message
+    const loadMsg = await bot.sendMessage(chatId, "[SYSTEM] Scanning blockchain data...");
+
+    try {
+        // Fetch data from DexScreener's free public API
+        const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${contractAddress}`);
+        const data = await response.json();
+
+        // If the coin doesn't exist or has no liquidity pairs
+        if (!data.pairs || data.pairs.length === 0) {
+            return bot.editMessageText("[ERROR] No trading data found for this contract address. It might be a dead coin or invalid address.", { chat_id: chatId, message_id: loadMsg.message_id });
+        }
+
+        // Grab the most active trading pair (usually the first one in the array)
+        const pair = data.pairs[0];
+
+        // Format the numbers so they are easy to read
+        const price = parseFloat(pair.priceUsd).toFixed(6);
+        const marketCap = pair.fdv ? `$${pair.fdv.toLocaleString()}` : 'Unknown';
+        const liquidity = pair.liquidity && pair.liquidity.usd ? `$${pair.liquidity.usd.toLocaleString()}` : 'Unknown';
+        const volume24h = pair.volume && pair.volume.h24 ? `$${pair.volume.h24.toLocaleString()}` : 'Unknown';
+        const priceChange = pair.priceChange && pair.priceChange.h24 ? pair.priceChange.h24 : 0;
+
+        // Determine if volume/liquidity is healthy (Basic risk analysis)
+        let warning = "";
+        if (pair.liquidity && pair.liquidity.usd < 10000) {
+            warning = "\n[WARNING: VERY LOW LIQUIDITY]\nIf you buy this, you might not be able to sell it.";
+        }
+
+        // Build the analysis report
+        const report = `
+*Meme Coin Analysis*
+Token: ${pair.baseToken.name} (${pair.baseToken.symbol})
+Network: ${pair.chainId.toUpperCase()}
+
+Price: $${price}
+24h Change: ${priceChange}%
+Market Cap: ${marketCap}
+Liquidity: ${liquidity}
+24h Volume: ${volume24h}
+${warning}
+        `;
+
+        // Update the loading message with the final report
+        bot.editMessageText(report, { 
+            chat_id: chatId, 
+            message_id: loadMsg.message_id, 
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true
+        });
+
+    } catch (error) {
+        bot.editMessageText("[ERROR] Failed to fetch data. The API might be down or the address is invalid.", { chat_id: chatId, message_id: loadMsg.message_id });
+    }
+});
+
 
 
 
