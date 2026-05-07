@@ -2006,55 +2006,130 @@ bot.on('message', async (msg) => {
 
 
 
+
 bot.onText(/\/analyze (.+)/, async (msg, match) => {
-    const chatId = msg.chat.id;
+    const chatId = msg.chat.id.toString();
+    // Use your authorization check if you only want admins to use it
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && !AUTHORIZED.includes(chatId)) return;
+
     const contractAddress = match[1].trim(); 
 
-    // Clean loading message
-    const loadMsg = await bot.sendMessage(chatId, "[SYSTEM] Scanning blockchain data...");
+    const loadMsg = await bot.sendMessage(chatId, "[SYSTEM] Initiating dual-API blockchain scan...");
 
     try {
-        // Fetch data from DexScreener's free public API
-        const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${contractAddress}`);
-        const data = await response.json();
+        // --- 1. FETCH FINANCIAL DATA (DexScreener) ---
+        const dexResponse = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${contractAddress}`);
+        const dexData = await dexResponse.json();
 
-        // If the coin doesn't exist or has no liquidity pairs
-        if (!data.pairs || data.pairs.length === 0) {
-            return bot.editMessageText("[ERROR] No trading data found for this contract address. It might be a dead coin or invalid address.", { chat_id: chatId, message_id: loadMsg.message_id });
+        if (!dexData.pairs || dexData.pairs.length === 0) {
+            return bot.editMessageText("[ERROR] No trading data found. Invalid address or dead coin.", { chat_id: chatId, message_id: loadMsg.message_id });
         }
 
-        // Grab the most active trading pair (usually the first one in the array)
-        const pair = data.pairs[0];
+        const pair = dexData.pairs[0];
+        const chainStr = pair.chainId.toLowerCase();
 
-        // Format the numbers so they are easy to read
-        const price = parseFloat(pair.priceUsd).toFixed(6);
+        // Format Financials
+        const price = parseFloat(pair.priceUsd).toFixed(8);
         const marketCap = pair.fdv ? `$${pair.fdv.toLocaleString()}` : 'Unknown';
         const liquidity = pair.liquidity && pair.liquidity.usd ? `$${pair.liquidity.usd.toLocaleString()}` : 'Unknown';
         const volume24h = pair.volume && pair.volume.h24 ? `$${pair.volume.h24.toLocaleString()}` : 'Unknown';
         const priceChange = pair.priceChange && pair.priceChange.h24 ? pair.priceChange.h24 : 0;
 
-        // Determine if volume/liquidity is healthy (Basic risk analysis)
-        let warning = "";
-        if (pair.liquidity && pair.liquidity.usd < 10000) {
-            warning = "\n[WARNING: VERY LOW LIQUIDITY]\nIf you buy this, you might not be able to sell it.";
+        // --- 2. AUTONOMOUS VERDICT ENGINE ---
+        const rawFdv = pair.fdv || 0;
+        const rawLiq = pair.liquidity?.usd || 0;
+        const rawVol = pair.volume?.h24 || 0;
+        const rawChange = pair.priceChange?.h24 || 0;
+
+        let verdict = "[VERDICT] INCONCLUSIVE - Not enough data.";
+        
+        if (rawFdv > 0 && rawLiq > 0) {
+            const liqRatio = (rawLiq / rawFdv) * 100;
+            const volRatio = (rawVol / rawFdv) * 100;
+
+            if (rawLiq < 5000) {
+                verdict = "[DANGER] CRITICAL LACK OF LIQUIDITY. Extreme rug-pull risk. Do not buy.";
+            } 
+            else if (liqRatio < 5) {
+                verdict = "[WARNING] Liquidity is too thin for this Market Cap. High slippage risk.";
+            } 
+            else if (rawChange > 300) {
+                verdict = "[FOMO WARNING] Coin is up over 300%. Buying now is extremely high risk. Wait for a dip.";
+            } 
+            else if (volRatio > 50 && liqRatio > 10 && rawChange < 150) {
+                verdict = "[STRONG SIGNAL] High volume, healthy liquidity, not over-extended. Good mathematical entry.";
+            } 
+            else if (volRatio < 10 && rawFdv > 100000) {
+                verdict = "[DEAD ZONE] Very low trading volume compared to Market Cap. Hype might be dying.";
+            } 
+            else {
+                verdict = "[NEUTRAL] Ratios are average. Trade carefully.";
+            }
         }
 
-        // Build the analysis report
-        const report = `
-*Meme Coin Analysis*
+        // --- 3. FETCH SECURITY AUDIT (GoPlus Security) ---
+        // GoPlus requires a numeric Chain ID. Map the most common networks.
+        const chainMap = {
+            'ethereum': '1',
+            'bsc': '56',
+            'base': '8453',
+            'arbitrum': '42161',
+            'polygon': '137',
+            'optimism': '10',
+            'avalanche': '43114'
+        };
+
+        let securityReport = "Security Audit: Not supported for this specific network or Solana.";
+
+        if (chainMap[chainStr]) {
+            await bot.editMessageText("[SYSTEM] Financials acquired. Running GoPlus smart contract audit...", { chat_id: chatId, message_id: loadMsg.message_id });
+            
+            try {
+                const goPlusRes = await fetch(`https://api.gopluslabs.io/api/v1/token_security/${chainMap[chainStr]}?contract_addresses=${contractAddress}`);
+                const goPlusData = await goPlusRes.json();
+                
+                const lowerAddress = contractAddress.toLowerCase();
+                if (goPlusData.result && goPlusData.result[lowerAddress]) {
+                    const sec = goPlusData.result[lowerAddress];
+                    
+                    const isHoneypot = sec.is_honeypot === "1" ? "[DANGER] YES (Cannot Sell)" : "No";
+                    const canMint = sec.is_mintable === "1" ? "[WARNING] YES" : "No";
+                    
+                    const buyTax = sec.buy_tax ? Math.round(parseFloat(sec.buy_tax) * 100) + "%" : "Unknown";
+                    const sellTax = sec.sell_tax ? Math.round(parseFloat(sec.sell_tax) * 100) + "%" : "Unknown";
+                    
+                    const isRenounced = (!sec.creator_address || sec.creator_address === "" || sec.creator_address.includes("0x00000000")) ? "Yes" : "No";
+
+                    securityReport = `*Security Audit (GoPlus)*
+Honeypot: ${isHoneypot}
+Buy Tax: ${buyTax}
+Sell Tax: ${sellTax}
+Mintable: ${canMint}
+Contract Renounced: ${isRenounced}`;
+                }
+            } catch (secError) {
+                securityReport = "Security Audit: Failed to connect to GoPlus API.";
+            }
+        }
+
+        // --- 4. MERGE AND DELIVER THE FINAL REPORT ---
+        const finalReport = `*Meme Coin Analysis*
 Token: ${pair.baseToken.name} (${pair.baseToken.symbol})
 Network: ${pair.chainId.toUpperCase()}
 
+*Financials (DexScreener)*
 Price: $${price}
 24h Change: ${priceChange}%
 Market Cap: ${marketCap}
 Liquidity: ${liquidity}
 24h Volume: ${volume24h}
-${warning}
-        `;
 
-        // Update the loading message with the final report
-        bot.editMessageText(report, { 
+${securityReport}
+
+${verdict}`;
+
+        bot.editMessageText(finalReport, { 
             chat_id: chatId, 
             message_id: loadMsg.message_id, 
             parse_mode: 'Markdown',
@@ -2062,7 +2137,7 @@ ${warning}
         });
 
     } catch (error) {
-        bot.editMessageText("[ERROR] Failed to fetch data. The API might be down or the address is invalid.", { chat_id: chatId, message_id: loadMsg.message_id });
+        bot.editMessageText(`[ERROR] Scan failed: ${error.message}`, { chat_id: chatId, message_id: loadMsg.message_id });
     }
 });
 
