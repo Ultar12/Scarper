@@ -2008,25 +2008,38 @@ bot.on('message', async (msg) => {
 
 
 
+
 bot.onText(/\/analyze (.+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     const adminId = process.env.ADMIN_ID || '7710721646';
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
 
-    const contractAddress = match[1].trim(); 
+    const query = match[1].trim(); 
 
     const loadMsg = await bot.sendMessage(chatId, "[SYSTEM] Initiating comprehensive blockchain scan...");
 
     try {
-        // --- 1. FETCH FINANCIAL DATA (DexScreener) ---
-        const dexResponse = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${contractAddress}`);
+        // --- 1. FETCH FINANCIAL DATA (DexScreener Search API) ---
+        // This endpoint accepts both contract addresses AND names/tickers
+        const dexResponse = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query)}`);
         const dexData = await dexResponse.json();
 
         if (!dexData.pairs || dexData.pairs.length === 0) {
-            return bot.editMessageText("[ERROR] No trading data found. Invalid address or dead coin.", { chat_id: chatId, message_id: loadMsg.message_id });
+            return bot.editMessageText("[ERROR] No trading data found for that name or address.", { chat_id: chatId, message_id: loadMsg.message_id });
         }
 
-        const pair = dexData.pairs[0];
+        // Filter out pairs with zero liquidity and sort by highest liquidity to find the "real" coin
+        const validPairs = dexData.pairs.filter(p => p.liquidity && p.liquidity.usd > 0);
+        
+        if (validPairs.length === 0) {
+            return bot.editMessageText("[ERROR] Found coins with that name, but they all have $0 liquidity (Dead/Scam coins).", { chat_id: chatId, message_id: loadMsg.message_id });
+        }
+
+        // Sort descending by liquidity. The real coin will always float to the top.
+        validPairs.sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
+        const pair = validPairs[0]; 
+        
+        const contractAddress = pair.baseToken.address;
         const chainStr = pair.chainId.toLowerCase();
 
         // Format Financials
@@ -2089,7 +2102,6 @@ bot.onText(/\/analyze (.+)/, async (msg, match) => {
         }
 
         // --- 4. FETCH SECURITY AUDIT (GoPlus Security) ---
-        // GoPlus requires a numeric Chain ID. Map the most common networks.
         const chainMap = {
             'ethereum': '1',
             'bsc': '56',
@@ -2153,7 +2165,9 @@ Status: ${chartStatus}
 ${securityReport}
 
 *Final Conclusion*
-${verdict}`;
+${verdict}
+
+*Contract:* \`${contractAddress}\``;
 
         bot.editMessageText(finalReport, { 
             chat_id: chatId, 
@@ -2166,6 +2180,7 @@ ${verdict}`;
         bot.editMessageText(`[ERROR] Scan failed: ${error.message}`, { chat_id: chatId, message_id: loadMsg.message_id });
     }
 });
+
 
 
 
