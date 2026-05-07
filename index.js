@@ -235,6 +235,78 @@ let globalTaskBrowser = null;
 const userState = {};
 
 
+// --- THE AUTONOMOUS MEME COIN RADAR ---
+// This runs 24/7 in the background.
+
+// Keep track of coins we already alerted you about so it doesn't spam you
+const alertedCoins = new Set(); 
+
+async function runMemeRadar() {
+    try {
+        // 1. Fetch the latest updated token profiles from DexScreener
+        const response = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
+        if (!response.ok) return;
+        const newTokens = await response.json();
+
+        for (let token of newTokens) {
+            // Skip if we already alerted you about this coin
+            if (alertedCoins.has(token.tokenAddress)) continue;
+
+            // 2. Fetch the actual trading math for this specific new token
+            const mathRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${token.tokenAddress}`);
+            const mathData = await mathRes.json();
+            
+            if (!mathData.pairs || mathData.pairs.length === 0) continue;
+            const pair = mathData.pairs[0];
+
+            // 3. THE GAUNTLET (Your strict requirements)
+            const liquidity = pair.liquidity?.usd || 0;
+            const volume = pair.volume?.h24 || 0;
+            const fdv = pair.fdv || 0; // Fully Diluted Valuation (Market Cap)
+
+            // Requirement 1: Must have at least $15,000 in real liquidity (avoids instant rugs)
+            if (liquidity < 15000) continue;
+
+            // Requirement 2: Must have at least $50,000 in 24h volume (proves humans are buying it)
+            if (volume < 50000) continue;
+
+            // Requirement 3: Market cap must be under $500k (so you are still "early")
+            if (fdv > 500000) continue;
+
+            // --- IF IT SURVIVES THE GAUNTLET, SEND THE ALERT ---
+            
+            const alertMsg = `
+🚨 **NEW GEM DETECTED by Radar** 🚨
+
+**Token:** ${pair.baseToken.name} (${pair.baseToken.symbol})
+**Network:** ${pair.chainId.toUpperCase()}
+
+🏢 **Market Cap:** $${fdv.toLocaleString()}
+💧 **Liquidity:** $${liquidity.toLocaleString()}
+🔄 **Volume:** $${volume.toLocaleString()}
+
+**Contract Address (Tap to copy):**
+\`${token.tokenAddress}\`
+
+*Analyze this carefully before buying!*
+            `;
+
+            // Send to your specific Admin Telegram ID
+            bot.sendMessage(process.env.ADMIN_ID, alertMsg, { parse_mode: 'Markdown' });
+
+            // Add to the set so we don't alert you about this exact coin again
+            alertedCoins.add(token.tokenAddress);
+        }
+
+    } catch (err) {
+        console.log("Radar Scan Error:", err.message);
+    }
+}
+
+// Start the Radar! Runs every 60 seconds (60000 milliseconds)
+setInterval(runMemeRadar, 60000);
+
+
 // --- AUTOMATIC ONBOARDING SWEEPER (BACKGROUND ENGINE) ---
 async function clearOnboardingPopups(page, updateStatus) {
     try {
