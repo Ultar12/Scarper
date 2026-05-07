@@ -81,6 +81,18 @@ pool.query(`CREATE TABLE IF NOT EXISTS browser_sessions (platform VARCHAR(50) PR
     .then(() => console.log('[SYSTEM] Browser Session DB Ready.'))
     .catch(console.error);
 
+// --- MEME RADAR PERSISTENCE DATABASE ---
+pool.query(`
+    CREATE TABLE IF NOT EXISTS meme_radar_alerts (
+        contract_address VARCHAR(100) PRIMARY KEY,
+        last_alert_time BIGINT,
+        last_price NUMERIC
+    );
+`)
+.then(() => console.log('[SYSTEM] Meme Radar DB Ready.'))
+.catch(console.error);
+
+
 // --- M4U VERIFIED NUMBERS DATABASE ---
 pool.query(`CREATE TABLE IF NOT EXISTS m4u_linked_numbers (phone_number VARCHAR(20) PRIMARY KEY);`)
     .then(() => console.log('[SYSTEM] M4U Verified Numbers DB Ready.'))
@@ -267,90 +279,174 @@ async function getNgnRate() {
 
 
 // --- THE AUTONOMOUS MEME COIN RADAR ---
-const alertedCoins = new Map(); 
 const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
 
 async function runMemeRadar() {
     try {
         const now = Date.now();
-        
-        // Memory Cleanup
-        for (let [address, timestamp] of alertedCoins.entries()) {
-            if (now - timestamp >= TWENTY_FOUR_HOURS) {
-                alertedCoins.delete(address);
-            }
-        }
 
+        // 1. Fetch memory from PostgreSQL
+        const dbRes = await pool.query('SELECT contract_address, last_alert_time, last_price FROM meme_radar_alerts');
+        const knownCoins = new Map();
+        dbRes.rows.forEach(row => knownCoins.set(row.contract_address, row));
+
+        // 2. Fetch the latest updated token profiles
         const response = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
         if (!response.ok) return;
         const newTokens = await response.json();
 
         const addressesToScan = [];
         for (let token of newTokens) {
-            if (!alertedCoins.has(token.tokenAddress)) {
-                addressesToScan.push(token.tokenAddress);
-                alertedCoins.set(token.tokenAddress, now); 
+            const addr = token.tokenAddress;
+            if (knownCoins.has(addr)) {
+                const coinData = knownCoins.get(addr);
+                // If we alerted within the last 24 hours, skip it completely
+                if (now - parseInt(coinData.last_alert_time) < TWENTY_FOUR_HOURS) {
+                    continue; 
+                }
             }
-            if (addressesToScan.length >= 30) break;
+            addressesToScan.push(addr);
+            if (addressesToScan.length >= 30) break; // Respect API limits
         }
 
         if (addressesToScan.length === 0) return; 
 
+        // 3. Batch Fetch Financials
         const mathRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addressesToScan.join(',')}`);
         const mathData = await mathRes.json();
-        
         if (!mathData.pairs) return;
 
-        // Fetch current exchange rate
         const ngnRate = await getNgnRate();
 
         for (let pair of mathData.pairs) {
+            const contractAddress = pair.baseToken.address;
             const rawLiq = pair.liquidity?.usd || 0;
             const rawVol = pair.volume?.h24 || 0;
             const rawFdv = pair.fdv || 0; 
+            const rawPrice = parseFloat(pair.priceUsd) || 0;
 
-            // --- FILTERS ---
+            // --- THE GAUNTLET FILTERS ---
             if (rawLiq < 2000) continue;
             if (rawVol < 5000) continue;
             if (rawFdv > 2000000) continue;
 
+            // --- 24-HOUR CHANGE CHECKER (For old coins) ---
+            if (knownCoins.has(contractAddress)) {
+                const oldPrice = parseFloat(knownCoins.get(contractAddress).last_price);
+                if (oldPrice > 0) {
+                    const priceDiff = Math.abs(rawPrice - oldPrice) / oldPrice;
+                    // If price hasn't moved by at least 15%, just update the timer silently and skip the alert
+                    if (priceDiff < 0.15) {
+                        await pool.query(
+                            `UPDATE meme_radar_alerts SET last_alert_time = $1, last_price = $2 WHERE contract_address = $3`,
+                            [now, rawPrice, contractAddress]
+                        );
+                        continue; 
+                    }
+                }
+            }
+
             // --- NGN CONVERSIONS ---
+            const priceNgn = rawPrice * ngnRate;
             const fdvNgn = rawFdv * ngnRate;
             const liqNgn = rawLiq * ngnRate;
             const volNgn = rawVol * ngnRate;
 
+            // --- MOMENTUM ANALYSIS ---
+            const change5m = pair.priceChange?.m5 || 0;
+            const change1h = pair.priceChange?.h1 || 0;
+            const change24h = pair.priceChange?.h24 || 0;
+
+            let chartStatus = "[STAGNANT] Sideways movement.";
+            if (change1h < -20) chartStatus = `[CRASHING] 1-hour chart bleeding (${change1h}%).`;
+            else if (change5m < -5 && change1h < 0) chartStatus = `[DUMPING] Short-term candles are red.`;
+            else if (change1h > 20 && change5m > 5) chartStatus = `[PUMPING] Massive short-term breakout!`;
+            else if (change1h > 0 && change5m > 0 && change24h < 50) chartStatus = `[ACCUMULATION] Steady upward momentum.`;
+
+            // --- SECURITY AUDIT (GoPlus) ---
+            const chainStr = pair.chainId.toLowerCase();
+            const chainMap = { 'ethereum': '1', 'bsc': '56', 'base': '8453', 'arbitrum': '42161', 'polygon': '137', 'optimism': '10', 'avalanche': '43114' };
+            
+            let securityReport = "Not supported for this network (e.g., Solana).";
+            
+            if (chainMap[chainStr]) {
+                try {
+                    const goPlusRes = await fetch(`https://api.gopluslabs.io/api/v1/token_security/${chainMap[chainStr]}?contract_addresses=${contractAddress}`);
+                    const goPlusData = await goPlusRes.json();
+                    const lowerAddress = contractAddress.toLowerCase();
+                    
+                    if (goPlusData.result && goPlusData.result[lowerAddress]) {
+                        const sec = goPlusData.result[lowerAddress];
+                        const isHoneypot = sec.is_honeypot === "1" ? "[DANGER] YES (Cannot Sell)" : "No";
+                        const canMint = sec.is_mintable === "1" ? "[WARNING] YES" : "No";
+                        const isRenounced = (!sec.creator_address || sec.creator_address === "" || sec.creator_address.includes("0x00000000")) ? "Yes" : "No";
+
+                        securityReport = `Honeypot: ${isHoneypot}\nMintable: ${canMint}\nRenounced: ${isRenounced}`;
+                    }
+                } catch (e) {
+                    securityReport = "Failed to fetch audit.";
+                }
+            }
+
+            // --- BUILD FINAL DETAILED MESSAGE ---
             const alertMsg = `
 [NEW GEM DETECTED BY RADAR]
 
 Token: ${pair.baseToken.name} (${pair.baseToken.symbol})
 Chain: ${pair.chainId.toUpperCase()}
 
+*Financials*
+Price: $${rawPrice.toFixed(6)} (₦${priceNgn.toFixed(4)})
 Market Cap: $${rawFdv.toLocaleString()} (₦${fdvNgn.toLocaleString(undefined, {maximumFractionDigits: 0})})
 Liquidity: $${rawLiq.toLocaleString()} (₦${liqNgn.toLocaleString(undefined, {maximumFractionDigits: 0})})
 24h Volume: $${rawVol.toLocaleString()} (₦${volNgn.toLocaleString(undefined, {maximumFractionDigits: 0})})
 
+*Chart Momentum*
+5M Change: ${change5m}%
+1H Change: ${change1h}%
+24H Change: ${change24h}%
+Status: ${chartStatus}
+
+*Security Audit*
+${securityReport}
+
 Contract Address (Tap to copy):
-\`${pair.baseToken.address}\`
+\`${contractAddress}\`
 
 [View on DexScreener](https://dexscreener.com/${pair.chainId}/${pair.pairAddress})
             `;
 
-            // Broadcast to Channel. Fallback to Admin if Channel ID is missing in .env
-            const targetChannel = process.env.CHANNELRADAR_ID || process.env.ADMIN_ID || '7710721646'; 
+            // --- DELIVER ALERT ---
+            // If CHANNELRADAR_ID is missing or fails, it falls back to your personal ADMIN_ID
+            const targetChannel = process.env.CHANNELRADAR_ID || process.env.ADMIN_ID; 
             
-            bot.sendMessage(targetChannel, alertMsg, { parse_mode: 'Markdown', disable_web_page_preview: true }).catch((err) => {
-                console.log("[Radar Error] Failed to broadcast to channel:", err.message);
-            });
-
-            alertedCoins.set(pair.baseToken.address, Date.now());
+            try {
+                await bot.sendMessage(targetChannel, alertMsg, { parse_mode: 'Markdown', disable_web_page_preview: true });
+                
+                // SAVE TO DATABASE
+                await pool.query(
+                    `INSERT INTO meme_radar_alerts (contract_address, last_alert_time, last_price) 
+                     VALUES ($1, $2, $3) 
+                     ON CONFLICT (contract_address) 
+                     DO UPDATE SET last_alert_time = EXCLUDED.last_alert_time, last_price = EXCLUDED.last_price`,
+                    [contractAddress, now, rawPrice]
+                );
+            } catch (err) {
+                console.log(`[Radar Error] Failed to send to ${targetChannel}:`, err.message);
+                // If the channel fails (usually due to ID error), send a warning to the Admin DMs
+                if (targetChannel !== process.env.ADMIN_ID) {
+                    bot.sendMessage(process.env.ADMIN_ID, `[SYSTEM ERROR] Radar tried to post to channel ${targetChannel} but was blocked. Ensure the Bot is an Admin and the ID starts with -100.`).catch(()=>{});
+                }
+            }
         }
-
     } catch (err) {
         console.log("[Radar Error]", err.message);
     }
 }
 
+// Start the Radar! Runs every 60 seconds.
 setInterval(runMemeRadar, 60000);
+
 
 
 
