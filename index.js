@@ -2007,15 +2007,15 @@ bot.on('message', async (msg) => {
 
 
 
+
 bot.onText(/\/analyze (.+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
-    // Use your authorization check if you only want admins to use it
     const adminId = process.env.ADMIN_ID || '7710721646';
-    if (chatId !== adminId && !AUTHORIZED.includes(chatId)) return;
+    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
 
     const contractAddress = match[1].trim(); 
 
-    const loadMsg = await bot.sendMessage(chatId, "[SYSTEM] Initiating dual-API blockchain scan...");
+    const loadMsg = await bot.sendMessage(chatId, "[SYSTEM] Initiating comprehensive blockchain scan...");
 
     try {
         // --- 1. FETCH FINANCIAL DATA (DexScreener) ---
@@ -2034,13 +2034,33 @@ bot.onText(/\/analyze (.+)/, async (msg, match) => {
         const marketCap = pair.fdv ? `$${pair.fdv.toLocaleString()}` : 'Unknown';
         const liquidity = pair.liquidity && pair.liquidity.usd ? `$${pair.liquidity.usd.toLocaleString()}` : 'Unknown';
         const volume24h = pair.volume && pair.volume.h24 ? `$${pair.volume.h24.toLocaleString()}` : 'Unknown';
-        const priceChange = pair.priceChange && pair.priceChange.h24 ? pair.priceChange.h24 : 0;
+        
+        // Timeframe Changes
+        const change5m = pair.priceChange?.m5 || 0;
+        const change1h = pair.priceChange?.h1 || 0;
+        const change6h = pair.priceChange?.h6 || 0;
+        const change24h = pair.priceChange?.h24 || 0;
 
-        // --- 2. AUTONOMOUS VERDICT ENGINE ---
+        // --- 2. MOMENTUM / CHART ANALYSIS ---
+        let chartStatus = "[STAGNANT] Sideways movement.";
+        
+        if (change1h < -20) {
+            chartStatus = `[CRASHING] The 1-hour chart is bleeding deeply (${change1h}%). Do not catch a falling knife.`;
+        } 
+        else if (change5m < -5 && change1h < 0) {
+            chartStatus = `[DUMPING] Short-term candles are red. Sellers are in control right now.`;
+        } 
+        else if (change1h > 20 && change5m > 5) {
+            chartStatus = `[PUMPING] Massive short-term breakout. Green candles forming across 5m and 1h charts!`;
+        } 
+        else if (change1h > 0 && change5m > 0 && change24h < 50) {
+            chartStatus = `[ACCUMULATION] Slow, steady green upward momentum without insane FOMO.`;
+        }
+
+        // --- 3. AUTONOMOUS VERDICT ENGINE ---
         const rawFdv = pair.fdv || 0;
         const rawLiq = pair.liquidity?.usd || 0;
         const rawVol = pair.volume?.h24 || 0;
-        const rawChange = pair.priceChange?.h24 || 0;
 
         let verdict = "[VERDICT] INCONCLUSIVE - Not enough data.";
         
@@ -2054,10 +2074,10 @@ bot.onText(/\/analyze (.+)/, async (msg, match) => {
             else if (liqRatio < 5) {
                 verdict = "[WARNING] Liquidity is too thin for this Market Cap. High slippage risk.";
             } 
-            else if (rawChange > 300) {
+            else if (change24h > 300) {
                 verdict = "[FOMO WARNING] Coin is up over 300%. Buying now is extremely high risk. Wait for a dip.";
             } 
-            else if (volRatio > 50 && liqRatio > 10 && rawChange < 150) {
+            else if (volRatio > 50 && liqRatio > 10 && change24h < 150) {
                 verdict = "[STRONG SIGNAL] High volume, healthy liquidity, not over-extended. Good mathematical entry.";
             } 
             else if (volRatio < 10 && rawFdv > 100000) {
@@ -2068,7 +2088,7 @@ bot.onText(/\/analyze (.+)/, async (msg, match) => {
             }
         }
 
-        // --- 3. FETCH SECURITY AUDIT (GoPlus Security) ---
+        // --- 4. FETCH SECURITY AUDIT (GoPlus Security) ---
         // GoPlus requires a numeric Chain ID. Map the most common networks.
         const chainMap = {
             'ethereum': '1',
@@ -2113,20 +2133,26 @@ Contract Renounced: ${isRenounced}`;
             }
         }
 
-        // --- 4. MERGE AND DELIVER THE FINAL REPORT ---
+        // --- 5. MERGE AND DELIVER THE FINAL REPORT ---
         const finalReport = `*Meme Coin Analysis*
 Token: ${pair.baseToken.name} (${pair.baseToken.symbol})
 Network: ${pair.chainId.toUpperCase()}
 
 *Financials (DexScreener)*
 Price: $${price}
-24h Change: ${priceChange}%
 Market Cap: ${marketCap}
 Liquidity: ${liquidity}
 24h Volume: ${volume24h}
 
+*Chart Momentum*
+5M Change: ${change5m}%
+1H Change: ${change1h}%
+24H Change: ${change24h}%
+Status: ${chartStatus}
+
 ${securityReport}
 
+*Final Conclusion*
 ${verdict}`;
 
         bot.editMessageText(finalReport, { 
@@ -2140,6 +2166,7 @@ ${verdict}`;
         bot.editMessageText(`[ERROR] Scan failed: ${error.message}`, { chat_id: chatId, message_id: loadMsg.message_id });
     }
 });
+
 
 
 
