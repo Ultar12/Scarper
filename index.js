@@ -418,14 +418,15 @@ Status: ${chartStatus}
 *Security Audit (RugCheck)*
 ${securityReport}
 
-Contract Address:
+Contract Address (Tap to copy):
 \`${contractAddress}\`
 
 [View on DexScreener](https://dexscreener.com/${pair.chainId}/${pair.pairAddress})
             `;
 
             // --- DELIVER ALERT ---
-         const targetChannel = "-1003897238505"; 
+            // Hardcoded fallback to guarantee routing
+            const targetChannel = process.env.CHANNELRADAR_ID || "-1003897238505"; 
             
             try {
                 await bot.sendMessage(targetChannel, alertMsg, { parse_mode: 'Markdown', disable_web_page_preview: true });
@@ -440,9 +441,6 @@ Contract Address:
                 );
             } catch (err) {
                 console.log(`[Radar Error] Failed to send to ${targetChannel}:`, err.message);
-                if (targetChannel !== process.env.ADMIN_ID) {
-                    bot.sendMessage(process.env.ADMIN_ID, `[SYSTEM ERROR] Radar tried to post to channel ${targetChannel} but was blocked. Ensure the Bot is an Admin and the ID starts with -100.`).catch(()=>{});
-                }
             }
         }
     } catch (err) {
