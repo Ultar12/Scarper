@@ -418,14 +418,14 @@ Status: ${chartStatus}
 *Security Audit (RugCheck)*
 ${securityReport}
 
-Contract Address (Tap to copy):
+Contract Address:
 \`${contractAddress}\`
 
 [View on DexScreener](https://dexscreener.com/${pair.chainId}/${pair.pairAddress})
             `;
 
             // --- DELIVER ALERT ---
-            const targetChannel = process.env.CHANNELRADAR_ID || process.env.ADMIN_ID; 
+         const targetChannel = "-1003897238505"; 
             
             try {
                 await bot.sendMessage(targetChannel, alertMsg, { parse_mode: 'Markdown', disable_web_page_preview: true });
