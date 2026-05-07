@@ -235,10 +235,38 @@ let globalTaskBrowser = null;
 const userState = {};
 
 
-// --- THE AUTONOMOUS MEME COIN RADAR ---
-// This runs 24/7 in the background.
 
-// Map to track alerted coins and the exact time they were alerted
+// --- GLOBAL EXCHANGE RATE ENGINE ---
+let cachedNgnRate = null;
+let lastRateFetch = 0;
+
+async function getNgnRate() {
+    const now = Date.now();
+    // Cache the rate for 6 hours (21600000 ms) to prevent API bans
+    if (cachedNgnRate && (now - lastRateFetch < 21600000)) {
+        return cachedNgnRate;
+    }
+    try {
+        const apiKey = process.env.EXCHANGE_RATE_API_KEY || '27b153ae2befc94acf2d3eab';
+        const res = await fetch(`https://v6.exchangerate-api.com/v6/${apiKey}/latest/USD`);
+        const data = await res.json();
+        
+        if (data.result === 'success' && data.conversion_rates && data.conversion_rates.NGN) {
+            cachedNgnRate = data.conversion_rates.NGN;
+            lastRateFetch = now;
+            console.log(`[SYSTEM] Live NGN Rate updated: 1 USD = ${cachedNgnRate} NGN`);
+            return cachedNgnRate;
+        }
+    } catch (e) {
+        console.log("[API ERROR] Failed to fetch NGN rate:", e.message);
+    }
+    // Fallback rate if the API goes down so the bot doesn't crash
+    return cachedNgnRate || 1500; 
+}
+
+
+
+// --- THE AUTONOMOUS MEME COIN RADAR ---
 const alertedCoins = new Map(); 
 const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
 
@@ -246,58 +274,60 @@ async function runMemeRadar() {
     try {
         const now = Date.now();
         
-        // Memory Cleanup: Sweep the memory bank and delete coins older than 24 hours
+        // Memory Cleanup
         for (let [address, timestamp] of alertedCoins.entries()) {
             if (now - timestamp >= TWENTY_FOUR_HOURS) {
                 alertedCoins.delete(address);
             }
         }
 
-        // 1. Fetch the latest updated token profiles
         const response = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
         if (!response.ok) return;
         const newTokens = await response.json();
 
-        // 2. Extract addresses we haven't alerted you about in the last 24h (Max 30)
         const addressesToScan = [];
         for (let token of newTokens) {
             if (!alertedCoins.has(token.tokenAddress)) {
                 addressesToScan.push(token.tokenAddress);
-                // Temporarily mark as scanned so we don't duplicate fetches in this exact loop
                 alertedCoins.set(token.tokenAddress, now); 
             }
             if (addressesToScan.length >= 30) break;
         }
 
-        if (addressesToScan.length === 0) return; // Nothing new to scan
+        if (addressesToScan.length === 0) return; 
 
-        // 3. BATCH FETCH: Ask DexScreener for all 30 coins in ONE single request
         const mathRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addressesToScan.join(',')}`);
         const mathData = await mathRes.json();
         
         if (!mathData.pairs) return;
 
-        // 4. THE GAUNTLET (Adjusted for testing)
+        // Fetch current exchange rate
+        const ngnRate = await getNgnRate();
+
         for (let pair of mathData.pairs) {
-            const liquidity = pair.liquidity?.usd || 0;
-            const volume = pair.volume?.h24 || 0;
-            const fdv = pair.fdv || 0; 
+            const rawLiq = pair.liquidity?.usd || 0;
+            const rawVol = pair.volume?.h24 || 0;
+            const rawFdv = pair.fdv || 0; 
 
-            // --- TESTING FILTERS ---
-            if (liquidity < 2000) continue;
-            if (volume < 5000) continue;
-            if (fdv > 2000000) continue;
+            // --- FILTERS ---
+            if (rawLiq < 2000) continue;
+            if (rawVol < 5000) continue;
+            if (rawFdv > 2000000) continue;
 
-            // --- IF IT SURVIVES, SEND THE ALERT ---
+            // --- NGN CONVERSIONS ---
+            const fdvNgn = rawFdv * ngnRate;
+            const liqNgn = rawLiq * ngnRate;
+            const volNgn = rawVol * ngnRate;
+
             const alertMsg = `
-NEW GEM DETECTED by Radar
+[NEW GEM DETECTED BY RADAR]
 
 Token: ${pair.baseToken.name} (${pair.baseToken.symbol})
 Chain: ${pair.chainId.toUpperCase()}
 
-Market Cap: $${fdv.toLocaleString()}
-Liquidity: $${liquidity.toLocaleString()}
-Volume: $${volume.toLocaleString()}
+Market Cap: $${rawFdv.toLocaleString()} (₦${fdvNgn.toLocaleString(undefined, {maximumFractionDigits: 0})})
+Liquidity: $${rawLiq.toLocaleString()} (₦${liqNgn.toLocaleString(undefined, {maximumFractionDigits: 0})})
+24h Volume: $${rawVol.toLocaleString()} (₦${volNgn.toLocaleString(undefined, {maximumFractionDigits: 0})})
 
 Contract Address (Tap to copy):
 \`${pair.baseToken.address}\`
@@ -305,13 +335,13 @@ Contract Address (Tap to copy):
 [View on DexScreener](https://dexscreener.com/${pair.chainId}/${pair.pairAddress})
             `;
 
-            const targetAdmin = process.env.ADMIN_ID || '7710721646'; 
+            // Broadcast to Channel. Fallback to Admin if Channel ID is missing in .env
+            const targetChannel = process.env.CHANNELRADAR_ID || process.env.ADMIN_ID || '7710721646'; 
             
-            bot.sendMessage(targetAdmin, alertMsg, { parse_mode: 'Markdown', disable_web_page_preview: true }).catch((err) => {
-                console.log("[Radar Error] Failed to send message to Telegram:", err.message);
+            bot.sendMessage(targetChannel, alertMsg, { parse_mode: 'Markdown', disable_web_page_preview: true }).catch((err) => {
+                console.log("[Radar Error] Failed to broadcast to channel:", err.message);
             });
 
-            // Update the exact timestamp for when this alert actually fired
             alertedCoins.set(pair.baseToken.address, Date.now());
         }
 
@@ -320,7 +350,6 @@ Contract Address (Tap to copy):
     }
 }
 
-// Start the Radar! Runs every 60 seconds.
 setInterval(runMemeRadar, 60000);
 
 
@@ -1600,6 +1629,156 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
 });
 
 
+
+bot.onText(/\/analyze (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
+
+    const query = match[1].trim(); 
+    const loadMsg = await bot.sendMessage(chatId, "[SYSTEM] Initiating comprehensive blockchain scan...");
+
+    try {
+        // --- 1. FETCH FINANCIAL DATA ---
+        const dexResponse = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query)}`);
+        const dexData = await dexResponse.json();
+
+        if (!dexData.pairs || dexData.pairs.length === 0) {
+            return bot.editMessageText("[ERROR] No trading data found for that name or address.", { chat_id: chatId, message_id: loadMsg.message_id });
+        }
+
+        const validPairs = dexData.pairs.filter(p => p.liquidity && p.liquidity.usd > 0);
+        if (validPairs.length === 0) {
+            return bot.editMessageText("[ERROR] Found coins with that name, but they all have $0 liquidity (Dead/Scam coins).", { chat_id: chatId, message_id: loadMsg.message_id });
+        }
+
+        validPairs.sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
+        const pair = validPairs[0]; 
+        
+        const contractAddress = pair.baseToken.address;
+        const chainStr = pair.chainId.toLowerCase();
+
+        // --- FETCH NGN RATE ---
+        const ngnRate = await getNgnRate();
+
+        // --- MATH & CONVERSIONS ---
+        const rawPriceUsd = parseFloat(pair.priceUsd) || 0;
+        const priceNgn = rawPriceUsd * ngnRate;
+        const priceDisp = `$${rawPriceUsd.toFixed(8)} (₦${priceNgn.toFixed(8)})`;
+
+        const rawFdv = pair.fdv || 0;
+        const fdvNgn = rawFdv * ngnRate;
+        const marketCapDisp = rawFdv ? `$${rawFdv.toLocaleString()} (₦${fdvNgn.toLocaleString(undefined, {maximumFractionDigits: 0})})` : 'Unknown';
+
+        const rawLiq = pair.liquidity?.usd || 0;
+        const liqNgn = rawLiq * ngnRate;
+        const liquidityDisp = rawLiq ? `$${rawLiq.toLocaleString()} (₦${liqNgn.toLocaleString(undefined, {maximumFractionDigits: 0})})` : 'Unknown';
+
+        const rawVol = pair.volume?.h24 || 0;
+        const volNgn = rawVol * ngnRate;
+        const volumeDisp = rawVol ? `$${rawVol.toLocaleString()} (₦${volNgn.toLocaleString(undefined, {maximumFractionDigits: 0})})` : 'Unknown';
+
+        // Timeframe Changes
+        const change5m = pair.priceChange?.m5 || 0;
+        const change1h = pair.priceChange?.h1 || 0;
+        const change6h = pair.priceChange?.h6 || 0;
+        const change24h = pair.priceChange?.h24 || 0;
+
+        // --- 2. MOMENTUM / CHART ANALYSIS ---
+        let chartStatus = "[STAGNANT] Sideways movement.";
+        if (change1h < -20) chartStatus = `[CRASHING] The 1-hour chart is bleeding deeply (${change1h}%). Do not catch a falling knife.`;
+        else if (change5m < -5 && change1h < 0) chartStatus = `[DUMPING] Short-term candles are red. Sellers are in control right now.`;
+        else if (change1h > 20 && change5m > 5) chartStatus = `[PUMPING] Massive short-term breakout. Green candles forming across 5m and 1h charts!`;
+        else if (change1h > 0 && change5m > 0 && change24h < 50) chartStatus = `[ACCUMULATION] Slow, steady green upward momentum without insane FOMO.`;
+
+        // --- 3. AUTONOMOUS VERDICT ENGINE ---
+        let verdict = "[VERDICT] INCONCLUSIVE - Not enough data.";
+        if (rawFdv > 0 && rawLiq > 0) {
+            const liqRatio = (rawLiq / rawFdv) * 100;
+            const volRatio = (rawVol / rawFdv) * 100;
+
+            if (rawLiq < 5000) verdict = "[DANGER] CRITICAL LACK OF LIQUIDITY. Extreme rug-pull risk. Do not buy.";
+            else if (liqRatio < 5) verdict = "[WARNING] Liquidity is too thin for this Market Cap. High slippage risk.";
+            else if (change24h > 300) verdict = "[FOMO WARNING] Coin is up over 300%. Buying now is extremely high risk. Wait for a dip.";
+            else if (volRatio > 50 && liqRatio > 10 && change24h < 150) verdict = "[STRONG SIGNAL] High volume, healthy liquidity, not over-extended. Good mathematical entry.";
+            else if (volRatio < 10 && rawFdv > 100000) verdict = "[DEAD ZONE] Very low trading volume compared to Market Cap. Hype might be dying.";
+            else verdict = "[NEUTRAL] Ratios are average. Trade carefully.";
+        }
+
+        // --- 4. FETCH SECURITY AUDIT (GoPlus) ---
+        const chainMap = {
+            'ethereum': '1', 'bsc': '56', 'base': '8453', 'arbitrum': '42161',
+            'polygon': '137', 'optimism': '10', 'avalanche': '43114'
+        };
+
+        let securityReport = "Security Audit: Not supported for this specific network or Solana.";
+
+        if (chainMap[chainStr]) {
+            await bot.editMessageText("[SYSTEM] Financials acquired. Running GoPlus smart contract audit...", { chat_id: chatId, message_id: loadMsg.message_id });
+            try {
+                const goPlusRes = await fetch(`https://api.gopluslabs.io/api/v1/token_security/${chainMap[chainStr]}?contract_addresses=${contractAddress}`);
+                const goPlusData = await goPlusRes.json();
+                
+                const lowerAddress = contractAddress.toLowerCase();
+                if (goPlusData.result && goPlusData.result[lowerAddress]) {
+                    const sec = goPlusData.result[lowerAddress];
+                    
+                    const isHoneypot = sec.is_honeypot === "1" ? "[DANGER] YES (Cannot Sell)" : "No";
+                    const canMint = sec.is_mintable === "1" ? "[WARNING] YES" : "No";
+                    const buyTax = sec.buy_tax ? Math.round(parseFloat(sec.buy_tax) * 100) + "%" : "Unknown";
+                    const sellTax = sec.sell_tax ? Math.round(parseFloat(sec.sell_tax) * 100) + "%" : "Unknown";
+                    const isRenounced = (!sec.creator_address || sec.creator_address === "" || sec.creator_address.includes("0x00000000")) ? "Yes" : "No";
+
+                    securityReport = `*Security Audit (GoPlus)*
+Honeypot: ${isHoneypot}
+Buy Tax: ${buyTax}
+Sell Tax: ${sellTax}
+Mintable: ${canMint}
+Contract Renounced: ${isRenounced}`;
+                }
+            } catch (secError) {
+                securityReport = "Security Audit: Failed to connect to GoPlus API.";
+            }
+        }
+
+        // --- 5. MERGE AND DELIVER ---
+        const finalReport = `*Meme Coin Analysis*
+Token: ${pair.baseToken.name} (${pair.baseToken.symbol})
+Network: ${pair.chainId.toUpperCase()}
+
+*Financials (DexScreener)*
+Price: ${priceDisp}
+Market Cap: ${marketCapDisp}
+Liquidity: ${liquidityDisp}
+24h Volume: ${volumeDisp}
+
+*Chart Momentum*
+5M Change: ${change5m}%
+1H Change: ${change1h}%
+24H Change: ${change24h}%
+Status: ${chartStatus}
+
+${securityReport}
+
+*Final Conclusion*
+${verdict}
+
+*Contract:* \`${contractAddress}\``;
+
+        bot.editMessageText(finalReport, { 
+            chat_id: chatId, 
+            message_id: loadMsg.message_id, 
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true
+        });
+
+    } catch (error) {
+        bot.editMessageText(`[ERROR] Scan failed: ${error.message}`, { chat_id: chatId, message_id: loadMsg.message_id });
+    }
+});
+
+
+
 bot.onText(/\/book\s+(.+)/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -2003,184 +2182,6 @@ bot.on('message', async (msg) => {
         initializeWhatsApp(chatId, phoneNumber);
     }
 });
-
-
-
-
-
-
-bot.onText(/\/analyze (.+)/, async (msg, match) => {
-    const chatId = msg.chat.id.toString();
-    const adminId = process.env.ADMIN_ID || '7710721646';
-    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
-
-    const query = match[1].trim(); 
-
-    const loadMsg = await bot.sendMessage(chatId, "[SYSTEM] Initiating comprehensive blockchain scan...");
-
-    try {
-        // --- 1. FETCH FINANCIAL DATA (DexScreener Search API) ---
-        // This endpoint accepts both contract addresses AND names/tickers
-        const dexResponse = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query)}`);
-        const dexData = await dexResponse.json();
-
-        if (!dexData.pairs || dexData.pairs.length === 0) {
-            return bot.editMessageText("[ERROR] No trading data found for that name or address.", { chat_id: chatId, message_id: loadMsg.message_id });
-        }
-
-        // Filter out pairs with zero liquidity and sort by highest liquidity to find the "real" coin
-        const validPairs = dexData.pairs.filter(p => p.liquidity && p.liquidity.usd > 0);
-        
-        if (validPairs.length === 0) {
-            return bot.editMessageText("[ERROR] Found coins with that name, but they all have $0 liquidity (Dead/Scam coins).", { chat_id: chatId, message_id: loadMsg.message_id });
-        }
-
-        // Sort descending by liquidity. The real coin will always float to the top.
-        validPairs.sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
-        const pair = validPairs[0]; 
-        
-        const contractAddress = pair.baseToken.address;
-        const chainStr = pair.chainId.toLowerCase();
-
-        // Format Financials
-        const price = parseFloat(pair.priceUsd).toFixed(8);
-        const marketCap = pair.fdv ? `$${pair.fdv.toLocaleString()}` : 'Unknown';
-        const liquidity = pair.liquidity && pair.liquidity.usd ? `$${pair.liquidity.usd.toLocaleString()}` : 'Unknown';
-        const volume24h = pair.volume && pair.volume.h24 ? `$${pair.volume.h24.toLocaleString()}` : 'Unknown';
-        
-        // Timeframe Changes
-        const change5m = pair.priceChange?.m5 || 0;
-        const change1h = pair.priceChange?.h1 || 0;
-        const change6h = pair.priceChange?.h6 || 0;
-        const change24h = pair.priceChange?.h24 || 0;
-
-        // --- 2. MOMENTUM / CHART ANALYSIS ---
-        let chartStatus = "[STAGNANT] Sideways movement.";
-        
-        if (change1h < -20) {
-            chartStatus = `[CRASHING] The 1-hour chart is bleeding deeply (${change1h}%). Do not catch a falling knife.`;
-        } 
-        else if (change5m < -5 && change1h < 0) {
-            chartStatus = `[DUMPING] Short-term candles are red. Sellers are in control right now.`;
-        } 
-        else if (change1h > 20 && change5m > 5) {
-            chartStatus = `[PUMPING] Massive short-term breakout. Green candles forming across 5m and 1h charts!`;
-        } 
-        else if (change1h > 0 && change5m > 0 && change24h < 50) {
-            chartStatus = `[ACCUMULATION] Slow, steady green upward momentum without insane FOMO.`;
-        }
-
-        // --- 3. AUTONOMOUS VERDICT ENGINE ---
-        const rawFdv = pair.fdv || 0;
-        const rawLiq = pair.liquidity?.usd || 0;
-        const rawVol = pair.volume?.h24 || 0;
-
-        let verdict = "[VERDICT] INCONCLUSIVE - Not enough data.";
-        
-        if (rawFdv > 0 && rawLiq > 0) {
-            const liqRatio = (rawLiq / rawFdv) * 100;
-            const volRatio = (rawVol / rawFdv) * 100;
-
-            if (rawLiq < 5000) {
-                verdict = "[DANGER] CRITICAL LACK OF LIQUIDITY. Extreme rug-pull risk. Do not buy.";
-            } 
-            else if (liqRatio < 5) {
-                verdict = "[WARNING] Liquidity is too thin for this Market Cap. High slippage risk.";
-            } 
-            else if (change24h > 300) {
-                verdict = "[FOMO WARNING] Coin is up over 300%. Buying now is extremely high risk. Wait for a dip.";
-            } 
-            else if (volRatio > 50 && liqRatio > 10 && change24h < 150) {
-                verdict = "[STRONG SIGNAL] High volume, healthy liquidity, not over-extended. Good mathematical entry.";
-            } 
-            else if (volRatio < 10 && rawFdv > 100000) {
-                verdict = "[DEAD ZONE] Very low trading volume compared to Market Cap. Hype might be dying.";
-            } 
-            else {
-                verdict = "[NEUTRAL] Ratios are average. Trade carefully.";
-            }
-        }
-
-        // --- 4. FETCH SECURITY AUDIT (GoPlus Security) ---
-        const chainMap = {
-            'ethereum': '1',
-            'bsc': '56',
-            'base': '8453',
-            'arbitrum': '42161',
-            'polygon': '137',
-            'optimism': '10',
-            'avalanche': '43114'
-        };
-
-        let securityReport = "Security Audit: Not supported for this specific network or Solana.";
-
-        if (chainMap[chainStr]) {
-            await bot.editMessageText("[SYSTEM] Financials acquired. Running GoPlus smart contract audit...", { chat_id: chatId, message_id: loadMsg.message_id });
-            
-            try {
-                const goPlusRes = await fetch(`https://api.gopluslabs.io/api/v1/token_security/${chainMap[chainStr]}?contract_addresses=${contractAddress}`);
-                const goPlusData = await goPlusRes.json();
-                
-                const lowerAddress = contractAddress.toLowerCase();
-                if (goPlusData.result && goPlusData.result[lowerAddress]) {
-                    const sec = goPlusData.result[lowerAddress];
-                    
-                    const isHoneypot = sec.is_honeypot === "1" ? "[DANGER] YES (Cannot Sell)" : "No";
-                    const canMint = sec.is_mintable === "1" ? "[WARNING] YES" : "No";
-                    
-                    const buyTax = sec.buy_tax ? Math.round(parseFloat(sec.buy_tax) * 100) + "%" : "Unknown";
-                    const sellTax = sec.sell_tax ? Math.round(parseFloat(sec.sell_tax) * 100) + "%" : "Unknown";
-                    
-                    const isRenounced = (!sec.creator_address || sec.creator_address === "" || sec.creator_address.includes("0x00000000")) ? "Yes" : "No";
-
-                    securityReport = `*Security Audit (GoPlus)*
-Honeypot: ${isHoneypot}
-Buy Tax: ${buyTax}
-Sell Tax: ${sellTax}
-Mintable: ${canMint}
-Contract Renounced: ${isRenounced}`;
-                }
-            } catch (secError) {
-                securityReport = "Security Audit: Failed to connect to GoPlus API.";
-            }
-        }
-
-        // --- 5. MERGE AND DELIVER THE FINAL REPORT ---
-        const finalReport = `*Meme Coin Analysis*
-Token: ${pair.baseToken.name} (${pair.baseToken.symbol})
-Network: ${pair.chainId.toUpperCase()}
-
-*Financials (DexScreener)*
-Price: $${price}
-Market Cap: ${marketCap}
-Liquidity: ${liquidity}
-24h Volume: ${volume24h}
-
-*Chart Momentum*
-5M Change: ${change5m}%
-1H Change: ${change1h}%
-24H Change: ${change24h}%
-Status: ${chartStatus}
-
-${securityReport}
-
-*Final Conclusion*
-${verdict}
-
-*Contract:* \`${contractAddress}\``;
-
-        bot.editMessageText(finalReport, { 
-            chat_id: chatId, 
-            message_id: loadMsg.message_id, 
-            parse_mode: 'Markdown',
-            disable_web_page_preview: true
-        });
-
-    } catch (error) {
-        bot.editMessageText(`[ERROR] Scan failed: ${error.message}`, { chat_id: chatId, message_id: loadMsg.message_id });
-    }
-});
-
 
 
 
