@@ -278,14 +278,15 @@ async function getNgnRate() {
 
 
 
-// --- THE AUTONOMOUS MEME COIN RADAR ---
+
+// --- THE AUTONOMOUS SOLANA SNIPER RADAR ---
 const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
 
 async function runMemeRadar() {
     try {
         const now = Date.now();
 
-        // 1. Fetch memory from PostgreSQL
+        // 1. Fetch memory from PostgreSQL to prevent 24h spam
         const dbRes = await pool.query('SELECT contract_address, last_alert_time, last_price FROM meme_radar_alerts');
         const knownCoins = new Map();
         dbRes.rows.forEach(row => knownCoins.set(row.contract_address, row));
@@ -297,6 +298,9 @@ async function runMemeRadar() {
 
         const addressesToScan = [];
         for (let token of newTokens) {
+            // STRICT FILTER: We ONLY want Solana coins
+            if (token.chainId !== 'solana') continue;
+
             const addr = token.tokenAddress;
             if (knownCoins.has(addr)) {
                 const coinData = knownCoins.get(addr);
@@ -306,10 +310,10 @@ async function runMemeRadar() {
                 }
             }
             addressesToScan.push(addr);
-            if (addressesToScan.length >= 30) break; // Respect API limits
+            if (addressesToScan.length >= 30) break; // Respect DexScreener API limits
         }
 
-        if (addressesToScan.length === 0) return; 
+        if (addressesToScan.length === 0) return; // No new Solana coins to scan
 
         // 3. Batch Fetch Financials
         const mathRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addressesToScan.join(',')}`);
@@ -325,17 +329,17 @@ async function runMemeRadar() {
             const rawFdv = pair.fdv || 0; 
             const rawPrice = parseFloat(pair.priceUsd) || 0;
 
-            // --- THE GAUNTLET FILTERS ---
+            // --- THE GAUNTLET FILTERS (Tuned for Micro-Caps) ---
             if (rawLiq < 2000) continue;
             if (rawVol < 5000) continue;
             if (rawFdv > 2000000) continue;
 
-            // --- 24-HOUR CHANGE CHECKER (For old coins) ---
+            // --- 24-HOUR CHANGE CHECKER (For returning coins) ---
             if (knownCoins.has(contractAddress)) {
                 const oldPrice = parseFloat(knownCoins.get(contractAddress).last_price);
                 if (oldPrice > 0) {
                     const priceDiff = Math.abs(rawPrice - oldPrice) / oldPrice;
-                    // If price hasn't moved by at least 15%, just update the timer silently and skip the alert
+                    // If price hasn't moved by at least 15%, update timer silently and skip alert
                     if (priceDiff < 0.15) {
                         await pool.query(
                             `UPDATE meme_radar_alerts SET last_alert_time = $1, last_price = $2 WHERE contract_address = $3`,
@@ -363,75 +367,38 @@ async function runMemeRadar() {
             else if (change1h > 20 && change5m > 5) chartStatus = `[PUMPING] Massive short-term breakout!`;
             else if (change1h > 0 && change5m > 0 && change24h < 50) chartStatus = `[ACCUMULATION] Steady upward momentum.`;
 
-                        // --- SECURITY AUDIT (GoPlus for EVM, RugCheck for Solana) ---
-            const chainStr = pair.chainId.toLowerCase();
-            const chainMap = { 'ethereum': '1', 'bsc': '56', 'base': '8453', 'arbitrum': '42161', 'polygon': '137', 'optimism': '10', 'avalanche': '43114' };
+            // --- SOLANA SECURITY AUDIT (RugCheck) ---
+            let securityReport = "RugCheck: Audit failed or timed out.";
             
-            let securityReport = "Security Audit: Not supported for this specific network.";
-            
-            if (chainMap[chainStr]) {
-                // EVM SECURITY (GoPlus)
-                try {
-                    const goPlusRes = await fetch(`https://api.gopluslabs.io/api/v1/token_security/${chainMap[chainStr]}?contract_addresses=${contractAddress}`);
-                    const goPlusData = await goPlusRes.json();
-                    const lowerAddress = contractAddress.toLowerCase();
+            try {
+                const rugRes = await fetch(`https://api.rugcheck.xyz/v1/tokens/${contractAddress}/report/summary`);
+                if (rugRes.ok) {
+                    const rugData = await rugRes.json();
                     
-                    if (goPlusData.result && goPlusData.result[lowerAddress]) {
-                        const sec = goPlusData.result[lowerAddress];
-                        const isHoneypot = sec.is_honeypot === "1" ? "[DANGER] YES (Cannot Sell)" : "No";
-                        const canMint = sec.is_mintable === "1" ? "[WARNING] YES" : "No";
-                        const buyTax = sec.buy_tax ? Math.round(parseFloat(sec.buy_tax) * 100) + "%" : "0%";
-                        const sellTax = sec.sell_tax ? Math.round(parseFloat(sec.sell_tax) * 100) + "%" : "0%";
-                        const isRenounced = (!sec.creator_address || sec.creator_address === "" || sec.creator_address.includes("0x00000000")) ? "Yes" : "No";
-
-                        securityReport = `*Security Audit (GoPlus)*
-Honeypot: ${isHoneypot}
-Taxes: ${buyTax} Buy | ${sellTax} Sell
-Mintable: ${canMint}
-Renounced: ${isRenounced}`;
-                    }
-                } catch (e) {
-                    securityReport = "Security Audit: Failed to fetch EVM audit.";
-                }
-            } 
-            else if (chainStr === 'solana') {
-                // SOLANA SECURITY (RugCheck)
-                try {
-                    const rugRes = await fetch(`https://api.rugcheck.xyz/v1/tokens/${contractAddress}/report/summary`);
-                    if (rugRes.ok) {
-                        const rugData = await rugRes.json();
-                        
-                        // Parse Rugcheck Risks
-                        let mintAuth = "Revoked (Safe)";
-                        let freezeAuth = "Revoked (Safe)";
-                        let topHoldersRisk = "Safe";
-                        
-                        if (rugData.risks && rugData.risks.length > 0) {
-                            for (let risk of rugData.risks) {
-                                const riskName = risk.name.toLowerCase();
-                                if (riskName.includes("mint")) mintAuth = "[DANGER] Active (Dev can print coins)";
-                                if (riskName.includes("freeze")) freezeAuth = "[DANGER] Active (Dev can freeze you)";
-                                if (riskName.includes("top 10") && risk.level === "danger") topHoldersRisk = "[WARNING] Top 10 hold too much supply";
-                            }
+                    let mintAuth = "Revoked (Safe)";
+                    let freezeAuth = "Revoked (Safe)";
+                    let topHoldersRisk = "Safe";
+                    
+                    if (rugData.risks && rugData.risks.length > 0) {
+                        for (let risk of rugData.risks) {
+                            const riskName = risk.name.toLowerCase();
+                            if (riskName.includes("mint")) mintAuth = "[DANGER] Active (Dev can print coins)";
+                            if (riskName.includes("freeze")) freezeAuth = "[DANGER] Active (Dev can freeze wallets)";
+                            if (riskName.includes("top 10") && risk.level === "danger") topHoldersRisk = "[WARNING] Top holders own too much supply";
                         }
-                        
-                        const scoreVerdict = rugData.riskScore > 5000 ? "[DANGER] High Risk Score" : "Good / Low Risk";
-
-                        securityReport = `*Security Audit (RugCheck)*
-Overall Score: ${scoreVerdict}
-Mint Authority: ${mintAuth}
-Freeze Authority: ${freezeAuth}
-Holder Risk: ${topHoldersRisk}`;
                     }
-                } catch (e) {
-                    securityReport = "Security Audit: Failed to fetch Solana audit.";
-                }
-            }
+                    
+                    const scoreVerdict = rugData.riskScore > 5000 ? "[DANGER] High Risk Score" : "Good / Low Risk";
 
+                    securityReport = `Overall Score: ${scoreVerdict}\nMint Authority: ${mintAuth}\nFreeze Authority: ${freezeAuth}\nHolder Risk: ${topHoldersRisk}`;
+                }
+            } catch (e) {
+                console.log("[RugCheck Error]", e.message);
+            }
 
             // --- BUILD FINAL DETAILED MESSAGE ---
             const alertMsg = `
-[NEW GEM DETECTED BY RADAR]
+[NEW SOLANA GEM DETECTED]
 
 Token: ${pair.baseToken.name} (${pair.baseToken.symbol})
 Chain: ${pair.chainId.toUpperCase()}
@@ -448,7 +415,7 @@ Liquidity: $${rawLiq.toLocaleString()} (₦${liqNgn.toLocaleString(undefined, {m
 24H Change: ${change24h}%
 Status: ${chartStatus}
 
-*Security Audit*
+*Security Audit (RugCheck)*
 ${securityReport}
 
 Contract Address (Tap to copy):
@@ -458,13 +425,12 @@ Contract Address (Tap to copy):
             `;
 
             // --- DELIVER ALERT ---
-            // If CHANNELRADAR_ID is missing or fails, it falls back to your personal ADMIN_ID
             const targetChannel = process.env.CHANNELRADAR_ID || process.env.ADMIN_ID; 
             
             try {
                 await bot.sendMessage(targetChannel, alertMsg, { parse_mode: 'Markdown', disable_web_page_preview: true });
                 
-                // SAVE TO DATABASE
+                // SAVE TO DATABASE TO PREVENT SPAM
                 await pool.query(
                     `INSERT INTO meme_radar_alerts (contract_address, last_alert_time, last_price) 
                      VALUES ($1, $2, $3) 
@@ -474,7 +440,6 @@ Contract Address (Tap to copy):
                 );
             } catch (err) {
                 console.log(`[Radar Error] Failed to send to ${targetChannel}:`, err.message);
-                // If the channel fails (usually due to ID error), send a warning to the Admin DMs
                 if (targetChannel !== process.env.ADMIN_ID) {
                     bot.sendMessage(process.env.ADMIN_ID, `[SYSTEM ERROR] Radar tried to post to channel ${targetChannel} but was blocked. Ensure the Bot is an Admin and the ID starts with -100.`).catch(()=>{});
                 }
@@ -487,6 +452,7 @@ Contract Address (Tap to copy):
 
 // Start the Radar! Runs every 60 seconds.
 setInterval(runMemeRadar, 60000);
+
 
 
 
