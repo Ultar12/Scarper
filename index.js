@@ -363,13 +363,14 @@ async function runMemeRadar() {
             else if (change1h > 20 && change5m > 5) chartStatus = `[PUMPING] Massive short-term breakout!`;
             else if (change1h > 0 && change5m > 0 && change24h < 50) chartStatus = `[ACCUMULATION] Steady upward momentum.`;
 
-            // --- SECURITY AUDIT (GoPlus) ---
+                        // --- SECURITY AUDIT (GoPlus for EVM, RugCheck for Solana) ---
             const chainStr = pair.chainId.toLowerCase();
             const chainMap = { 'ethereum': '1', 'bsc': '56', 'base': '8453', 'arbitrum': '42161', 'polygon': '137', 'optimism': '10', 'avalanche': '43114' };
             
-            let securityReport = "Not supported for this network (e.g., Solana).";
+            let securityReport = "Security Audit: Not supported for this specific network.";
             
             if (chainMap[chainStr]) {
+                // EVM SECURITY (GoPlus)
                 try {
                     const goPlusRes = await fetch(`https://api.gopluslabs.io/api/v1/token_security/${chainMap[chainStr]}?contract_addresses=${contractAddress}`);
                     const goPlusData = await goPlusRes.json();
@@ -379,14 +380,54 @@ async function runMemeRadar() {
                         const sec = goPlusData.result[lowerAddress];
                         const isHoneypot = sec.is_honeypot === "1" ? "[DANGER] YES (Cannot Sell)" : "No";
                         const canMint = sec.is_mintable === "1" ? "[WARNING] YES" : "No";
+                        const buyTax = sec.buy_tax ? Math.round(parseFloat(sec.buy_tax) * 100) + "%" : "0%";
+                        const sellTax = sec.sell_tax ? Math.round(parseFloat(sec.sell_tax) * 100) + "%" : "0%";
                         const isRenounced = (!sec.creator_address || sec.creator_address === "" || sec.creator_address.includes("0x00000000")) ? "Yes" : "No";
 
-                        securityReport = `Honeypot: ${isHoneypot}\nMintable: ${canMint}\nRenounced: ${isRenounced}`;
+                        securityReport = `*Security Audit (GoPlus)*
+Honeypot: ${isHoneypot}
+Taxes: ${buyTax} Buy | ${sellTax} Sell
+Mintable: ${canMint}
+Renounced: ${isRenounced}`;
                     }
                 } catch (e) {
-                    securityReport = "Failed to fetch audit.";
+                    securityReport = "Security Audit: Failed to fetch EVM audit.";
+                }
+            } 
+            else if (chainStr === 'solana') {
+                // SOLANA SECURITY (RugCheck)
+                try {
+                    const rugRes = await fetch(`https://api.rugcheck.xyz/v1/tokens/${contractAddress}/report/summary`);
+                    if (rugRes.ok) {
+                        const rugData = await rugRes.json();
+                        
+                        // Parse Rugcheck Risks
+                        let mintAuth = "Revoked (Safe)";
+                        let freezeAuth = "Revoked (Safe)";
+                        let topHoldersRisk = "Safe";
+                        
+                        if (rugData.risks && rugData.risks.length > 0) {
+                            for (let risk of rugData.risks) {
+                                const riskName = risk.name.toLowerCase();
+                                if (riskName.includes("mint")) mintAuth = "[DANGER] Active (Dev can print coins)";
+                                if (riskName.includes("freeze")) freezeAuth = "[DANGER] Active (Dev can freeze you)";
+                                if (riskName.includes("top 10") && risk.level === "danger") topHoldersRisk = "[WARNING] Top 10 hold too much supply";
+                            }
+                        }
+                        
+                        const scoreVerdict = rugData.riskScore > 5000 ? "[DANGER] High Risk Score" : "Good / Low Risk";
+
+                        securityReport = `*Security Audit (RugCheck)*
+Overall Score: ${scoreVerdict}
+Mint Authority: ${mintAuth}
+Freeze Authority: ${freezeAuth}
+Holder Risk: ${topHoldersRisk}`;
+                    }
+                } catch (e) {
+                    securityReport = "Security Audit: Failed to fetch Solana audit.";
                 }
             }
+
 
             // --- BUILD FINAL DETAILED MESSAGE ---
             const alertMsg = `
