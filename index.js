@@ -253,6 +253,62 @@ const AUTHORIZED = [ADMIN_ID, ...SUBADMIN_IDS].filter(id => id !== '');
 
 console.log(`[SYSTEM] Authorized Admins: ${AUTHORIZED.join(', ')}`);
 
+// --- EXTERNAL DOWNLOAD API SERVICE ---
+// Usage: GET http://your-heroku-app-name.herokuapp.com/api/download?url=https://www...
+app.get('/api/download', async (req, res) => {
+    const url = req.query.url;
+    
+    if (!url) {
+        return res.status(400).json({ error: "Missing 'url' parameter." });
+    }
+
+    try {
+        // --- 1. TIKTOK LOGIC ---
+        if (url.includes('tiktok.com')) {
+            const response = await axios.get(`https://www.tikwm.com/api/?url=${url}&hd=1`);
+            const data = response.data.data;
+
+            if (!data) throw new Error("Could not extract TikTok data.");
+
+            // A. If it's an Image Slideshow -> Return JSON list of image URLs
+            if (data.images && data.images.length > 0) {
+                return res.status(200).json({
+                    type: "images",
+                    message: "TikTok image carousel extracted.",
+                    urls: data.images
+                });
+            }
+
+            // B. If it's a Video -> Redirect the browser directly to the raw MP4 stream
+            const videoUrl = data.hdplay || data.play;
+            return res.redirect(videoUrl);
+        }
+
+        // --- 2. FALLBACK IG / YOUTUBE / TWITTER LOGIC (yt-dlp) ---
+        const videoPath = path.join(__dirname, `api_dl_${Date.now()}.mp4`);
+
+        await youtubedl(url, {
+            output: videoPath,
+            format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            mergeOutputFormat: 'mp4',
+            noWarnings: true
+        });
+
+        // Pipe the physical file back to the external client
+        res.download(videoPath, 'downloaded_video.mp4', (err) => {
+            // Delete the file from Heroku storage immediately after sending it
+            if (fs.existsSync(videoPath)) {
+                fs.unlinkSync(videoPath);
+            }
+        });
+
+    } catch (err) {
+        // If it fails, send a clean JSON error response
+        res.status(500).json({ error: err.message });
+    }
+});
+
+
 
 // --- 2. HEROKU WEB SERVER SETUP ---
 const app = express(); // 1. Create the app first!
