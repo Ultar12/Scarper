@@ -93,6 +93,38 @@ pool.query(`
 .catch(console.error);
 
 
+// --- TRENCH TRACKER DATABASE INITIALIZATION ---
+pool.query(`
+    CREATE TABLE IF NOT EXISTS tracked_tokens (
+        contract_address VARCHAR(100) PRIMARY KEY,
+        symbol VARCHAR(50),
+        name VARCHAR(100),
+        initial_mc NUMERIC,
+        ath_mc NUMERIC,
+        is_manual BOOLEAN,
+        added_time BIGINT
+    );
+    CREATE TABLE IF NOT EXISTS tracking_batch (
+        id SERIAL PRIMARY KEY,
+        start_time BIGINT,
+        day1_done BOOLEAN DEFAULT FALSE,
+        day2_done BOOLEAN DEFAULT FALSE,
+        day3_done BOOLEAN DEFAULT FALSE
+    );
+`)
+.then(() => console.log('[SYSTEM] Trench Tracker DB Ready.'))
+.catch(console.error);
+
+// Helper function to format Market Caps (e.g., 5700 -> 5.7K)
+function formatMC(num) {
+    if (!num) return '0';
+    if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+    if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+    return num.toFixed(0);
+}
+
+
+
 // --- M4U VERIFIED NUMBERS DATABASE ---
 pool.query(`CREATE TABLE IF NOT EXISTS m4u_linked_numbers (phone_number VARCHAR(20) PRIMARY KEY);`)
     .then(() => console.log('[SYSTEM] M4U Verified Numbers DB Ready.'))
@@ -277,179 +309,196 @@ async function getNgnRate() {
 }
 
 
+// --- RICK-STYLE REPORT GENERATOR ---
+async function generateTrenchReport(timeframeLabel) {
+    const res = await pool.query('SELECT * FROM tracked_tokens');
+    const tokens = res.rows;
+    if (tokens.length === 0) return null;
+
+    let totalGain = 0;
+    let hit2x = 0;
+    let hit5x = 0;
+    
+    // Calculate multipliers for each token
+    const performance = tokens.map(t => {
+        const initial = parseFloat(t.initial_mc) || 1;
+        const ath = parseFloat(t.ath_mc) || 0;
+        const multiplier = ath / initial;
+        return { ...t, multiplier };
+    });
+
+    // Sort by biggest winners
+    performance.sort((a, b) => b.multiplier - a.multiplier);
+
+    performance.forEach(t => {
+        totalGain += t.multiplier;
+        if (t.multiplier >= 2) hit2x++;
+        if (t.multiplier >= 5) hit5x++;
+    });
+
+    const avgGain = (totalGain / tokens.length).toFixed(1);
+    const top10 = performance.slice(0, 10);
+    const top10Gain = top10.reduce((sum, t) => sum + t.multiplier, 0) / (top10.length || 1);
+    
+    // Median calculation
+    const mid = Math.floor(performance.length / 2);
+    const medianGain = performance.length % 2 !== 0 ? performance[mid].multiplier : (performance[mid - 1].multiplier + performance[mid].multiplier) / 2;
+
+    const rate2x = Math.round((hit2x / tokens.length) * 100);
+    const rate5x = Math.round((hit5x / tokens.length) * 100);
+
+    let report = `[ALPHA REPORT] ${timeframeLabel}\n`;
+    report += `Tokens: ${tokens.length}\n`;
+    report += `Average gain: ${avgGain}x | Top 10 avg: ${top10Gain.toFixed(1)}x\n`;
+    report += `Median: ${medianGain.toFixed(1)}x\n`;
+    report += `Hit rate 5x: ${rate5x}% | Hit rate 2x: ${rate2x}%\n`;
+    report += `Network: SOLANA\n\n`;
+
+    // Build the Top 10 List
+    top10.forEach((t, i) => {
+        const initText = formatMC(parseFloat(t.initial_mc));
+        const athText = formatMC(parseFloat(t.ath_mc));
+        const multText = t.multiplier.toFixed(1) + 'x';
+        
+        report += `${i + 1}. ${t.symbol} @ ${initText} -> ${athText} [${multText}]\n`;
+        report += `   Contract: \`${t.contract_address}\`\n`;
+    });
+
+    return report;
+}
 
 
-// --- THE AUTONOMOUS SOLANA SNIPER RADAR ---
+
+// --- THE MASTER TRACKING ENGINE ---
 const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
 
-async function runMemeRadar() {
+async function runTrackingEngine() {
     try {
         const now = Date.now();
+        const targetChannel = process.env.CHANNELRADAR_ID || process.env.ADMIN_ID || "-1003897238505";
 
-        // 1. Fetch memory from PostgreSQL to prevent 24h spam
-        const dbRes = await pool.query('SELECT contract_address, last_alert_time, last_price FROM meme_radar_alerts');
-        const knownCoins = new Map();
-        dbRes.rows.forEach(row => knownCoins.set(row.contract_address, row));
+        // 1. Get current batch status
+        let batchRes = await pool.query('SELECT * FROM tracking_batch ORDER BY id DESC LIMIT 1');
+        let batch = batchRes.rows[0];
 
-        // 2. Fetch the latest updated token profiles
-        const response = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
-        if (!response.ok) return;
-        const newTokens = await response.json();
-
-        const addressesToScan = [];
-        for (let token of newTokens) {
-            // STRICT FILTER: We ONLY want Solana coins
-            if (token.chainId !== 'solana') continue;
-
-            const addr = token.tokenAddress;
-            if (knownCoins.has(addr)) {
-                const coinData = knownCoins.get(addr);
-                // If we alerted within the last 24 hours, skip it completely
-                if (now - parseInt(coinData.last_alert_time) < TWENTY_FOUR_HOURS) {
-                    continue; 
-                }
-            }
-            addressesToScan.push(addr);
-            if (addressesToScan.length >= 30) break; // Respect DexScreener API limits
+        // 2. CHECK IF WE NEED TO START A NEW BATCH
+        if (!batch) {
+            // No batch exists, start fresh
+            await pool.query('INSERT INTO tracking_batch (start_time) VALUES ($1)', [now]);
+            batchRes = await pool.query('SELECT * FROM tracking_batch ORDER BY id DESC LIMIT 1');
+            batch = batchRes.rows[0];
         }
 
-        if (addressesToScan.length === 0) return; // No new Solana coins to scan
+        const elapsedMs = now - parseInt(batch.start_time);
 
-        // 3. Batch Fetch Financials
-        const mathRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addressesToScan.join(',')}`);
-        const mathData = await mathRes.json();
-        if (!mathData.pairs) return;
-
-        const ngnRate = await getNgnRate();
-
-        for (let pair of mathData.pairs) {
-            const contractAddress = pair.baseToken.address;
-            const rawLiq = pair.liquidity?.usd || 0;
-            const rawVol = pair.volume?.h24 || 0;
-            const rawFdv = pair.fdv || 0; 
-            const rawPrice = parseFloat(pair.priceUsd) || 0;
-
-            // --- THE GAUNTLET FILTERS (Tuned for Micro-Caps) ---
-            if (rawLiq < 2000) continue;
-            if (rawVol < 5000) continue;
-            if (rawFdv > 2000000) continue;
-
-            // --- 24-HOUR CHANGE CHECKER (For returning coins) ---
-            if (knownCoins.has(contractAddress)) {
-                const oldPrice = parseFloat(knownCoins.get(contractAddress).last_price);
-                if (oldPrice > 0) {
-                    const priceDiff = Math.abs(rawPrice - oldPrice) / oldPrice;
-                    // If price hasn't moved by at least 15%, update timer silently and skip alert
-                    if (priceDiff < 0.15) {
-                        await pool.query(
-                            `UPDATE meme_radar_alerts SET last_alert_time = $1, last_price = $2 WHERE contract_address = $3`,
-                            [now, rawPrice, contractAddress]
-                        );
-                        continue; 
-                    }
-                }
-            }
-
-            // --- NGN CONVERSIONS ---
-            const priceNgn = rawPrice * ngnRate;
-            const fdvNgn = rawFdv * ngnRate;
-            const liqNgn = rawLiq * ngnRate;
-            const volNgn = rawVol * ngnRate;
-
-            // --- MOMENTUM ANALYSIS ---
-            const change5m = pair.priceChange?.m5 || 0;
-            const change1h = pair.priceChange?.h1 || 0;
-            const change24h = pair.priceChange?.h24 || 0;
-
-            let chartStatus = "[STAGNANT] Sideways movement.";
-            if (change1h < -20) chartStatus = `[CRASHING] 1-hour chart bleeding (${change1h}%).`;
-            else if (change5m < -5 && change1h < 0) chartStatus = `[DUMPING] Short-term candles are red.`;
-            else if (change1h > 20 && change5m > 5) chartStatus = `[PUMPING] Massive short-term breakout!`;
-            else if (change1h > 0 && change5m > 0 && change24h < 50) chartStatus = `[ACCUMULATION] Steady upward momentum.`;
-
-            // --- SOLANA SECURITY AUDIT (RugCheck) ---
-            let securityReport = "RugCheck: Audit failed or timed out.";
+        // 3. DAY 3 COMPLETION (72 HOURS) -> Final Report & Wipe
+        if (elapsedMs >= TWENTY_FOUR_HOURS * 3 && !batch.day3_done) {
+            const report = await generateTrenchReport('DAY 3 FINAL REPORT');
+            if (report) await bot.sendMessage(targetChannel, report, { parse_mode: 'Markdown' });
             
-            try {
-                const rugRes = await fetch(`https://api.rugcheck.xyz/v1/tokens/${contractAddress}/report/summary`);
-                if (rugRes.ok) {
-                    const rugData = await rugRes.json();
+            // Delete the batch and all auto-added tokens to start completely fresh
+            await pool.query('DELETE FROM tracking_batch WHERE id = $1', [batch.id]);
+            await pool.query('DELETE FROM tracked_tokens WHERE is_manual = FALSE');
+            return; // Exit and let the next loop create a new batch
+        }
+
+        // 4. DAY 2 REPORT (48 HOURS)
+        if (elapsedMs >= TWENTY_FOUR_HOURS * 2 && !batch.day2_done) {
+            const report = await generateTrenchReport('DAY 2 UPDATE');
+            if (report) await bot.sendMessage(targetChannel, report, { parse_mode: 'Markdown' });
+            await pool.query('UPDATE tracking_batch SET day2_done = TRUE WHERE id = $1', [batch.id]);
+        }
+
+        // 5. DAY 1 REPORT (24 HOURS)
+        if (elapsedMs >= TWENTY_FOUR_HOURS && !batch.day1_done) {
+            const report = await generateTrenchReport('DAY 1 UPDATE');
+            if (report) await bot.sendMessage(targetChannel, report, { parse_mode: 'Markdown' });
+            await pool.query('UPDATE tracking_batch SET day1_done = TRUE WHERE id = $1', [batch.id]);
+        }
+
+        // 6. MANAGE THE 20 COIN ROSTER
+        const tokensRes = await pool.query('SELECT contract_address, ath_mc FROM tracked_tokens');
+        const trackedTokens = tokensRes.rows;
+        
+        // Count how many automatic tokens we currently have
+        const autoRes = await pool.query('SELECT COUNT(*) FROM tracked_tokens WHERE is_manual = FALSE');
+        const autoCount = parseInt(autoRes.rows[0].count);
+
+        if (autoCount < 20) {
+            // Need to hunt for new tokens to fill the roster
+            const newProfilesRes = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
+            if (newProfilesRes.ok) {
+                const newTokens = await newProfilesRes.json();
+                const addressesToScan = [];
+                
+                for (let token of newTokens) {
+                    if (token.chainId === 'solana' && !trackedTokens.find(t => t.contract_address === token.tokenAddress)) {
+                        addressesToScan.push(token.tokenAddress);
+                    }
+                    if (addressesToScan.length >= 30) break;
+                }
+
+                if (addressesToScan.length > 0) {
+                    const mathRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addressesToScan.join(',')}`);
+                    const mathData = await mathRes.json();
                     
-                    let mintAuth = "Revoked (Safe)";
-                    let freezeAuth = "Revoked (Safe)";
-                    let topHoldersRisk = "Safe";
-                    
-                    if (rugData.risks && rugData.risks.length > 0) {
-                        for (let risk of rugData.risks) {
-                            const riskName = risk.name.toLowerCase();
-                            if (riskName.includes("mint")) mintAuth = "[DANGER] Active (Dev can print coins)";
-                            if (riskName.includes("freeze")) freezeAuth = "[DANGER] Active (Dev can freeze wallets)";
-                            if (riskName.includes("top 10") && risk.level === "danger") topHoldersRisk = "[WARNING] Top holders own too much supply";
+                    if (mathData.pairs) {
+                        let added = 0;
+                        for (let pair of mathData.pairs) {
+                            if (added + autoCount >= 20) break; // Don't exceed 20 auto coins
+
+                            const rawLiq = pair.liquidity?.usd || 0;
+                            const rawVol = pair.volume?.h24 || 0;
+                            const rawFdv = pair.fdv || 0; 
+                            
+                            // Gauntlet
+                            if (rawLiq < 2000 || rawVol < 5000 || rawFdv > 2000000 || rawFdv === 0) continue;
+
+                            // Insert into DB
+                            await pool.query(
+                                `INSERT INTO tracked_tokens (contract_address, symbol, name, initial_mc, ath_mc, is_manual, added_time) 
+                                 VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING`,
+                                [pair.baseToken.address, pair.baseToken.symbol, pair.baseToken.name, rawFdv, rawFdv, false, now]
+                            );
+                            added++;
                         }
                     }
-                    
-                    const scoreVerdict = rugData.riskScore > 5000 ? "[DANGER] High Risk Score" : "Good / Low Risk";
-
-                    securityReport = `Overall Score: ${scoreVerdict}\nMint Authority: ${mintAuth}\nFreeze Authority: ${freezeAuth}\nHolder Risk: ${topHoldersRisk}`;
                 }
-            } catch (e) {
-                console.log("[RugCheck Error]", e.message);
             }
+        }
 
-            // --- BUILD FINAL DETAILED MESSAGE ---
-            const alertMsg = `
-[NEW SOLANA GEM DETECTED]
-
-Token: ${pair.baseToken.name} (${pair.baseToken.symbol})
-Chain: ${pair.chainId.toUpperCase()}
-
-*Financials*
-Price: $${rawPrice.toFixed(6)} (₦${priceNgn.toFixed(4)})
-Market Cap: $${rawFdv.toLocaleString()} (₦${fdvNgn.toLocaleString(undefined, {maximumFractionDigits: 0})})
-Liquidity: $${rawLiq.toLocaleString()} (₦${liqNgn.toLocaleString(undefined, {maximumFractionDigits: 0})})
-24h Volume: $${rawVol.toLocaleString()} (₦${volNgn.toLocaleString(undefined, {maximumFractionDigits: 0})})
-
-*Chart Momentum*
-5M Change: ${change5m}%
-1H Change: ${change1h}%
-24H Change: ${change24h}%
-Status: ${chartStatus}
-
-*Security Audit (RugCheck)*
-${securityReport}
-
-Contract Address (Tap to copy):
-\`${contractAddress}\`
-
-[View on DexScreener](https://dexscreener.com/${pair.chainId}/${pair.pairAddress})
-            `;
-
-            // --- DELIVER ALERT ---
-            // Hardcoded fallback to guarantee routing
-            const targetChannel = process.env.CHANNELRADAR_ID || "-1003897238505"; 
-            
-            try {
-                await bot.sendMessage(targetChannel, alertMsg, { parse_mode: 'Markdown', disable_web_page_preview: true });
+        // 7. UPDATE ALL-TIME HIGHS FOR EXISTING TOKENS
+        if (trackedTokens.length > 0) {
+            // Split into batches of 30 for the DexScreener API limit
+            const addresses = trackedTokens.map(t => t.contract_address);
+            for (let i = 0; i < addresses.length; i += 30) {
+                const chunk = addresses.slice(i, i + 30);
+                const mathRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${chunk.join(',')}`);
                 
-                // SAVE TO DATABASE TO PREVENT SPAM
-                await pool.query(
-                    `INSERT INTO meme_radar_alerts (contract_address, last_alert_time, last_price) 
-                     VALUES ($1, $2, $3) 
-                     ON CONFLICT (contract_address) 
-                     DO UPDATE SET last_alert_time = EXCLUDED.last_alert_time, last_price = EXCLUDED.last_price`,
-                    [contractAddress, now, rawPrice]
-                );
-            } catch (err) {
-                console.log(`[Radar Error] Failed to send to ${targetChannel}:`, err.message);
+                if (mathRes.ok) {
+                    const mathData = await mathRes.json();
+                    if (mathData.pairs) {
+                        for (let pair of mathData.pairs) {
+                            const currentFdv = pair.fdv || 0;
+                            const dbToken = trackedTokens.find(t => t.contract_address === pair.baseToken.address);
+                            
+                            if (dbToken && currentFdv > parseFloat(dbToken.ath_mc)) {
+                                // NEW ATH DETECTED! Save it.
+                                await pool.query('UPDATE tracked_tokens SET ath_mc = $1 WHERE contract_address = $2', [currentFdv, pair.baseToken.address]);
+                            }
+                        }
+                    }
+                }
             }
         }
     } catch (err) {
-        console.log("[Radar Error]", err.message);
+        console.log("[Tracking Engine Error]", err.message);
     }
 }
 
-// Start the Radar! Runs every 60 seconds.
-setInterval(runMemeRadar, 60000);
+// Run the engine every 2 minutes
+setInterval(runTrackingEngine, 120000);
+
 
 
 
@@ -1877,6 +1926,45 @@ ${verdict}
         bot.editMessageText(`[ERROR] Scan failed: ${error.message}`, { chat_id: chatId, message_id: loadMsg.message_id });
     }
 });
+
+
+bot.onText(/\/monitor (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
+
+    const query = match[1].trim(); 
+    const loadMsg = await bot.sendMessage(chatId, "[SYSTEM] Searching and adding to Monitor List...");
+
+    try {
+        const dexResponse = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query)}`);
+        const dexData = await dexResponse.json();
+
+        const validPairs = (dexData.pairs || []).filter(p => p.liquidity && p.liquidity.usd > 0 && p.chainId === 'solana');
+        if (validPairs.length === 0) {
+            return bot.editMessageText("[ERROR] No valid Solana token found.", { chat_id: chatId, message_id: loadMsg.message_id });
+        }
+
+        validPairs.sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
+        const pair = validPairs[0]; 
+        
+        const contractAddress = pair.baseToken.address;
+        const initialMc = pair.fdv || 0;
+
+        await pool.query(
+            `INSERT INTO tracked_tokens (contract_address, symbol, name, initial_mc, ath_mc, is_manual, added_time) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7) 
+             ON CONFLICT (contract_address) DO NOTHING`,
+            [contractAddress, pair.baseToken.symbol, pair.baseToken.name, initialMc, initialMc, true, Date.now()]
+        );
+
+        bot.editMessageText(`[SUCCESS] Added ${pair.baseToken.symbol} to Tracking Engine at Market Cap: $${formatMC(initialMc)}`, { chat_id: chatId, message_id: loadMsg.message_id });
+
+    } catch (error) {
+        bot.editMessageText(`[ERROR] Monitor add failed: ${error.message}`, { chat_id: chatId, message_id: loadMsg.message_id });
+    }
+});
+
 
 
 
