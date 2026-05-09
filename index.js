@@ -3,6 +3,7 @@ process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
 const fs = require('fs');
 const { execSync } = require('child_process');
 const express = require('express');
+const youtubedl = require('youtube-dl-exec');
 const TelegramBot = require('node-telegram-bot-api');
 const { Client, RemoteAuth } = require('whatsapp-web.js');
 const { PostgresStore } = require('wwebjs-postgres');
@@ -2140,169 +2141,6 @@ bot.onText(/^\/wstask$/i, async (msg) => {
 
 
 
-bot.onText(/^\/testlogin$/i, async (msg) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
-
-    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Starting Firefox recording...');
-    const videoDir = path.join(__dirname, 'videos');
-    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
-
-    let browser = null;
-    let context = null;
-
-    try {
-        process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
-
-        browser = await firefox.launch({ 
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
-
-        context = await browser.newContext({
-            userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
-            viewport: { width: 412, height: 915 },
-            recordVideo: {
-                dir: videoDir,
-                size: { width: 412, height: 915 }
-            }
-        });
-
-        const page = await context.newPage();
-
-        // THE GLOBAL SNIPER: Targets the "OK" button on ANY page (Login or Homepage)
-                // THE HUMAN MOUSE SNIPER
-        await page.addInitScript(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => false });
-            
-            setInterval(() => {
-                // 1. Find the OK button
-                const okBtn = Array.from(document.querySelectorAll('*'))
-                    .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
-                
-                if (okBtn) {
-                    // 2. HUMAN-STYLE CLICK: Trigger a sequence of real pointer events
-                    const rect = okBtn.getBoundingClientRect();
-                    const x = rect.left + rect.width / 2;
-                    const y = rect.top + rect.height / 2;
-
-                    // Simulate a physical touch/mouse sequence
-                    const events = ['mousedown', 'mouseup', 'click'];
-                    events.forEach(type => {
-                        okBtn.dispatchEvent(new MouseEvent(type, {
-                            view: window,
-                            bubbles: true,
-                            cancelable: true,
-                            clientX: x,
-                            clientY: y
-                        }));
-                    });
-
-                    // 3. NUCLEAR OPTION: If the button is still there after 1 second, 
-                    // just delete the entire ad from the website's memory.
-                    setTimeout(() => {
-                        const modal = okBtn.closest('div[class*="modal"], div[class*="mask"], div[class*="popup"]');
-                        if (modal) modal.remove();
-                        
-                        // Clean up the blurred background
-                        document.body.style.setProperty('filter', 'none', 'important');
-                        document.body.style.setProperty('overflow', 'auto', 'important');
-                        document.body.style.setProperty('pointer-events', 'auto', 'important');
-                        
-                        // Remove any dark overlays
-                        const overlays = document.querySelectorAll('[class*="mask"], [class*="overlay"]');
-                        overlays.forEach(o => o.remove());
-                    }, 1000);
-                }
-            }, 500); // Check every half-second
-        });
-
-
-        await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(4000); 
-
-        // LOGIN PROCESS
-        const loginInput = await page.$('input[type="text"], input[type="tel"]');
-        if (loginInput) {
-            await page.fill('input[type="text"], input[type="tel"]', '09163916500');
-            await page.fill('input[type="password"]', 'Emmamama');
-            
-            const loginBtn = page.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last();
-            await loginBtn.dispatchEvent('click');
-            
-            // Wait for navigation to complete
-            await page.waitForURL('**/user', { timeout: 15000 }).catch(() => {});
-        }
-
-        // HOMEPAGE CHECK
-        // The sniper will work here automatically as the "Notice" appears
-        await page.waitForTimeout(6000); 
-
-        // Finalize Video
-        const video = page.video();
-        await context.close(); 
-        
-        if (video) {
-            const videoPath = await video.path();
-            await bot.sendVideo(chatId, videoPath, { 
-                caption: 'Session Video: Login + Homepage Sniper Check' 
-            });
-            setTimeout(() => { if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath); }, 5000);
-        }
-
-        await bot.deleteMessage(chat_id, statusMsg.message_id).catch(() => {});
-
-    } catch (err) {
-        await bot.sendMessage(chatId, `[ERROR]: ${err.message}`);
-    } finally {
-        if (browser) await browser.close();
-    }
-});
-
-
-
-
-
-// Listener for the actual file
-bot.on('document', async (msg) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID || userState[chatId] !== 'WAITING_FOR_APK') return;
-
-    if (!msg.document.file_name.endsWith('.apk')) {
-        return bot.sendMessage(chatId, '[ERROR] That is not an APK file. Please send the correct file.');
-    }
-
-    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] APK detected. Converting to public URL...');
-
-    try {
-        const fileId = msg.document.file_id;
-        const fileStream = bot.getFileStream(fileId);
-        const fileName = 'whatsapp.apk'; 
-        const savePath = path.join(__dirname, 'public', fileName);
-
-        const writeStream = fs.createWriteStream(savePath);
-        fileStream.pipe(writeStream);
-
-        writeStream.on('finish', async () => {
-            const baseUrl = process.env.APP_URL || `https://${process.env.HEROKU_APP_NAME}.herokuapp.com`;
-            const downloadUrl = `${baseUrl}/public/${fileName}`;
-
-            userState[chatId] = null; // Clear state
-            await bot.editMessageText(`[SUCCESS] APK Hosted Successfully!\n\nURL:\n\`${downloadUrl}\``, {
-                chat_id: chatId,
-                message_id: statusMsg.message_id,
-                parse_mode: 'Markdown'
-            });
-        });
-
-    } catch (err) {
-        bot.sendMessage(chatId, `[ERROR] Conversion failed: ${err.message}`);
-    }
-});
-
-
-
-
 
 // --- HANDLE "WITHDRAW" BUTTON TAP ---
 bot.onText(/^(?:\/withdraw|Withdraw)$/i, (msg) => {
@@ -2905,6 +2743,7 @@ bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
 });
 
 
+
 // Usage: /dl https://www.tiktok.com/@user/video/123456789
 bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
@@ -2994,7 +2833,6 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
         bot.editMessageText(`[ERROR] Download failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
     }
 });
-
 
 
 // Initiation Command
