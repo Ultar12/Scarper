@@ -322,13 +322,18 @@ async function generateTrenchReport(timeframeLabel) {
     let totalGain = 0;
     let hit2x = 0;
     let hit5x = 0;
+    let oldestTime = Date.now();
     
-    // Calculate multipliers for each token
+    // Calculate multipliers for each token and find the oldest
     const performance = tokens.map(t => {
         const initial = parseFloat(t.initial_mc) || 1;
         const ath = parseFloat(t.ath_mc) || 0;
         const multiplier = ath / initial;
-        return { ...t, multiplier };
+        
+        const addedTime = parseInt(t.added_time) || Date.now();
+        if (addedTime < oldestTime) oldestTime = addedTime;
+
+        return { ...t, multiplier, addedTime };
     });
 
     // Sort by biggest winners
@@ -351,21 +356,28 @@ async function generateTrenchReport(timeframeLabel) {
     const rate2x = Math.round((hit2x / tokens.length) * 100);
     const rate5x = Math.round((hit5x / tokens.length) * 100);
 
-    let report = `[ALPHA REPORT] ${timeframeLabel}\n`;
-    report += `Tokens: ${tokens.length}\n`;
-    report += `Average gain: ${avgGain}x | Top 10 avg: ${top10Gain.toFixed(1)}x\n`;
-    report += `Median: ${medianGain.toFixed(1)}x\n`;
-    report += `Hit rate 5x: ${rate5x}% | Hit rate 2x: ${rate2x}%\n`;
-    report += `Network: SOLANA\n\n`;
+    // Calculate "Oldest: Xd ago"
+    const elapsedMs = Date.now() - oldestTime;
+    const days = Math.floor(elapsedMs / (24 * 60 * 60 * 1000));
+    const hours = Math.floor((elapsedMs % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+    const oldestStr = days > 0 ? `${days}d ago` : `${hours}h ago`;
 
-    // Build the Top 10 List
+    // Strict Rick Bot formatting (No Emojis, using · and Δ symbols)
+    let report = `[ALPHA REPORT] ${timeframeLabel}\n`;
+    report += `Tokens: ${tokens.length} · Oldest: ${oldestStr}\n`;
+    report += `Average gain: ${parseFloat(avgGain)}x · Top 10: ${parseFloat(top10Gain.toFixed(1))}x\n`;
+    report += `Median: ${parseFloat(medianGain.toFixed(1))}x\n`;
+    report += `Hit rate 5x: ${rate5x}% · Hit rate 2x: ${rate2x}%\n`;
+    report += `SOL dominance: 100%\n\n`;
+
+    // Build the Top 10 List matching the screenshot exact layout
     top10.forEach((t, i) => {
         const initText = formatMC(parseFloat(t.initial_mc));
         const athText = formatMC(parseFloat(t.ath_mc));
-        const multText = t.multiplier.toFixed(1) + 'x';
+        const multText = parseFloat(t.multiplier.toFixed(1)) + 'x';
         
-        report += `${i + 1}. ${t.symbol} @ ${initText} -> ${athText} [${multText}]\n`;
-        report += `   Contract: \`${t.contract_address}\`\n`;
+        report += `${i + 1}. ${t.symbol} @ ${initText} -> ${athText} Δ ${multText}\n`;
+        report += `↳ Contract: \`${t.contract_address}\`\n`;
     });
 
     return report;
@@ -447,15 +459,22 @@ async function runTrackingEngine() {
                     const mathData = await mathRes.json();
                     
                     if (mathData.pairs) {
+                        // --- THE FIX: VOLUME IS KING ---
+                        // Sort pairs strictly by 24h volume to avoid high-liquidity honeypots and dead copycats
+                        mathData.pairs.sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0));
+
                         let added = 0;
                         for (let pair of mathData.pairs) {
                             if (added + autoCount >= 20) break; // Don't exceed 20 auto coins
+                            
+                            // Double check chain logic (DexScreener can sometimes group multi-chain pairs)
+                            if (pair.chainId !== 'solana') continue;
 
                             const rawLiq = pair.liquidity?.usd || 0;
                             const rawVol = pair.volume?.h24 || 0;
                             const rawFdv = pair.fdv || 0; 
                             
-                            // Gauntlet
+                            // THE GAUNTLET: Must be an active micro-cap
                             if (rawLiq < 2000 || rawVol < 5000 || rawFdv > 2000000 || rawFdv === 0) continue;
 
                             // Insert into DB
@@ -483,6 +502,9 @@ async function runTrackingEngine() {
                     const mathData = await mathRes.json();
                     if (mathData.pairs) {
                         for (let pair of mathData.pairs) {
+                            // Ensure we are matching the correct Solana pair
+                            if (pair.chainId !== 'solana') continue;
+                            
                             const currentFdv = pair.fdv || 0;
                             const dbToken = trackedTokens.find(t => t.contract_address === pair.baseToken.address);
                             
@@ -502,7 +524,6 @@ async function runTrackingEngine() {
 
 // Run the engine every 2 minutes
 setInterval(runTrackingEngine, 120000);
-
 
 
 
@@ -1879,7 +1900,9 @@ bot.onText(/\/analyze (.+)/, async (msg, match) => {
             return bot.editMessageText("[ERROR] Found coins with that name, but they all have $0 liquidity (Dead/Scam coins).", { chat_id: chatId, message_id: loadMsg.message_id });
         }
 
-        validPairs.sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
+        // --- THE FIX: VOLUME IS KING ---
+        // Sort strictly by 24h volume to avoid high-liquidity honeypots and dead copycats
+        validPairs.sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0));
         const pair = validPairs[0]; 
         
         const contractAddress = pair.baseToken.address;
@@ -1891,19 +1914,19 @@ bot.onText(/\/analyze (.+)/, async (msg, match) => {
         // --- MATH & CONVERSIONS ---
         const rawPriceUsd = parseFloat(pair.priceUsd) || 0;
         const priceNgn = rawPriceUsd * ngnRate;
-        const priceDisp = `$${rawPriceUsd.toFixed(8)} (₦${priceNgn.toFixed(8)})`;
+        const priceDisp = `$${rawPriceUsd.toFixed(8)} (NGN ${priceNgn.toFixed(8)})`;
 
         const rawFdv = pair.fdv || 0;
         const fdvNgn = rawFdv * ngnRate;
-        const marketCapDisp = rawFdv ? `$${rawFdv.toLocaleString()} (₦${fdvNgn.toLocaleString(undefined, {maximumFractionDigits: 0})})` : 'Unknown';
+        const marketCapDisp = rawFdv ? `$${rawFdv.toLocaleString()} (NGN ${fdvNgn.toLocaleString(undefined, {maximumFractionDigits: 0})})` : 'Unknown';
 
         const rawLiq = pair.liquidity?.usd || 0;
         const liqNgn = rawLiq * ngnRate;
-        const liquidityDisp = rawLiq ? `$${rawLiq.toLocaleString()} (₦${liqNgn.toLocaleString(undefined, {maximumFractionDigits: 0})})` : 'Unknown';
+        const liquidityDisp = rawLiq ? `$${rawLiq.toLocaleString()} (NGN ${liqNgn.toLocaleString(undefined, {maximumFractionDigits: 0})})` : 'Unknown';
 
         const rawVol = pair.volume?.h24 || 0;
         const volNgn = rawVol * ngnRate;
-        const volumeDisp = rawVol ? `$${rawVol.toLocaleString()} (₦${volNgn.toLocaleString(undefined, {maximumFractionDigits: 0})})` : 'Unknown';
+        const volumeDisp = rawVol ? `$${rawVol.toLocaleString()} (NGN ${volNgn.toLocaleString(undefined, {maximumFractionDigits: 0})})` : 'Unknown';
 
         // Timeframe Changes
         const change5m = pair.priceChange?.m5 || 0;
@@ -1969,7 +1992,7 @@ Contract Renounced: ${isRenounced}`;
         }
 
         // --- 5. MERGE AND DELIVER ---
-        const finalReport = `*Meme Coin Analysis*
+        const finalReport = `[MEME COIN ANALYSIS]
 Token: ${pair.baseToken.name} (${pair.baseToken.symbol})
 Network: ${pair.chainId.toUpperCase()}
 
@@ -2005,6 +2028,7 @@ ${verdict}
 });
 
 
+
 bot.onText(/\/monitor (.+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     const adminId = process.env.ADMIN_ID || '7710721646';
@@ -2022,7 +2046,9 @@ bot.onText(/\/monitor (.+)/, async (msg, match) => {
             return bot.editMessageText("[ERROR] No valid Solana token found.", { chat_id: chatId, message_id: loadMsg.message_id });
         }
 
-        validPairs.sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
+        // --- THE FIX: VOLUME IS KING ---
+        // Sort strictly by 24h volume to avoid high-liquidity honeypots and dead copycats
+        validPairs.sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0));
         const pair = validPairs[0]; 
         
         const contractAddress = pair.baseToken.address;
@@ -2043,6 +2069,38 @@ bot.onText(/\/monitor (.+)/, async (msg, match) => {
 });
 
 
+// Usage: /info (Shows the live status of all tracked coins instantly)
+bot.onText(/^\/info$/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
+
+    let statusMsg = await bot.sendMessage(chatId, "[SYSTEM] Generating on-demand roster report...");
+
+    try {
+        // Trigger the exact same Rick-style generator used for the 24h/48h auto-reports
+        const report = await generateTrenchReport('LIVE ROSTER STATUS');
+        
+        if (!report) {
+            return bot.editMessageText("[SYSTEM] The tracking engine is currently empty. No coins are being monitored.", { 
+                chat_id: chatId, 
+                message_id: statusMsg.message_id 
+            });
+        }
+
+        bot.editMessageText(report, { 
+            chat_id: chatId, 
+            message_id: statusMsg.message_id,
+            disable_web_page_preview: true
+        });
+
+    } catch (err) {
+        bot.editMessageText(`[ERROR] Failed to generate info report: ${err.message}`, { 
+            chat_id: chatId, 
+            message_id: statusMsg.message_id 
+        });
+    }
+});
 
 
 bot.onText(/\/book\s+(.+)/i, async (msg, match) => {
