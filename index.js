@@ -1185,8 +1185,8 @@ app.post('/api/raganork-hook', async (req, res) => {
 
 
 
+
 // --- EXTERNAL DOWNLOAD API SERVICE ---
-// Usage: GET http://your-heroku-app-name.herokuapp.com/api/download?url=https://www...
 app.get('/api/download', async (req, res) => {
     const url = req.query.url;
     
@@ -1195,28 +1195,45 @@ app.get('/api/download', async (req, res) => {
     }
 
     try {
-        // --- 1. TIKTOK LOGIC ---
+        // --- 1. PRIMARY TIKTOK LOGIC ---
         if (url.includes('tiktok.com')) {
-            const response = await axios.get(`https://www.tikwm.com/api/?url=${url}&hd=1`);
-            const data = response.data.data;
+            try {
+                // FIX 1: Pass the raw url, exactly like the working Telegram /dl command
+                const response = await axios.get(`https://www.tikwm.com/api/?url=${url}&hd=1`);
+                const data = response.data.data;
 
-            if (!data) throw new Error("Could not extract TikTok data.");
+                if (data) {
+                    if (data.images && data.images.length > 0) {
+                        return res.status(200).json({
+                            type: "images",
+                            urls: data.images
+                        });
+                    }
 
-            // A. If it's an Image Slideshow -> Return JSON list of image URLs
-            if (data.images && data.images.length > 0) {
-                return res.status(200).json({
-                    type: "images",
-                    message: "TikTok image carousel extracted.",
-                    urls: data.images
-                });
+                    const videoUrl = data.hdplay || data.play;
+                    if (videoUrl) {
+                        // FIX 2: Do NOT redirect. Fetch the stream directly using a fake browser User-Agent
+                        // to bypass TikTok's bot blockers, then pipe it to the external bot.
+                        const videoStream = await axios({
+                            method: 'GET',
+                            url: videoUrl,
+                            responseType: 'stream',
+                            headers: {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
+                                'Referer': 'https://www.tiktok.com/'
+                            }
+                        });
+                        
+                        res.setHeader('Content-Type', 'video/mp4');
+                        return videoStream.data.pipe(res);
+                    }
+                }
+            } catch (tikError) {
+                console.log("[API ERROR] TikWM failed. Falling back to yt-dlp...");
             }
-
-            // B. If it's a Video -> Redirect the browser directly to the raw MP4 stream
-            const videoUrl = data.hdplay || data.play;
-            return res.redirect(videoUrl);
         }
 
-        // --- 2. FALLBACK IG / YOUTUBE / TWITTER LOGIC (yt-dlp) ---
+        // --- 2. FALLBACK ENGINE (IG, YouTube, Twitter) ---
         const videoPath = path.join(__dirname, `api_dl_${Date.now()}.mp4`);
 
         await youtubedl(url, {
@@ -1228,15 +1245,13 @@ app.get('/api/download', async (req, res) => {
 
         // Pipe the physical file back to the external client
         res.download(videoPath, 'downloaded_video.mp4', (err) => {
-            // Delete the file from Heroku storage immediately after sending it
             if (fs.existsSync(videoPath)) {
                 fs.unlinkSync(videoPath);
             }
         });
 
     } catch (err) {
-        // If it fails, send a clean JSON error response
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ error: `Engine extraction failed: ${err.message}` });
     }
 });
 
