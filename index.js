@@ -21,7 +21,6 @@ const { PuppeteerScreenRecorder } = require('puppeteer-screen-recorder');
 const playCache = {};
 
 // --- YOUTUBE AUTHENTICATION COMPILER ---
-const path = require('path');
 const cookiePath = path.join(__dirname, 'cookies.txt');
 
 
