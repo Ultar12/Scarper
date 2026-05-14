@@ -18,7 +18,7 @@ const axios = require('axios');
 
 
 const { PuppeteerScreenRecorder } = require('puppeteer-screen-recorder');
-
+const playCache = {};
 
 
 
@@ -1878,6 +1878,37 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
 
 
 
+
+// --- 2. THE COMMAND ACTIVATOR ---
+// Usage: /play [Song Name or Artist]
+bot.onText(/\/play\s+(.+)/, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
+
+    const query = match[1].trim();
+    playCache[chatId] = query; // Save the search term in memory
+
+    await bot.sendMessage(chatId, `[SYSTEM] Target Acquired: "${query}"\n\nSelect extraction format:`, {
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    { text: "Audio (MP3)", callback_data: "action_play_audio" },
+                    { text: "Video (MP4)", callback_data: "action_play_video" }
+                ],
+                [
+                    { text: "Cancel", callback_data: "action_play_cancel" }
+                ]
+            ]
+        }
+    });
+});
+
+
+
+
+
+
 bot.onText(/\/analyze (.+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     const adminId = process.env.ADMIN_ID || '7710721646';
@@ -2291,15 +2322,18 @@ bot.onText(/^(?:\/withdraw|Withdraw)$/i, (msg) => {
     });
 });
 
-// --- CALLBACK ROUTER (HANDLES SUB-MENU BUTTONS) ---
-bot.on('callback_query', async (query) => {
-    const chatId = query.message.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
+// --- UNIFIED CALLBACK ROUTER ---
+bot.on('callback_query', async (queryObj) => {
+    const chatId = queryObj.message.chat.id.toString();
+    const msgId = queryObj.message.message_id;
+    const data = queryObj.data;
 
-    const data = query.data;
-    bot.answerCallbackQuery(query.id).catch(()=>{});
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
 
-    // This perfectly forces Telegram to execute your text commands invisibly!
+    bot.answerCallbackQuery(queryObj.id).catch(()=>{});
+
+    // --- WITHDRAW COMMAND SIMULATOR ---
     const simulateCommand = (cmdText) => {
         bot.processUpdate({
             update_id: Date.now(),
@@ -2314,17 +2348,88 @@ bot.on('callback_query', async (query) => {
     };
 
     if (data === 'cmd_withdraw_m4u') {
-        bot.deleteMessage(chatId, query.message.message_id).catch(()=>{});
+        bot.deleteMessage(chatId, msgId).catch(()=>{});
         simulateCommand('/withdraw m4u');
+        return;
     }
     else if (data === 'cmd_withdraw_wsjob') {
-        bot.deleteMessage(chatId, query.message.message_id).catch(()=>{});
+        bot.deleteMessage(chatId, msgId).catch(()=>{});
         simulateCommand('/withdraw task');
+        return;
     }
     else if (data === 'cmd_cancel') {
-        bot.deleteMessage(chatId, query.message.message_id).catch(()=>{});
+        bot.deleteMessage(chatId, msgId).catch(()=>{});
+        return;
+    }
+
+    // --- PLAY COMMAND FORMAT SELECTOR ---
+    if (data === 'action_play_cancel') {
+        playCache[chatId] = null;
+        bot.deleteMessage(chatId, msgId).catch(()=>{});
+        return;
+    }
+
+    if (data.startsWith('action_play_')) {
+        const searchQuery = playCache[chatId];
+        if (!searchQuery) {
+            return bot.editMessageText(`[ERROR] Search memory expired. Please run the /play command again.`, { chat_id: chatId, message_id: msgId });
+        }
+
+        const isVideo = data === 'action_play_video';
+        const ext = isVideo ? 'mp4' : 'mp3';
+        const mediaPath = path.join(__dirname, `play_temp_${Date.now()}.${ext}`);
+
+        try {
+            await bot.editMessageText(`[SYSTEM] Engaging search engine for: "${searchQuery}"\nExtracting ${ext.toUpperCase()} format...`, { chat_id: chatId, message_id: msgId });
+
+            const dlOptions = isVideo ? {
+                format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                mergeOutputFormat: 'mp4',
+                output: mediaPath,
+                noWarnings: true
+            } : {
+                extractAudio: true,
+                audioFormat: 'mp3',
+                output: mediaPath,
+                noWarnings: true,
+                preferFreeFormats: true,
+                addMetadata: true
+            };
+
+            await youtubedl(`ytsearch1:${searchQuery}`, dlOptions);
+
+            if (fs.existsSync(mediaPath)) {
+                const stats = fs.statSync(mediaPath);
+                const fileSizeMB = stats.size / (1024 * 1024);
+
+                if (fileSizeMB > 49.5) {
+                    await bot.editMessageText(`[ERROR] Extracted file is too large (${fileSizeMB.toFixed(1)}MB). Telegram limit is 50MB.`, { chat_id: chatId, message_id: msgId });
+                } else {
+                    await bot.editMessageText(`[SYSTEM] Uploading ${fileSizeMB.toFixed(1)}MB ${ext.toUpperCase()} to Telegram...`, { chat_id: chatId, message_id: msgId });
+
+                    if (isVideo) {
+                        await bot.sendVideo(chatId, mediaPath, { caption: `[SUCCESS] Downloaded: ${searchQuery}` });
+                    } else {
+                        await bot.sendAudio(chatId, mediaPath, { caption: `[SUCCESS] Downloaded: ${searchQuery}` });
+                    }
+
+                    await bot.deleteMessage(chatId, msgId).catch(() => {});
+                }
+
+                fs.unlinkSync(mediaPath);
+            } else {
+                throw new Error("Engine finished but no file was generated.");
+            }
+
+        } catch (err) {
+            bot.editMessageText(`[ERROR] Engine extraction failed: ${err.message}`, { chat_id: chatId, message_id: msgId });
+            if (fs.existsSync(mediaPath)) fs.unlinkSync(mediaPath).catch(()=>{});
+        }
+
+        playCache[chatId] = null;
     }
 });
+
 
 
 bot.on('message', async (msg) => {
