@@ -2385,23 +2385,27 @@ bot.on('callback_query', async (queryObj) => {
         try {
             await bot.editMessageText(`[SYSTEM] Engaging search engine for: "${searchQuery}"\nExtracting ${ext.toUpperCase()} format...`, { chat_id: chatId, message_id: msgId });
 
-            const dlOptions = isVideo ? {
-                format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                mergeOutputFormat: 'mp4',
-                output: mediaPath,
-                cookies: cookiePath,
-                extractorArgs: 'youtube:player_client=android',
-                noWarnings: true
-            } : {
-                extractAudio: true,
-                audioFormat: 'mp3',
-                output: mediaPath,
-                cookies: cookiePath,
-                extractorArgs: 'youtube:player_client=android',
-                noWarnings: true,
-                preferFreeFormats: true,
-                addMetadata: true
-            };
+                    // The exact User-Agent from your Firefox Android browser
+        const myUserAgent = 'Mozilla/5.0 (Android 15; Mobile; rv:144.0) Gecko/144.0 Firefox/144.0';
+
+        const dlOptions = isVideo ? {
+            format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            mergeOutputFormat: 'mp4',
+            output: mediaPath,
+            cookies: cookiePath,
+            userAgent: myUserAgent, // Forces yt-dlp to disguise itself as your phone
+            noWarnings: true
+        } : {
+            extractAudio: true,
+            audioFormat: 'mp3',
+            output: mediaPath,
+            cookies: cookiePath,
+            userAgent: myUserAgent, // Forces yt-dlp to disguise itself as your phone
+            noWarnings: true,
+            preferFreeFormats: true,
+            addMetadata: true
+        };
+
 
             await youtubedl(`ytsearch1:${searchQuery}`, dlOptions);
 
