@@ -21,17 +21,8 @@ const { PuppeteerScreenRecorder } = require('puppeteer-screen-recorder');
 const playCache = {};
 
 // --- YOUTUBE AUTHENTICATION COMPILER ---
-const cookieData = require('./cookie.js');
+const path = require('path');
 const cookiePath = path.join(__dirname, 'cookies.txt');
-
-// Compile the JS string into a physical text file for the extraction engine
-try {
-    fs.writeFileSync(cookiePath, cookieData.trim());
-    console.log('[SYSTEM] YouTube Authentication Cookies compiled successfully.');
-} catch (err) {
-    console.error('[ERROR] Failed to compile cookies.txt:', err.message);
-}
-
 
 
 
