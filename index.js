@@ -2390,12 +2390,14 @@ bot.on('callback_query', async (queryObj) => {
                 mergeOutputFormat: 'mp4',
                 output: mediaPath,
                 cookies: cookiePath,
+                extractorArgs: 'youtube:player_client=android',
                 noWarnings: true
             } : {
                 extractAudio: true,
                 audioFormat: 'mp3',
                 output: mediaPath,
                 cookies: cookiePath,
+                extractorArgs: 'youtube:player_client=android',
                 noWarnings: true,
                 preferFreeFormats: true,
                 addMetadata: true
