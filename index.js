@@ -2407,7 +2407,12 @@ bot.on('callback_query', async (queryObj) => {
         };
 
 
-            await youtubedl(`ytsearch1:${searchQuery}`, dlOptions);
+                        // Temporarily remove noWarnings so the engine logs everything
+            delete dlOptions.noWarnings;
+
+            // Fire the extraction and capture the raw terminal output
+            const rawEngineOutput = await youtubedl(`ytsearch1:${searchQuery}`, dlOptions);
+            console.log(`[YT-DLP SUCCESS LOG]`, rawEngineOutput);
 
             if (fs.existsSync(mediaPath)) {
                 const stats = fs.statSync(mediaPath);
@@ -2429,17 +2434,26 @@ bot.on('callback_query', async (queryObj) => {
 
                 fs.unlinkSync(mediaPath);
             } else {
-                throw new Error("Engine finished but no file was generated.");
+                throw new Error("Engine finished but no file was generated. Check Heroku logs to see if FFmpeg is missing.");
             }
 
         } catch (err) {
-            bot.editMessageText(`[ERROR] Engine extraction failed: ${err.message}`, { chat_id: chatId, message_id: msgId });
+            console.error(`[YT-DLP FATAL ERROR LOG]`, err);
+            
+            // Extract the specific yt-dlp error message if it exists
+            let cleanError = err.message;
+            if (err.message && err.message.includes('ERROR:')) {
+                cleanError = err.message.split('\n').find(line => line.includes('ERROR:')) || err.message;
+            }
+            
+            bot.editMessageText(`[ERROR] Extraction failed:\n${cleanError}`, { chat_id: chatId, message_id: msgId });
             if (fs.existsSync(mediaPath)) fs.unlinkSync(mediaPath).catch(()=>{});
         }
 
         playCache[chatId] = null;
     }
 });
+
 
 
 
