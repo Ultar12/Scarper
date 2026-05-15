@@ -228,6 +228,15 @@ loadWSTaskStats();
 let activeTaskPages = [];
 let taskIdleTimer = null;
 
+
+// --- CONTINUOUS TASK MODE STATE ---
+let taskModeActive = false;
+let taskModeTimer = null;
+let autoScannerInterval = null; 
+let isTaskExecuting = false;    // Traffic light for the /task command
+let isRadarScanning = false;    // Traffic light for the background queue
+
+
   // Variables to track profit
 let initialBalanceText = "0";
 let initialBalanceNum = 0;
@@ -384,6 +393,119 @@ async function generateTrenchReport(timeframeLabel) {
     });
 
     return report;
+}
+
+
+
+// --- AUTONOMOUS TASK RADAR ENGINE (SEQUENTIAL MULTI-TARGET) ---
+async function runAutoTaskScanner(chatId) {
+    // Abort if task mode is off, if a strike is running, or if the radar is already busy
+    if (!taskModeActive || isTaskExecuting || isRadarScanning) return;
+    
+    isRadarScanning = true; // Lock the radar so the 90-second interval doesn't interrupt us
+
+    let scanContext = null;
+    let scanPage = null;
+    let targetsToStrike = []; // The queue
+
+    try {
+        if (!globalTaskBrowser || !globalTaskBrowser.isConnected()) {
+            isRadarScanning = false;
+            return; 
+        }
+
+        scanContext = await globalTaskBrowser.newContext({
+            userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
+            viewport: { width: 412, height: 915 }
+        });
+
+        scanPage = await scanContext.newPage();
+        await scanPage.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await scanPage.waitForTimeout(4000); 
+
+        // --- DOM FREQUENCY ANALYZER ---
+        const counts = await scanPage.evaluate(() => {
+            const btns = Array.from(document.querySelectorAll('*')).filter(el => 
+                el.innerText?.trim().toUpperCase() === 'SEND' && el.offsetParent !== null
+            );
+            
+            let tracker = {};
+            for (let btn of btns) {
+                let txt = btn.parentElement?.parentElement?.innerText || '';
+                let cleanTxt = txt.replace(/\s+/g, ' '); 
+                
+                let numMatch = cleanTxt.match(/[\d\*]{5,}(\d{2})/);
+                let suffix = numMatch ? numMatch[1] : (cleanTxt.match(/\d{2}(?=\D*$)/) || [])[0];
+
+                if (suffix) {
+                    tracker[suffix] = (tracker[suffix] || 0) + 1;
+                }
+            }
+            return tracker;
+        });
+
+        // --- QUEUE BUILDER ---
+        // Find ALL suffixes that appear 3 or more times
+        for (const [suffix, count] of Object.entries(counts)) {
+            if (count >= 3) {
+                targetsToStrike.push({ suffix, count });
+            }
+        }
+
+        // Sort them so the highest count goes first (e.g., 4 targets goes before 3 targets)
+        targetsToStrike.sort((a, b) => b.count - a.count);
+
+    } catch (err) {
+        console.log(`[RADAR ERROR] Scanner failed: ${err.message}`);
+    } finally {
+        if (scanContext) await scanContext.close().catch(() => {});
+    }
+
+
+    // --- SEQUENTIAL EXECUTION QUEUE ---
+    if (targetsToStrike.length > 0) {
+        const queueList = targetsToStrike.map(t => t.suffix).join(', ');
+        console.log(`[RADAR] Found ${targetsToStrike.length} valid clusters (${queueList}). Queuing sequential execution...`);
+        
+        await bot.sendMessage(chatId, `[RADAR DETECTED] Found ${targetsToStrike.length} valid clusters: \`${queueList}\`.\n\nLocking queue and initiating sequential strikes...`, { parse_mode: 'Markdown' });
+
+        for (let target of targetsToStrike) {
+            // Safety break: If you manually turn off Task Mode, stop processing the queue
+            if (!taskModeActive) break; 
+
+            resetTaskModeTimer(chatId); // Keep the bot awake
+
+            await bot.sendMessage(chatId, `[RADAR QUEUE] Triggering strike for suffix: \`${target.suffix}\` (${target.count} targets)`, { parse_mode: 'Markdown' });
+
+            // Fire the command
+            bot.processUpdate({
+                update_id: Date.now(),
+                message: {
+                    message_id: Date.now(),
+                    from: { id: parseInt(chatId) },
+                    chat: { id: parseInt(chatId), type: 'private' },
+                    date: Math.floor(Date.now() / 1000),
+                    text: `/task ${target.suffix}`
+                }
+            });
+
+            // Wait 2 seconds to guarantee the /task command registers and locks the `isTaskExecuting` variable
+            await new Promise(r => setTimeout(r, 2000));
+
+            // THE TRAFFIC LIGHT: This pauses the loop until the `/task` command finishes and unlocks the engine
+            while (isTaskExecuting) {
+                await new Promise(r => setTimeout(r, 2000));
+            }
+            
+            // Wait an extra 5 seconds before firing the next number in the queue to let the server breathe
+            await new Promise(r => setTimeout(r, 5000));
+        }
+        
+        await bot.sendMessage(chatId, `[RADAR QUEUE] All targets processed. Returning to silent background scan.`);
+    }
+
+    // Unlock the radar so it can scan again in 90 seconds
+    isRadarScanning = false; 
 }
 
 
@@ -2825,183 +2947,6 @@ bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
 });
 
 
-// --- UPGRADED ISOLATED TT COMMAND ---
-// Usage: /tt 127
-bot.onText(/\/tt\s+(\d+)/, async (msg, match) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
-
-    const targetSuffix = match[1]; 
-    let statusMsg = await bot.sendMessage(chatId, `[ISOLATED SYSTEM] Booting sequence for suffix: ${targetSuffix}...`);
-    const msgId = statusMsg.message_id;
-
-    const updateStatus = async (text) => {
-        await bot.editMessageText(text, { chat_id: chatId, message_id: msgId }).catch(() => {});
-    };
-
-    let ttBrowser = null;
-    let pages = []; 
-    let initialBalanceNum = 0;
-
-    try {
-        // --- 1. LAUNCH ISOLATED ENGINE ---
-        await updateStatus('[ISOLATED SYSTEM] Launching clean Chrome instance...');
-        ttBrowser = await puppeteer.launch({
-            headless: true,
-            executablePath: getChromePath(),
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-        });
-
-        const page1 = await ttBrowser.newPage();
-        pages.push(page1);
-        await page1.setViewport({ width: 412, height: 915 }); 
-        await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
-
-        // --- 2. LOGIN & INITIAL STATE ---
-        await updateStatus('[ISOLATED SYSTEM] Performing physical login...');
-        await page1.goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
-        
-        const allInputs = await page1.$$('input');
-        const visibleInputs = [];
-        for (let input of allInputs) {
-            if (await input.evaluate(el => el.offsetParent !== null)) visibleInputs.push(input);
-        }
-
-        if (visibleInputs.length >= 2) {
-            await visibleInputs[0].type('09163916311', { delay: 50 }); // Main account
-            await visibleInputs[1].type('Emmamama', { delay: 50 });
-            await page1.evaluate(() => {
-                const btns = Array.from(document.querySelectorAll('*'));
-                for (let b of btns) if (b.innerText?.trim() === 'Login') b.click();
-            });
-            await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-        }
-
-        // Get Initial Balance for Math
-        const initialText = await page1.evaluate(() => {
-            const match = document.body.innerText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
-            return match ? match[1] : '0';
-        });
-        initialBalanceNum = parseFloat(initialText.replace(/,/g, '')) || 0;
-
-                // --- 3. TARGET ACQUISITION & CLONE SPAWNING ---
-        await page1.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 4000));
-        await clearOnboardingPopups(page1, null); // Global sweeper
-
-        let targetCount = 0;
-
-        // The Safety Net: Loop twice in case the site lags
-        for (let attempt = 1; attempt <= 2; attempt++) {
-            await updateStatus(`[ISOLATED SYSTEM] Scanning for ${targetSuffix} (Attempt ${attempt}/2)...`);
-            
-            // Wait up to 10 seconds for the 'Send' buttons to actually spawn on the page
-            for (let i = 0; i < 10; i++) {
-                const tasksExist = await page1.evaluate(() => {
-                    return Array.from(document.querySelectorAll('*')).some(el => el.innerText && el.innerText.trim() === 'Send' && el.offsetParent !== null);
-                });
-                if (tasksExist) break;
-                await new Promise(r => setTimeout(r, 1000));
-            }
-
-            targetCount = await page1.evaluate((suffixStr) => {
-                const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim() === 'Send' && el.offsetParent !== null);
-                let count = 0;
-                for (let b of btns) {
-                    let txt = b.parentElement?.parentElement?.innerText || '';
-                    if (txt.includes(suffixStr)) count++;
-                }
-                return count > 4 ? 4 : count;
-            }, targetSuffix);
-
-            if (targetCount > 0) {
-                break; // Found them, break out of the retry loop!
-            } else if (attempt === 1) {
-                await updateStatus(`[ISOLATED SYSTEM] 0 targets found! Wsjobs is lagging. Hard-refreshing...`);
-                await page1.reload({ waitUntil: 'networkidle2' });
-                await new Promise(r => setTimeout(r, 5000)); 
-                await clearOnboardingPopups(page1, null); 
-            }
-        }
-
-        if (targetCount === 0) throw new Error(`0 targets found for ${targetSuffix}. Either the site is dead slow, or the numbers aren't there!`);
-
-        await updateStatus(`[ISOLATED SYSTEM] Found ${targetCount} targets. Spawning ${targetCount - 1} synchronized tabs...`);
-        
-        for (let i = 1; i < targetCount; i++) {
-            const p = await ttBrowser.newPage();
-            pages.push(p);
-            await p.setViewport({ width: 412, height: 915 });
-            await p.goto('https://www.wsjobs-ng.com/task', { waitUntil: 'networkidle2' });
-        }
-        
-        if (pages.length > 1) {
-            await new Promise(r => setTimeout(r, 3000));
-            await Promise.all(pages.slice(1).map(p => clearOnboardingPopups(p, null)));
-        }
-
-
-        // --- 4. THE STRIKE (GHOST CLICKS) ---
-        await updateStatus(`[ISOLATED SYSTEM] Executing synchronized strikes...`);
-        const clickResults = await Promise.all(pages.map((p, idx) => {
-            return p.evaluate((suffixStr, tabIndex) => {
-                const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim() === 'Send' && el.offsetParent !== null);
-                let matchCount = 0;
-                for (let b of btns) {
-                    let txt = b.parentElement?.parentElement?.innerText || '';
-                    if (txt.includes(suffixStr)) {
-                        if (matchCount === tabIndex) {
-                            b.click();
-                            return true;
-                        }
-                        matchCount++;
-                    }
-                }
-                return false;
-            }, targetSuffix, idx);
-        }));
-
-        await new Promise(r => setTimeout(r, 10000)); // Sync wait
-
-        // Synchronized Confirm
-        await Promise.all(pages.map(p => p.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('*'));
-            for (let el of elements) {
-                if (el.innerText?.trim() === 'Confirm' && el.offsetParent !== null) el.click();
-            }
-        })));
-
-        await updateStatus(`[ISOLATED SYSTEM] Clicks fired. Cooling down...`);
-        await new Promise(r => setTimeout(r, 15000));
-
-        // --- 5. FINAL RESULTS & CLEANUP ---
-        const finalTaskSnap = await pages[0].screenshot({ type: 'png' });
-        let currentBalanceText = "Unknown";
-        let earnedDisplay = "Unknown";
-
-        try {
-            await pages[0].goto('https://www.wsjobs-ng.com/user', { waitUntil: 'networkidle2' });
-            currentBalanceText = await pages[0].evaluate(() => {
-                const match = document.body.innerText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
-                return match ? match[1] : 'Unknown';
-            });
-            let finalNum = parseFloat(currentBalanceText.replace(/,/g, ''));
-            earnedDisplay = `+${(finalNum - initialBalanceNum).toFixed(2)}`;
-        } catch (e) {}
-
-        await bot.deleteMessage(chatId, msgId).catch(() => {});
-        await bot.sendPhoto(chatId, finalTaskSnap, { 
-            caption: `Profit: <code>${earnedDisplay}</code>\nBalance: <code>${currentBalanceText}</code>`,
-            parse_mode: 'HTML'
-        });
-
-    } catch (err) {
-        await updateStatus(`[ERROR] TT Sequence failed: ${err.message}`);
-    } finally {
-        if (ttBrowser) await ttBrowser.close().catch(() => {});
-    }
-});
-
 
 
 // Usage: /dl https://www.tiktok.com/@user/video/123456789
@@ -3728,93 +3673,103 @@ const updateStatus = async (text) => {
 
 
 
-bot.onText(/\/withdraw\s+task/i, async (msg) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
 
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting Firefox for Secure Withdrawal...`);
+ bot.onText(/\/withdraw\s+task/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
+
+    const TOTAL_TABS = 9;
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting ${TOTAL_TABS} Synchronized Firefox Tabs...`);
+
     const videoDir = path.join(__dirname, 'videos');
-    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
+    if (!fs.existsSync(videoDir)) {
+        fs.mkdirSync(videoDir);
+    }
 
     let browser = null;
     let context = null;
-    let page = null; 
-    
+
     try {
         process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
-
-        browser = await firefox.launch({ 
+        browser = await firefox.launch({
             headless: true,
             args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
 
+        // =========================================
+        // 1. CREATE ONE SHARED INCOGNITO CONTEXT
+        // =========================================
         context = await browser.newContext({
             userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
             viewport: { width: 412, height: 915 },
             recordVideo: { dir: videoDir, size: { width: 412, height: 915 } }
         });
 
-        page = await context.newPage();
+        const tabs = [];
 
-        // --- THE HUMAN SNIPER (MODAL KILLER) ---
-        await page.addInitScript(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => false });
-            setInterval(() => {
-                const okBtn = Array.from(document.querySelectorAll('*'))
-                    .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
-                if (okBtn) {
-                    const rect = okBtn.getBoundingClientRect();
-                    ['mousedown', 'mouseup', 'click'].forEach(type => {
-                        okBtn.dispatchEvent(new MouseEvent(type, {
-                            view: window, bubbles: true, cancelable: true, 
-                            clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2
-                        }));
-                    });
-                    setTimeout(() => {
-                        const modal = okBtn.closest('div[class*="modal"], div[class*="mask"], div[class*="popup"]');
-                        if (modal) modal.remove();
-                        document.body.style.filter = 'none';
-                        document.body.style.overflow = 'auto';
-                    }, 800);
-                }
-            }, 300);
-        });
+        // =========================================
+        // 2. SPAWN 9 TABS INSIDE THE SHARED CONTEXT
+        // =========================================
+        for (let i = 0; i < TOTAL_TABS; i++) {
+            const page = await context.newPage();
 
-        
+            // HUMAN SNIPER INJECTION (Applies to all tabs)
+            await page.addInitScript(() => {
+                Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                setInterval(() => {
+                    const okBtn = Array.from(document.querySelectorAll('*'))
+                        .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
+                    if (okBtn) {
+                        const rect = okBtn.getBoundingClientRect();
+                        ['mousedown', 'mouseup', 'click'].forEach(type => {
+                            okBtn.dispatchEvent(new MouseEvent(type, {
+                                view: window, bubbles: true, cancelable: true,
+                                clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2
+                            }));
+                        });
+                        setTimeout(() => {
+                            const modal = okBtn.closest('div[class*="modal"], div[class*="mask"], div[class*="popup"]');
+                            if (modal) modal.remove();
+                            document.body.style.filter = 'none';
+                            document.body.style.overflow = 'auto';
+                        }, 800);
+                    }
+                }, 300);
+            });
 
-        // Step 1: Account Login & Teleport
-        await bot.editMessageText('[SYSTEM] Navigating to Account...', { chat_id: chatId, message_id: statusMsg.message_id });
-        await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(4000);
-
-        const loginInput = await page.$('input[type="text"], input[type="tel"]');
-        if (loginInput) {
-            await page.fill('input[type="text"], input[type="tel"]', '09163916500');
-            await page.fill('input[type="password"]', 'Emmamama');
-            const loginBtn = page.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last();
-            await loginBtn.dispatchEvent('click');
-            await page.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
+            tabs.push(page);
         }
 
-        await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(5000); 
+        const mainPage = tabs[0];
 
-        // --- STEP 2: PRECISION BALANCE SCRAPER ---
-        const rawBalance = await page.evaluate(() => {
+        // =========================================
+        // 3. SEQUENTIAL LOGIN ON MAIN TAB
+        // =========================================
+        await bot.editMessageText(`[SYSTEM] Authenticating master session...`, { chat_id: chatId, message_id: statusMsg.message_id });
+
+        await mainPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        await mainPage.waitForTimeout(4000);
+
+        const loginInput = await mainPage.$('input[type="text"], input[type="tel"]');
+        if (loginInput) {
+            await mainPage.fill('input[type="text"], input[type="tel"]', '09163916500');
+            await mainPage.fill('input[type="password"]', 'Emmamama');
+            const loginBtn = mainPage.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last();
+            await loginBtn.dispatchEvent('click');
+            await mainPage.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
+        }
+
+        // =========================================
+        // 4. SEQUENTIAL BALANCE CHECK
+        // =========================================
+        await mainPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        await mainPage.waitForTimeout(5000);
+
+        const rawBalance = await mainPage.evaluate(() => {
             const allText = document.body.innerText;
             const decimalMatches = allText.match(/\d+\.\d{2}/g);
-            if (decimalMatches) {
-                const nums = decimalMatches.map(n => parseFloat(n));
-                return Math.max(...nums);
-            }
-            const generalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
-            if (generalMatches) {
-                const numbers = generalMatches
-                    .map(n => n.replace(/,/g, ''))
-                    .map(n => parseFloat(n))
-                    .filter(n => n > 100 && n < 100000); 
-                return numbers.length > 0 ? Math.max(...numbers) : 0;
-            }
+            if (decimalMatches) return Math.max(...decimalMatches.map(n => parseFloat(n)));
             return 0;
         });
 
@@ -3822,211 +3777,134 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         const targetAmount = tiers.find(t => rawBalance >= t);
 
         if (!targetAmount) {
-            const errSnap = await page.screenshot();
-            await bot.sendPhoto(chatId, errSnap, { 
-                caption: `[DIAGNOSTIC] Detected Balance: ${rawBalance}. Too low for withdrawal.` 
-            }, { filename: 'low_balance.png' });
-            throw new Error(`Balance ${rawBalance} is too low.`);
+            throw new Error(`Balance ${rawBalance} is too low to withdraw.`);
         }
 
-        await bot.editMessageText(`[SYSTEM] Target Acquired: ${targetAmount}. Proceeding to Saque...`, { 
-            chat_id: chatId, 
-            message_id: statusMsg.message_id 
-        }).catch(() => {});
+        await bot.editMessageText(`[SYSTEM] Target Locked: ${targetAmount}. Preparing ${TOTAL_TABS} tabs...`, { chat_id: chatId, message_id: statusMsg.message_id });
 
-                // Step 3: Withdraw Navigation & Execution
-        await page.goto('https://www.wsjobs-ng.com/account/withdraw', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(4000);
+        // =========================================
+        // 5. SYNCHRONIZED WITHDRAW PREPARATION
+        // =========================================
+        await Promise.all(tabs.map(async (page, index) => {
+            console.log(`[TAB ${index + 1}] Preparing...`);
 
-        // 1. Click the Amount Chip
-        await page.evaluate((amt) => {
-            const chips = Array.from(document.querySelectorAll('div, span, p, button, [class*="item"]'));
-            const targetChip = chips.find(c => c.innerText?.trim() === amt.toString() && c.offsetHeight > 0);
-            if (targetChip) {
-                targetChip.click();
-                // Force a "selected" state trigger
-                targetChip.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-        }, targetAmount);
+            await page.goto('https://www.wsjobs-ng.com/account/withdraw', { waitUntil: 'domcontentloaded' });
+            await page.waitForTimeout(4000);
 
-        // 2. IMPORTANT: Wait for the selection animation to finish and button to stabilize
-        await page.waitForTimeout(3000);
+            // CLICK AMOUNT
+            await page.evaluate((amt) => {
+                const chips = Array.from(document.querySelectorAll('div, span, p, button, [class*="item"]'));
+                const targetChip = chips.find(c => c.innerText?.trim() === amt.toString() && c.offsetHeight > 0);
+                if (targetChip) {
+                    targetChip.click();
+                    targetChip.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            }, targetAmount);
 
-                        // --- 3. NUCLEAR BUTTON STRIKE (FIREFOX COMPATIBLE) ---
-        await page.evaluate(() => {
-            // 1. ANNIHILATE POPUPS/MASKS RIGHT BEFORE THE CLICK
-            const overlays = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"]');
-            overlays.forEach(el => el.remove());
+            await page.waitForTimeout(3000);
 
-            const textBlockers = Array.from(document.querySelectorAll('div')).filter(el => 
-                el.innerText?.includes('Saka Yanzu') || el.innerText?.includes('Don Allah sauke App')
-            );
-            textBlockers.forEach(b => b.remove());
+            // CLICK WITHDRAW NOW
+            await page.evaluate(() => {
+                const mainBtn = Array.from(document.querySelectorAll('*')).find(b =>
+                    (b.innerText?.includes('WITHDRAW NOW') || b.innerText?.includes('SACAR AGORA')) && b.offsetHeight > 0
+                );
+                if (mainBtn) mainBtn.click();
+            });
 
-            // 2. LOCATE THE WITHDRAW BUTTON
-            const mainBtn = Array.from(document.querySelectorAll('*')).find(b => 
-                (b.innerText?.includes('WITHDRAW NOW') || b.innerText?.includes('SACAR AGORA')) && 
-                b.offsetHeight > 0 && 
-                window.getComputedStyle(b).display !== 'none'
-            );
+            await page.mouse.click(206, 320).catch(() => {});
+            await page.waitForTimeout(3000);
 
-            if (mainBtn) {
-                const rect = mainBtn.getBoundingClientRect();
-                const x = rect.left + rect.width / 2;
-                const y = rect.top + rect.height / 2;
+            // PASSWORD INPUT
+            const passInput = page.locator('input[type="password"], .modal-body input').last();
+            await passInput.waitFor({ state: 'visible', timeout: 15000 });
+            await passInput.click();
+            await passInput.type('111111', { delay: 100 });
+            await page.keyboard.press('Tab');
+            await page.waitForTimeout(1500);
 
-                // Fire coordinate-based MouseEvents (Works on Firefox/Mobile)
-                const createEvent = (type) => new MouseEvent(type, {
-                    bubbles: true,
-                    cancelable: true,
-                    view: window,
-                    clientX: x,
-                    clientY: y,
-                    buttons: 1
+            console.log(`[TAB ${index + 1}] READY FOR FINAL CONFIRM`);
+        }));
+
+        // =========================================
+        // 6. SYNCHRONIZED MASS CLICK (TABBATAR)
+        // =========================================
+        await bot.editMessageText(`[SYSTEM] ALL ${TOTAL_TABS} TABS READY. FIRING MASS CONFIRM...`, { chat_id: chatId, message_id: statusMsg.message_id });
+
+        await Promise.all(tabs.map(async (page, index) => {
+            try {
+                await page.evaluate(() => {
+                    const btns = Array.from(document.querySelectorAll('button, div, span'));
+                    const finalBtn = btns.reverse().find(b =>
+                        (b.innerText?.includes('Tabbatar Cirewa') || b.innerText?.includes('Confirm')) && b.offsetHeight > 0
+                    );
+
+                    if (finalBtn) {
+                        finalBtn.click();
+                        ['mousedown', 'mouseup', 'click'].forEach(type => {
+                            finalBtn.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+                        });
+                    }
                 });
 
-                // Human sequence: Press down, release, then click
-                mainBtn.dispatchEvent(createEvent('mousedown'));
-                mainBtn.dispatchEvent(createEvent('mouseup'));
-                mainBtn.dispatchEvent(createEvent('click'));
-                
-                // Bulletproof Backup: Native DOM click
-                mainBtn.click();
-                
-                return "STRIKE_EXECUTED";
-            } else {
-                throw new Error("Withdraw button not found in DOM");
+                await page.mouse.click(300, 720).catch(() => {});
+                await page.mouse.click(300, 700).catch(() => {});
+                console.log(`[TAB ${index + 1}] CONFIRMED`);
+            } catch (err) {
+                console.log(`[TAB ${index + 1}] ERROR: ${err.message}`);
             }
-        });
+        }));
 
-        // Physical Mouse Backup (Safe for Firefox)
-        await page.mouse.click(206, 320).catch(() => {}); 
+        // WAIT AFTER CLICK
+        await mainPage.waitForTimeout(5000);
 
-        await page.waitForTimeout(3000);
+        // =========================================
+        // 7. MAIN TAB FEEDBACK
+        // =========================================
+        await mainPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        await mainPage.waitForTimeout(5000);
 
+        const finalSnap = await mainPage.screenshot({ type: 'png' });
 
-    
-                   // --- STEP 4: PASSWORD & FINAL CONFIRM ---
-        const passInput = page.locator('input[type="password"], .modal-body input, [placeholder*="password"], [placeholder*="senha"]').last();
-        
-        // 1. Wait for modal visibility
-        await passInput.waitFor({ state: 'visible', timeout: 15000 });
-        
-        // 2. High-Precision Input & Force Blur
-        await passInput.click();
-        await page.evaluate(el => el.value = '', await passInput.elementHandle()); 
-        await passInput.type('111111', { delay: 100 }); 
-        await page.keyboard.press('Tab'); // CRITICAL: Forces the framework to lock in the PIN
-        await page.waitForTimeout(1500);
-
-        // --- 3. FINAL NUCLEAR STRIKE (TABBATAR CIREWA) ---
-        
-        // Phase A: Native Playwright Tap (Mobile emulation)
-        try {
-            const confirmBtn = page.locator('text=/Tabbatar Cirewa|Confirm|Confirmar/i').last();
-            await confirmBtn.tap({ force: true, delay: 150, timeout: 3000 });
-        } catch (e) {}
-
-        // Phase B: JS Mobile Touch Strike
-        await page.evaluate(() => {
-            // Annihilate transparent modal traps
-            const modalBlockers = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"]');
-            modalBlockers.forEach(el => el.remove());
-
-            // Reverse search to grab the deepest element
-            const elements = Array.from(document.querySelectorAll('button, div, span'));
-            const finalBtn = elements.reverse().find(b => 
-                (b.innerText?.includes('Tabbatar Cirewa') || b.innerText?.includes('Confirm')) && 
-                b.offsetHeight > 0
-            );
-
-            if (finalBtn) {
-                // Ascend to parent if it's just a span inside the button
-                let target = finalBtn;
-                if (target.tagName.toLowerCase() === 'SPAN' && target.parentElement) {
-                    target = target.parentElement;
-                }
-
-                const rect = target.getBoundingClientRect();
-                const x = rect.left + rect.width / 2;
-                const y = rect.top + rect.height / 2;
-
-                const evData = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
-                ['mousedown', 'mouseup', 'click'].forEach(t => target.dispatchEvent(new MouseEvent(t, evData)));
-
-                // Mobile Touch (Bypasses UI locks)
-                try {
-                    const touchObj = new Touch({ identifier: Date.now(), target: target, clientX: x, clientY: y, radiusX: 2.5, radiusY: 2.5, rotationAngle: 10, force: 0.5 });
-                    target.dispatchEvent(new TouchEvent('touchstart', { cancelable: true, bubbles: true, touches: [touchObj], targetTouches: [touchObj], changedTouches: [touchObj] }));
-                    target.dispatchEvent(new TouchEvent('touchend', { cancelable: true, bubbles: true, touches: [], targetTouches: [], changedTouches: [touchObj] }));
-                } catch(e) {}
-                
-                target.click();
-            }
-        });
-
-        // Phase C: Physical Backup Tap (Targeting right-side coordinates of the modal)
-        await page.mouse.click(300, 720).catch(() => {}); 
-        await page.mouse.click(300, 700).catch(() => {}); 
-
-        await page.waitForTimeout(5000);
-
-
-
-        // --- 4. SUCCESS REFRESH, CAPTURE & DELIVERY ---
-        
-        // 1. Teleport back to the account page to refresh the balance
-        await bot.editMessageText(`[SYSTEM] Withdrawal submitted. Refreshing account page...`, { 
-            chat_id: chatId, 
-            message_id: statusMsg.message_id 
-        }).catch(() => {});
-
-        await page.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-        
-        // 2. Wait 5 seconds for the UI and the new balance to fully load
-        await page.waitForTimeout(5000); 
-
-        // 3. Take the fresh screenshot
-        const finalSnap = await page.screenshot({ type: 'png' });
-        
-        // 4. Send the photo and clean up the status message
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-
-        await bot.sendPhoto(chatId, finalSnap, 
-            { caption: `[SUCCESS] Withdrawal for ${targetAmount} submitted.` },
-            { filename: 'withdraw_final.png' } // MANDATORY to prevent EFATAL
-        );
-
-        // 5. Video Cleanup
-        const video = page.video();
-        await context.close();
-        if (video) {
-            const vPath = await video.path().catch(() => null);
-            if (vPath && fs.existsSync(vPath)) fs.unlinkSync(vPath);
-        }
-
+        await bot.sendPhoto(chatId, finalSnap, {
+            caption: `[SUCCESS] MASS WITHDRAW EXECUTED (${TOTAL_TABS} tabs)`
+        }, { filename: 'withdraw_final.png' });
 
     } catch (err) {
         console.log(`[WITHDRAW ERROR]: ${err.message}`);
-        await bot.sendMessage(chatId, `[WITHDRAW ERROR]: ${err.message}`).catch(() => {}); 
-        
-        if (context) {
-            const video = page?.video();
-            await context.close().catch(() => {});
-            if (video) {
-                const vPath = await video.path().catch(() => null);
-                if (vPath && fs.existsSync(vPath)) {
-                    await bot.sendVideo(chatId, vPath, { 
-                        caption: `Diagnostic: Withdrawal Failure\nError: ${err.message}` 
-                    }).catch(() => {});
-                    if (fs.existsSync(vPath)) fs.unlinkSync(vPath);
-                }
-            }
-        }
+        await bot.sendMessage(chatId, `[WITHDRAW ERROR]: ${err.message}`).catch(() => {});
     } finally {
-        if (browser) await browser.close().catch(() => {});
+        // =========================================
+        // 8. SAFE CLEANUP (PREVENT MEMORY LEAKS)
+        // =========================================
+        if (context) {
+            try {
+                // MUST grab video paths BEFORE closing the context to avoid exceptions
+                const pages = context.pages();
+                const videoPaths = [];
+                for (const p of pages) {
+                    const v = p.video();
+                    if (v) {
+                        const vp = await v.path().catch(() => null);
+                        if (vp) videoPaths.push(vp);
+                    }
+                }
+
+                await context.close().catch(() => {});
+
+                // Delete videos after context is closed
+                for (const vp of videoPaths) {
+                    if (fs.existsSync(vp)) fs.unlinkSync(vp);
+                }
+            } catch (e) {}
+        }
+
+        if (browser) {
+            await browser.close().catch(() => {});
+        }
     }
 });
+       
 
         
         
@@ -4525,7 +4403,7 @@ bot.on('message', async (msg) => {
 
         
 
-    // --- 2. WT BURNER CONVERSATION FLOW (MOVED TO SAFETY!) ---
+        // --- 2. UPGRADED WT BURNER CONVERSATION FLOW ---
     if (wtSessions[chatId] && wtSessions[chatId].step) {
         const session = wtSessions[chatId];
 
@@ -4559,172 +4437,208 @@ bot.on('message', async (msg) => {
             let initialBalanceNum = 0;
 
             try {
-                // 1. Boot Browser OR Re-use existing one
+                // --- 1. BOOT ISOLATED FIREFOX ENGINE (Replaces Puppeteer/Chrome) ---
                 if (!session.browser) {
-                    await updateStatus('[WT BURNER] Launching clean Chrome instance...');
-                    session.browser = await puppeteer.launch({
+                    await updateStatus('[WT BURNER] Launching clean Firefox Burner Engine...');
+                    process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
+                    
+                    session.browser = await firefox.launch({
                         headless: true,
-                        executablePath: getChromePath(),
-                        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+                        args: ['--no-sandbox', '--disable-setuid-sandbox']
                     });
 
-                    const page1 = await session.browser.newPage();
+                    session.context = await session.browser.newContext({
+                        userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
+                        viewport: { width: 412, height: 915 }
+                    });
+
+                    const page1 = await session.context.newPage();
                     pages.push(page1);
                     session.masterPage = page1; // Save the master tab to the session
-                    await page1.setViewport({ width: 412, height: 915 }); 
-                    await page1.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+
+                    // --- HUMAN SNIPER INJECTION ---
+                    await page1.addInitScript(() => {
+                        setInterval(() => {
+                            const okBtn = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
+                            if (okBtn) {
+                                const rect = okBtn.getBoundingClientRect();
+                                ['mousedown', 'mouseup', 'click'].forEach(t => okBtn.dispatchEvent(new MouseEvent(t, { view: window, bubbles: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 })));
+                                setTimeout(() => {
+                                    const modal = okBtn.closest('div[class*="modal"], div[class*="mask"]');
+                                    if (modal) modal.remove();
+                                    document.body.style.filter = 'none';
+                                    document.body.style.overflow = 'auto';
+                                }, 800);
+                            }
+                        }, 300);
+                    });
 
                     // Dynamic Login
-                    await updateStatus('[WT BURNER] Injecting credentials...');
-                    await page1.goto('https://simpletasks234.com/user', { waitUntil: 'networkidle2' });
-                    
-                    const allInputs = await page1.$$('input');
-                    const visibleInputs = [];
-                    for (let input of allInputs) {
-                        if (await input.evaluate(el => el.offsetParent !== null)) visibleInputs.push(input);
-                    }
+                    await updateStatus('[WT BURNER] Injecting credentials into Wsjobs...');
+                    await page1.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+                    await page1.waitForTimeout(3000);
 
-                    if (visibleInputs.length >= 2) {
-                        await visibleInputs[0].type(session.username, { delay: 50 });
-                        await visibleInputs[1].type(session.password, { delay: 50 });
-                        await page1.evaluate(() => {
-                            const btns = Array.from(document.querySelectorAll('*'));
-                            for (let b of btns) if (b.innerText?.trim() === 'Login') b.click();
-                        });
-                        await page1.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+                    if (await page1.$('input[type="password"]')) {
+                        await page1.fill('input[type="text"], input[type="tel"]', session.username);
+                        await page1.fill('input[type="password"]', session.password);
+                        await page1.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last().click();
+                        await page1.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
+                        await page1.goto('https://www.wsjobs-ng.com/account');
                     }
                 } else {
-                    await updateStatus('[WT BURNER] Using already logged-in session...');
+                    await updateStatus('[WT BURNER] Using warm Burner session...');
                     pages.push(session.masterPage); // Grab the master page from memory
                 }
 
                 const masterTab = pages[0];
 
-                // Initial Balance
-                await masterTab.goto('https://simpletasks234.com/user', { waitUntil: 'networkidle2' });
-                await new Promise(r => setTimeout(r, 3000));
-                const initialText = await masterTab.evaluate(() => {
-                    const match = document.body.innerText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
-                    return match ? match[1] : '0';
+                // --- 2. PRECISION BALANCE SCRAPER ---
+                await masterTab.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+                await masterTab.waitForTimeout(3000);
+                
+                initialBalanceNum = await masterTab.evaluate(() => {
+                    const allText = document.body.innerText;
+                    const decimalMatches = allText.match(/\d+\.\d{2}/g);
+                    if (decimalMatches) return Math.max(...decimalMatches.map(n => parseFloat(n)));
+                    
+                    const generalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
+                    if (generalMatches) {
+                        const numbers = generalMatches.map(n => parseFloat(n.replace(/,/g, ''))).filter(n => n > 100 && n < 100000);
+                        return numbers.length > 0 ? Math.max(...numbers) : 0;
+                    }
+                    return 0;
                 });
-                initialBalanceNum = parseFloat(initialText.replace(/,/g, '')) || 0;
 
-                // 2. Sweep & Target Acquisition
-                await updateStatus('[WT BURNER] Clearing popups and scanning targets...');
-                await masterTab.goto('https://simpletasks234.com/task', { waitUntil: 'networkidle2' });
-                await new Promise(r => setTimeout(r, 4000));
-                await clearOnboardingPopups(masterTab, null);
+                // --- 3. TARGET SCANNING ---
+                await updateStatus('[WT BURNER] Teleporting to Task Board...');
+                await masterTab.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
+                await masterTab.waitForTimeout(4000);
 
-                let targetCount = 0;
-                for (let attempt = 1; attempt <= 2; attempt++) {
-                    for (let i = 0; i < 10; i++) {
-                        const tasksExist = await masterTab.evaluate(() => Array.from(document.querySelectorAll('*')).some(el => el.innerText?.trim() === 'Send' && el.offsetParent !== null));
-                        if (tasksExist) break;
-                        await new Promise(r => setTimeout(r, 1000));
+                let targetCount = await masterTab.evaluate((suffix) => {
+                    const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim() === 'SEND');
+                    let found = 0;
+                    for (let btn of btns) {
+                        if (btn.closest('div')?.innerText.includes(suffix)) found++;
                     }
-
-                    targetCount = await masterTab.evaluate((suffixStr) => {
-                        const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim() === 'Send' && el.offsetParent !== null);
-                        let count = 0;
-                        for (let b of btns) {
-                            let txt = b.parentElement?.parentElement?.innerText || '';
-                            if (txt.includes(suffixStr)) count++;
-                        }
-                        return count > 4 ? 4 : count;
-                    }, session.target);
-
-                    if (targetCount > 0) break;
-                    if (attempt === 1) {
-                        await masterTab.reload({ waitUntil: 'networkidle2' });
-                        await new Promise(r => setTimeout(r, 5000)); 
-                        await clearOnboardingPopups(masterTab, null);
-                    }
-                }
+                    return found > 4 ? 4 : found;
+                }, session.target);
 
                 if (targetCount === 0) throw new Error(`0 targets found for ${session.target}.`);
 
-                // 3. Clones & Strike
-                await updateStatus(`[WT BURNER] Spawning ${targetCount - 1} clone tabs...`);
-                for (let i = 1; i < targetCount; i++) {
-                    const p = await session.browser.newPage();
+                // Double the tabs per target to match the new /task logic
+                const totalTabs = targetCount * 2; 
+                await updateStatus(`[WT BURNER] Found ${targetCount} targets. Spawning ${totalTabs - 1} clone tabs...`);
+
+                for (let i = 1; i < totalTabs; i++) {
+                    const p = await session.context.newPage();
                     pages.push(p);
-                    await p.setViewport({ width: 412, height: 915 });
-                    await p.goto('https://simpletasks234.com/task', { waitUntil: 'networkidle2' });
-                }
-                
-                if (pages.length > 1) {
-                    await new Promise(r => setTimeout(r, 3000));
-                    await Promise.all(pages.slice(1).map(p => clearOnboardingPopups(p, null)));
+                    await p.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
                 }
 
-                await updateStatus(`[WT BURNER] Firing synchronized ghost-clicks...`);
-                const clickResults = await Promise.all(pages.map((p, idx) => {
-                    return p.evaluate((suffixStr, tabIndex) => {
-                        const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim() === 'Send' && el.offsetParent !== null);
-                        let matchCount = 0;
-                        for (let b of btns) {
-                            let txt = b.parentElement?.parentElement?.innerText || '';
-                            if (txt.includes(suffixStr)) {
-                                if (matchCount === tabIndex) {
-                                    b.click(); return true;
-                                }
-                                matchCount++;
+                // --- 4. SYNCHRONIZED SEND STRIKE ---
+                await updateStatus('[WT BURNER] EXECUTE SIMULTANEOUS SEND...');
+                await Promise.all(pages.map(async (p, idx) => {
+                    const targetIdx = Math.floor(idx / 2);
+                    await p.evaluate(({ suffix, index }) => {
+                        const btns = Array.from(document.querySelectorAll('*')).filter(el =>
+                            el.innerText?.trim().toUpperCase() === 'SEND' && el.offsetHeight > 0
+                        );
+                        let matches = 0;
+                        for (let btn of btns) {
+                            if (btn.closest('div')?.innerText.includes(suffix)) {
+                                if (matches === index) { btn.click(); return; }
+                                matches++;
                             }
                         }
-                        return false;
-                    }, session.target, idx);
+                    }, { suffix: session.target, index: targetIdx });
                 }));
 
-                await new Promise(r => setTimeout(r, 10000));
+                await masterTab.waitForTimeout(3500);
 
+                // --- 5. MODAL-AWARE COORDINATED CONFIRM ---
+                await updateStatus('[WT BURNER] COORDINATED CONFIRM...');
                 await Promise.all(pages.map(p => p.evaluate(() => {
-                    Array.from(document.querySelectorAll('*')).forEach(el => {
-                        if (el.innerText?.trim() === 'Confirm' && el.offsetParent !== null) el.click();
-                    });
+                    const overlays = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"]');
+                    overlays.forEach(el => el.remove());
+
+                    const textBlockers = Array.from(document.querySelectorAll('div')).filter(el =>
+                        el.innerText?.includes('Saka Yanzu') || el.innerText?.includes('Don Allah sauke App')
+                    );
+                    textBlockers.forEach(b => b.remove());
+
+                    const modal = Array.from(document.querySelectorAll('div')).find(el =>
+                        (el.innerText?.includes('confirm') || el.innerText?.includes('confirmar')) &&
+                        el.offsetHeight > 100 && el.offsetHeight < 400
+                    );
+
+                    if (modal) {
+                        const rect = modal.getBoundingClientRect();
+                        const x = rect.left + (rect.width * 0.75);
+                        const y = rect.top + (rect.height - 30);
+
+                        const evData = { view: window, bubbles: true, clientX: x, clientY: y };
+                        const clickTarget = document.elementFromPoint(x, y) || modal;
+
+                        ['mousedown', 'mouseup', 'click'].forEach(t =>
+                            clickTarget.dispatchEvent(new MouseEvent(t, evData))
+                        );
+                    } else {
+                        const btn = Array.from(document.querySelectorAll('*')).find(el =>
+                            /confirm|confirmar/i.test(el.innerText) && el.offsetHeight > 0
+                        );
+                        if (btn) {
+                            btn.click();
+                            btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                        }
+                    }
                 })));
 
-                await updateStatus(`[WT BURNER] Clicks fired. Server cooldown (15s)...`);
-                await new Promise(r => setTimeout(r, 15000));
-
-                // 4. Final Calculation
+                await masterTab.waitForTimeout(20000);
                 const finalTaskSnap = await masterTab.screenshot({ type: 'png' });
-                let currentBalanceText = "Unknown";
-                let earnedDisplay = "Unknown";
 
-                try {
-                    await masterTab.goto('https://simpletasks234.com/user', { waitUntil: 'networkidle2' });
-                    await new Promise(r => setTimeout(r, 3000));
-                    currentBalanceText = await masterTab.evaluate(() => {
-                        const match = document.body.innerText.match(/Account\s*Balance[\s:\n]*([\d,]+(?:\.\d+)?)/i);
-                        return match ? match[1] : 'Unknown';
-                    });
-                    let finalNum = parseFloat(currentBalanceText.replace(/,/g, ''));
-                    earnedDisplay = `+${(finalNum - initialBalanceNum).toFixed(2)}`;
-                } catch (e) {}
+                // --- 6. FINAL BALANCE CALCULATION ---
+                await updateStatus('[WT BURNER] Fetching Final Balance...');
+                await masterTab.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+                await masterTab.waitForTimeout(2000);
+                await masterTab.reload({ waitUntil: 'domcontentloaded' });
+                await masterTab.waitForTimeout(5000);
 
-                  await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-                
-                
-                await bot.sendPhoto(chatId, finalTaskSnap, { 
-                    caption: `Complete\nProfit: <code>${earnedDisplay}</code>\nBalance: <code>${currentBalanceText}</code>`,
-                    parse_mode: 'HTML'
+                const finalBalanceNum = await masterTab.evaluate(() => {
+                    const allText = document.body.innerText;
+                    const decimalMatches = allText.match(/\d+\.\d{2}/g);
+                    if (decimalMatches) return Math.max(...decimalMatches.map(n => parseFloat(n)));
+                    
+                    const generalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
+                    if (generalMatches) {
+                        const numbers = generalMatches.map(n => parseFloat(n.replace(/,/g, ''))).filter(n => n > 100 && n < 100000);
+                        return numbers.length > 0 ? Math.max(...numbers) : 0;
+                    }
+                    return 0;
                 });
 
+                const diff = finalBalanceNum - initialBalanceNum;
+                const profitText = diff > 0 ? diff.toFixed(2) : "0.00";
+
+                await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+
+                await bot.sendPhoto(chatId, finalTaskSnap, {
+                    caption: `[WT BURNER] Strike Complete\nProfit: <code>+${profitText}</code>\nBalance: <code>${finalBalanceNum.toLocaleString(undefined, {minimumFractionDigits: 2})}</code>`,
+                    parse_mode: 'HTML'
+                });
 
             } catch (err) {
                 await updateStatus(`[ERROR] WT Sequence failed: ${err.message}`);
             } finally {
-                // 5. CLEAN UP CLONE TABS TO SAVE RAM
+                // --- 7. RAM CLEANUP ---
                 if (pages.length > 1) {
                     for (let p of pages.slice(1)) {
                         await p.close().catch(()=>{});
                     }
                 }
                 
-                // 6. OPEN IT BACK UP FOR THE NEXT NUMBER
                 session.step = 'TARGET_OR_AWAITING';
 
-                // 7. RESET THE 15 MINUTE TIMEBOMB
+                // Reset the 15-minute timebomb
                 session.timer = setTimeout(async () => {
                     if (wtSessions[chatId] && wtSessions[chatId].browser) {
                         await wtSessions[chatId].browser.close().catch(()=>{});
@@ -4737,7 +4651,7 @@ bot.on('message', async (msg) => {
         }
     }
 
-
+                
     
 
 
