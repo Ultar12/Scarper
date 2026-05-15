@@ -2545,25 +2545,24 @@ bot.on('callback_query', async (queryObj) => {
         try {
             await bot.editMessageText(`[SYSTEM] Engaging search engine for: "${searchQuery}"\nExtracting ${ext.toUpperCase()} format...`, { chat_id: chatId, message_id: msgId });
 
-                         const dlOptions = isVideo ? {
+                                 const dlOptions = isVideo ? {
             format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             mergeOutputFormat: 'mp4',
             output: mediaPath,
-            cookies: cookiePath,
+            authType: 'oauth2', // THE SMART TV HACK
             jsRuntimes: 'node',
-            extractorArgs: 'youtube:player_client=ios', // THE HEROKU IP BYPASS
             noWarnings: true
         } : {
             extractAudio: true,
             audioFormat: 'mp3',
             output: mediaPath,
-            cookies: cookiePath,
+            authType: 'oauth2', // THE SMART TV HACK
             jsRuntimes: 'node',
-            extractorArgs: 'youtube:player_client=ios', // THE HEROKU IP BYPASS
             noWarnings: true,
             preferFreeFormats: true,
             addMetadata: true
         };
+
 
 
 
