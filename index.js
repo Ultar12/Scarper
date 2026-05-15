@@ -396,6 +396,25 @@ async function generateTrenchReport(timeframeLabel) {
 }
 
 
+// --- TASK MODE IDLE TIMER HELPER ---
+function resetTaskModeTimer(chatId) {
+    if (taskModeTimer) clearTimeout(taskModeTimer);
+    
+    taskModeTimer = setTimeout(() => {
+        taskModeActive = false;
+        if (autoScannerInterval) clearInterval(autoScannerInterval);
+        
+        bot.sendMessage(chatId, '[SYSTEM] Task Mode automatically ended after 30 minutes of inactivity.', {
+            reply_markup: {
+                keyboard: [[{ text: 'Pair M4U' }, { text: 'Withdraw' }], [{ text: 'Balance' }]],
+                resize_keyboard: true, is_persistent: true
+            }
+        });
+    }, 30 * 60 * 1000); // 30 minutes
+}
+
+
+
 
 // --- AUTONOMOUS TASK RADAR ENGINE (SEQUENTIAL MULTI-TARGET) ---
 async function runAutoTaskScanner(chatId) {
