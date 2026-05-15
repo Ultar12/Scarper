@@ -2550,14 +2550,14 @@ bot.on('callback_query', async (queryObj) => {
             mergeOutputFormat: 'mp4',
             output: mediaPath,
             cookies: cookiePath,
-            jsRuntimes: 'nodejs', // THE FIX: Solves YouTube's anti-bot math puzzles
+            jsRuntimes: 'node', // THE FIX: Solves YouTube's anti-bot math puzzles
             noWarnings: true
         } : {
             extractAudio: true,
             audioFormat: 'mp3',
             output: mediaPath,
             cookies: cookiePath,
-            jsRuntimes: 'nodejs', // THE FIX: Solves YouTube's anti-bot math puzzles
+            jsRuntimes: 'node', // THE FIX: Solves YouTube's anti-bot math puzzles
             noWarnings: true,
             preferFreeFormats: true,
             addMetadata: true
