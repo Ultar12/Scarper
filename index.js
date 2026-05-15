@@ -3420,33 +3420,28 @@ bot.onText(/^\/getfile$/i, async (msg) => {
 // Command to START Task Mode
 bot.onText(/^(?:Task|task)$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
     
     taskModeActive = true;
+    isRadarScanning = false; // Force unlock the radar in case of a previous crash
+    resetTaskModeTimer(chatId);
     
-    // Set the 30-minute idle timebomb
-    if (taskModeTimer) clearTimeout(taskModeTimer);
-    taskModeTimer = setTimeout(() => {
-        taskModeActive = false;
-        // Bring the keyboard back when it times out!
-        bot.sendMessage(chatId, '[SYSTEM] Task Mode automatically ended after 30 minutes of inactivity.', {
-            reply_markup: {
-                keyboard: [
-                    [{ text: 'Pair M4U' }, { text: 'Withdraw' }],
-                    [{ text: 'Balance' }]
-                ],
-                resize_keyboard: true,
-                is_persistent: true
-            }
-        });
-    }, 30 * 60 * 1000);
-    
-    // Remove the keyboard when activating
-    await bot.sendMessage(chatId, '[ACTIVE] Continuous Task Mode Activated!\n\nJust send me the raw target numbers (e.g., 657). I will automatically close old tabs, open fresh ones, and execute the strike.\n\nType Stop to end this mode.', { 
+    await bot.sendMessage(chatId, '[ACTIVE] Autonomous Task Mode Activated!\n\nRunning initial board scan right now. Will continue to scan every 1.5 minutes.\nType Close to end this mode.', { 
         parse_mode: 'Markdown',
-        reply_markup: { remove_keyboard: true } // THIS HIDES THE KEYBOARD
+        reply_markup: { remove_keyboard: true } 
     });
+
+    // FIRE THE FIRST SCAN INSTANTLY
+    runAutoTaskScanner(chatId);
+
+    // Start the repeating 90-second loop
+    if (autoScannerInterval) clearInterval(autoScannerInterval);
+    autoScannerInterval = setInterval(() => {
+        runAutoTaskScanner(chatId);
+    }, 90000); 
 });
+
 
 
 
