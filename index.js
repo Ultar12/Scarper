@@ -3058,21 +3058,80 @@ bot.onText(/^\/wt$/i, async (msg) => {
 
 
 
-// Manual Kill Command
-bot.onText(/^(?:\/wtclose|close)$/i, async (msg) => {
+// --- UNIVERSAL CLOSE COMMAND ---
+// Usage: close (Kills Task Mode, WT Burner, WSTASK Mode, WA Login, and M4U Pairing)
+bot.onText(/^(?:close|\/close)$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
-    if (!AUTHORIZED.includes(chatId)) return;
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
+    
+    let stoppedSomething = false;
 
-    if (wtSessions[chatId] && wtSessions[chatId].browser) {
-        bot.sendMessage(chatId, '[WT BURNER] Manually terminating burner browser...');
-        await wtSessions[chatId].browser.close().catch(() => {});
-        clearTimeout(wtSessions[chatId].timer);
+    // 1. Kill WT Burner Session
+    if (wtSessions && wtSessions[chatId]) {
+        bot.sendMessage(chatId, '[WT BURNER] Terminating burner session...');
+        if (wtSessions[chatId].browser) {
+            await wtSessions[chatId].browser.close().catch(() => {});
+        }
+        if (wtSessions[chatId].timer) clearTimeout(wtSessions[chatId].timer);
         wtSessions[chatId] = null;
         bot.sendMessage(chatId, '[SUCCESS] Burner session destroyed and RAM freed.');
-    } else {
-        bot.sendMessage(chatId, '[SYSTEM] No active WT burner session to close.');
+        stoppedSomething = true;
+    }
+
+    // 2. Kill Task Mode & Radar
+    if (typeof taskModeActive !== 'undefined' && taskModeActive) {
+        taskModeActive = false;
+        if (typeof taskModeTimer !== 'undefined' && taskModeTimer) clearTimeout(taskModeTimer);
+        if (typeof autoScannerInterval !== 'undefined' && autoScannerInterval) clearInterval(autoScannerInterval);
+        
+        bot.sendMessage(chatId, '[INACTIVE] Task Mode Deactivated. Main menu restored.', {
+            reply_markup: {
+                keyboard: [[{ text: 'Pair M4U' }, { text: 'Withdraw' }], [{ text: 'Balance' }]],
+                resize_keyboard: true, is_persistent: true
+            }
+        });
+        stoppedSomething = true;
+    }
+
+    // 3. Kill WSTASK Mode
+    if (typeof wsTaskMode !== 'undefined' && wsTaskMode) {
+        wsTaskMode = false;
+        if (typeof wsTaskTimer !== 'undefined' && wsTaskTimer) clearTimeout(wsTaskTimer);
+        bot.sendMessage(chatId, '[INACTIVE] WSTASK Mode Deactivated. Main menu restored.', {
+            reply_markup: {
+                keyboard: [[{ text: 'Pair M4U' }, { text: 'Withdraw' }], [{ text: 'Balance' }]],
+                resize_keyboard: true, is_persistent: true
+            }
+        });
+        stoppedSomething = true;
+    }
+
+    // 4. Kill WhatsApp Login Memory
+    if (typeof userState !== 'undefined' && userState[chatId]) {
+        userState[chatId] = null;
+        bot.sendMessage(chatId, '[SYSTEM] WhatsApp login sequence aborted.');
+        stoppedSomething = true;
+    }
+
+    // 5. Kill M4U Pairing & Background Browser
+    if (typeof m4uSession !== 'undefined' && m4uSession) {
+        m4uSession = null;
+        if (typeof m4uTimer !== 'undefined' && m4uTimer) clearTimeout(m4uTimer);
+        bot.sendMessage(chatId, '[SYSTEM] M4U Pairing aborted. Closing background browser...');
+        if (typeof m4uBrowser !== 'undefined' && m4uBrowser) {
+            await m4uBrowser.close().catch(() => {});
+            m4uBrowser = null;
+            m4uPage = null;
+        }
+        stoppedSomething = true;
+    }
+
+    if (!stoppedSomething) {
+        bot.sendMessage(chatId, '[SYSTEM] No active processes to close.');
     }
 });
+
 
         
      
@@ -3343,12 +3402,7 @@ bot.onText(/^\/getfile$/i, async (msg) => {
 });
 
 
-
-
-
-
-                
-       
+  
 
 
 // --- CONTINUOUS TASK MODE ---
@@ -3387,63 +3441,6 @@ bot.onText(/^(?:Task|task)$/i, async (msg) => {
 });
 
 
-// Universal STOP Command (Kills Task Mode, WSTASK Mode, WA Login, and M4U Pairing)
-bot.onText(/^(?:Stop|stop|\/stop)$/i, async (msg) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
-    
-    let stoppedSomething = false;
-
-    // 1. Stop Task Mode
-    if (taskModeActive) {
-        taskModeActive = false;
-        if (taskModeTimer) clearTimeout(taskModeTimer);
-        bot.sendMessage(chatId, '[INACTIVE] Task Mode Deactivated. Main menu restored.', {
-            reply_markup: {
-                keyboard: [[{ text: 'Pair M4U' }, { text: 'Withdraw' }], [{ text: 'Balance' }]],
-                resize_keyboard: true, is_persistent: true
-            }
-        });
-        stoppedSomething = true;
-    }
-
-    // 2. Stop WSTASK Mode
-    if (wsTaskMode) {
-        wsTaskMode = false;
-        if (wsTaskTimer) clearTimeout(wsTaskTimer);
-        bot.sendMessage(chatId, '[INACTIVE] WSTASK Mode Deactivated. Main menu restored.', {
-            reply_markup: {
-                keyboard: [[{ text: 'Pair M4U' }, { text: 'Withdraw' }], [{ text: 'Balance' }]],
-                resize_keyboard: true, is_persistent: true
-            }
-        });
-        stoppedSomething = true;
-    }
-
-    // 3. Stop WhatsApp Login
-    if (userState[chatId]) {
-        userState[chatId] = null;
-        bot.sendMessage(chatId, '[SYSTEM] WhatsApp login sequence aborted.');
-        stoppedSomething = true;
-    }
-
-    // 4. Stop M4U Pairing & Free RAM
-    if (typeof m4uSession !== 'undefined' && m4uSession) {
-        m4uSession = null;
-        if (typeof m4uTimer !== 'undefined' && m4uTimer) clearTimeout(m4uTimer);
-        bot.sendMessage(chatId, '[SYSTEM] M4U Pairing aborted. Closing background browser...');
-        if (typeof m4uBrowser !== 'undefined' && m4uBrowser) {
-            await m4uBrowser.close().catch(() => {});
-            m4uBrowser = null;
-            m4uPage = null;
-        }
-        stoppedSomething = true;
-    }
-
-    if (!stoppedSomething) {
-        bot.sendMessage(chatId, '[SYSTEM] No active processes to stop.');
-    }
-});
 
 
 
