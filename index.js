@@ -2532,7 +2532,7 @@ bot.on('callback_query', async (queryObj) => {
         return;
     }
 
-        if (data.startsWith('action_play_')) {
+            if (data.startsWith('action_play_')) {
         const searchQuery = playCache[chatId];
         if (!searchQuery) {
             return bot.editMessageText(`[ERROR] Search memory expired. Please run the /play command again.`, { chat_id: chatId, message_id: msgId });
@@ -2545,7 +2545,6 @@ bot.on('callback_query', async (queryObj) => {
             await bot.editMessageText(`[SYSTEM] Bypassing Heroku IP Ban...\nSearching: "${searchQuery}"`, { chat_id: chatId, message_id: msgId });
 
             // --- PHASE 1: SEARCH & LINK EXTRACTION ---
-            // We use yt-dlp JUST for the search (which YouTube rarely blocks) to get the direct URL
             const searchData = await youtubedl(`ytsearch1:${searchQuery}`, {
                 dumpSingleJson: true,
                 noWarnings: true,
@@ -2558,18 +2557,21 @@ bot.on('callback_query', async (queryObj) => {
 
             const videoUrl = searchData.entries[0].url || `https://www.youtube.com/watch?v=${searchData.entries[0].id}`;
 
-            // --- PHASE 2: EXTERNAL API EXTRACTION ---
-            await bot.editMessageText(`[SYSTEM] Link Acquired. Engaging External Extraction Node...`, { chat_id: chatId, message_id: msgId });
+            // --- PHASE 2: NEW V10 COBALT API BRIDGE ---
+            await bot.editMessageText(`[SYSTEM] Link Acquired. Connecting to v10 Extraction Node...`, { chat_id: chatId, message_id: msgId });
 
-            // Using Cobalt API (A robust open-source bypass engine)
-            const cobaltResponse = await axios.post('https://api.cobalt.tools/api/json', {
+            const cobaltResponse = await axios.post('https://apiv10.v7.wuk.sh/api/json', {
                 url: videoUrl,
                 downloadMode: isVideo ? 'video' : 'audio',
                 videoQuality: '720',
                 audioFormat: 'mp3',
                 filenameStyle: 'basic'
             }, {
-                headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }
+                headers: { 
+                    'Accept': 'application/json', 
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
             });
 
             if (cobaltResponse.data && cobaltResponse.data.url) {
@@ -2590,14 +2592,13 @@ bot.on('callback_query', async (queryObj) => {
 
                 await bot.deleteMessage(chatId, msgId).catch(() => {});
             } else {
-                throw new Error("External API failed to generate a valid download stream.");
+                throw new Error("V10 Node failed to output a stream URL.");
             }
 
         } catch (err) {
             console.error(`[PLAY API ERROR]`, err.message);
             
             let cleanError = err.message;
-            // Handle specific Axios or API errors
             if (err.response && err.response.data && err.response.data.text) {
                 cleanError = err.response.data.text;
             }
@@ -2607,6 +2608,7 @@ bot.on('callback_query', async (queryObj) => {
 
         playCache[chatId] = null;
     }
+
 });
 
 
