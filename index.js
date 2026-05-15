@@ -499,20 +499,23 @@ async function runAutoTaskScanner(chatId) {
         if (scanContext) await scanContext.close().catch(() => {});
     }
 
-    // --- 5. SEQUENTIAL EXECUTION QUEUE ---
+        // --- 5. SEQUENTIAL EXECUTION QUEUE ---
     if (targetsToStrike.length > 0) {
         const queueList = targetsToStrike.map(t => t.suffix).join(', ');
-        console.log(`[RADAR] Found ${targetsToStrike.length} valid clusters (${queueList}). Queuing...`);
         
-        await bot.sendMessage(chatId, `[RADAR DETECTED] Found ${targetsToStrike.length} valid clusters: \`${queueList}\`.\n\nLocking queue and initiating sequential strikes...`, { parse_mode: 'Markdown' });
+        // SILENT LOG: Replaced Telegram message with Heroku console log
+        console.log(`[RADAR DETECTED] Found ${targetsToStrike.length} valid clusters: ${queueList}. Locking queue and initiating sequential strikes...`);
 
         for (let target of targetsToStrike) {
             if (!taskModeActive) break; 
 
             resetTaskModeTimer(chatId); 
 
-            await bot.sendMessage(chatId, `[RADAR QUEUE] Triggering strike for suffix: \`${target.suffix}\` (${target.count} targets)`, { parse_mode: 'Markdown' });
+            // SILENT LOG: Replaced Telegram message with Heroku console log
+            console.log(`[RADAR QUEUE] Triggering strike for suffix: ${target.suffix} (${target.count} targets)`);
 
+            // This invisibly triggers your normal /task command, which WILL still send the 
+            // "[SYSTEM] Strike Protocol" message and the final screenshot to your chat.
             bot.processUpdate({
                 update_id: Date.now(),
                 message: {
@@ -533,11 +536,15 @@ async function runAutoTaskScanner(chatId) {
             await new Promise(r => setTimeout(r, 5000));
         }
         
-        await bot.sendMessage(chatId, `[RADAR QUEUE] All targets processed. Returning to silent background scan.`);
+        // SILENT LOG: Replaced Telegram message with Heroku console log
+        console.log(`[RADAR QUEUE] All targets processed. Returning to silent background scan.`);
+    } else {
+        console.log(`[RADAR] Scan finished. Targets found, but none had 3 or more occurrences.`);
     }
 
     isRadarScanning = false; 
 }
+
 
 
 
