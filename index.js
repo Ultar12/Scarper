@@ -402,16 +402,22 @@ async function runAutoTaskScanner(chatId) {
     // Abort if task mode is off, if a strike is running, or if the radar is already busy
     if (!taskModeActive || isTaskExecuting || isRadarScanning) return;
     
-    isRadarScanning = true; // Lock the radar so the 90-second interval doesn't interrupt us
+    isRadarScanning = true; // Lock the radar
 
     let scanContext = null;
     let scanPage = null;
-    let targetsToStrike = []; // The queue
+    let targetsToStrike = []; 
 
     try {
+        // --- 1. THE COLD BOOT FIX ---
+        // If the browser isn't running yet, the radar will start it autonomously
         if (!globalTaskBrowser || !globalTaskBrowser.isConnected()) {
-            isRadarScanning = false;
-            return; 
+            console.log('[RADAR] Cold Boot: Launching Master Task Browser...');
+            process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
+            globalTaskBrowser = await firefox.launch({
+                headless: true,
+                args: ['--no-sandbox', '--disable-setuid-sandbox']
+            });
         }
 
         scanContext = await globalTaskBrowser.newContext({
@@ -420,10 +426,25 @@ async function runAutoTaskScanner(chatId) {
         });
 
         scanPage = await scanContext.newPage();
+
+        // --- 2. THE INCOGNITO LOGIN FIX ---
+        // The radar must log in quickly so the site actually shows it the tasks
+        await scanPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await scanPage.waitForTimeout(3000);
+        
+        if (await scanPage.$('input[type="password"]')) {
+            await scanPage.fill('input[type="text"], input[type="tel"]', '09163916500'); 
+            await scanPage.fill('input[type="password"]', 'Emmamama');
+            const loginBtn = scanPage.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last();
+            await loginBtn.dispatchEvent('click');
+            await scanPage.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
+        }
+
+        // Now teleport to the task board as an authenticated user
         await scanPage.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded', timeout: 30000 });
         await scanPage.waitForTimeout(4000); 
 
-        // --- DOM FREQUENCY ANALYZER ---
+        // --- 3. DOM FREQUENCY ANALYZER ---
         const counts = await scanPage.evaluate(() => {
             const btns = Array.from(document.querySelectorAll('*')).filter(el => 
                 el.innerText?.trim().toUpperCase() === 'SEND' && el.offsetParent !== null
@@ -444,15 +465,13 @@ async function runAutoTaskScanner(chatId) {
             return tracker;
         });
 
-        // --- QUEUE BUILDER ---
-        // Find ALL suffixes that appear 3 or more times
+        // --- 4. QUEUE BUILDER ---
         for (const [suffix, count] of Object.entries(counts)) {
             if (count >= 3) {
                 targetsToStrike.push({ suffix, count });
             }
         }
 
-        // Sort them so the highest count goes first (e.g., 4 targets goes before 3 targets)
         targetsToStrike.sort((a, b) => b.count - a.count);
 
     } catch (err) {
@@ -461,23 +480,20 @@ async function runAutoTaskScanner(chatId) {
         if (scanContext) await scanContext.close().catch(() => {});
     }
 
-
-    // --- SEQUENTIAL EXECUTION QUEUE ---
+    // --- 5. SEQUENTIAL EXECUTION QUEUE ---
     if (targetsToStrike.length > 0) {
         const queueList = targetsToStrike.map(t => t.suffix).join(', ');
-        console.log(`[RADAR] Found ${targetsToStrike.length} valid clusters (${queueList}). Queuing sequential execution...`);
+        console.log(`[RADAR] Found ${targetsToStrike.length} valid clusters (${queueList}). Queuing...`);
         
         await bot.sendMessage(chatId, `[RADAR DETECTED] Found ${targetsToStrike.length} valid clusters: \`${queueList}\`.\n\nLocking queue and initiating sequential strikes...`, { parse_mode: 'Markdown' });
 
         for (let target of targetsToStrike) {
-            // Safety break: If you manually turn off Task Mode, stop processing the queue
             if (!taskModeActive) break; 
 
-            resetTaskModeTimer(chatId); // Keep the bot awake
+            resetTaskModeTimer(chatId); 
 
             await bot.sendMessage(chatId, `[RADAR QUEUE] Triggering strike for suffix: \`${target.suffix}\` (${target.count} targets)`, { parse_mode: 'Markdown' });
 
-            // Fire the command
             bot.processUpdate({
                 update_id: Date.now(),
                 message: {
@@ -489,22 +505,18 @@ async function runAutoTaskScanner(chatId) {
                 }
             });
 
-            // Wait 2 seconds to guarantee the /task command registers and locks the `isTaskExecuting` variable
             await new Promise(r => setTimeout(r, 2000));
 
-            // THE TRAFFIC LIGHT: This pauses the loop until the `/task` command finishes and unlocks the engine
             while (isTaskExecuting) {
                 await new Promise(r => setTimeout(r, 2000));
             }
             
-            // Wait an extra 5 seconds before firing the next number in the queue to let the server breathe
             await new Promise(r => setTimeout(r, 5000));
         }
         
         await bot.sendMessage(chatId, `[RADAR QUEUE] All targets processed. Returning to silent background scan.`);
     }
 
-    // Unlock the radar so it can scan again in 90 seconds
     isRadarScanning = false; 
 }
 
