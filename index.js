@@ -2532,7 +2532,7 @@ bot.on('callback_query', async (queryObj) => {
         return;
     }
 
-    if (data.startsWith('action_play_')) {
+        if (data.startsWith('action_play_')) {
         const searchQuery = playCache[chatId];
         if (!searchQuery) {
             return bot.editMessageText(`[ERROR] Search memory expired. Please run the /play command again.`, { chat_id: chatId, message_id: msgId });
@@ -2540,75 +2540,69 @@ bot.on('callback_query', async (queryObj) => {
 
         const isVideo = data === 'action_play_video';
         const ext = isVideo ? 'mp4' : 'mp3';
-        const mediaPath = path.join(__dirname, `play_temp_${Date.now()}.${ext}`);
 
         try {
-            await bot.editMessageText(`[SYSTEM] Engaging search engine for: "${searchQuery}"\nExtracting ${ext.toUpperCase()} format...`, { chat_id: chatId, message_id: msgId });
+            await bot.editMessageText(`[SYSTEM] Bypassing Heroku IP Ban...\nSearching: "${searchQuery}"`, { chat_id: chatId, message_id: msgId });
 
-                                 const dlOptions = isVideo ? {
-            format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            mergeOutputFormat: 'mp4',
-            output: mediaPath,
-            authType: 'oauth2', // THE SMART TV HACK
-            jsRuntimes: 'node',
-            noWarnings: true
-        } : {
-            extractAudio: true,
-            audioFormat: 'mp3',
-            output: mediaPath,
-            authType: 'oauth2', // THE SMART TV HACK
-            jsRuntimes: 'node',
-            noWarnings: true,
-            preferFreeFormats: true,
-            addMetadata: true
-        };
+            // --- PHASE 1: SEARCH & LINK EXTRACTION ---
+            // We use yt-dlp JUST for the search (which YouTube rarely blocks) to get the direct URL
+            const searchData = await youtubedl(`ytsearch1:${searchQuery}`, {
+                dumpSingleJson: true,
+                noWarnings: true,
+                flatPlaylist: true
+            });
 
+            if (!searchData || !searchData.entries || searchData.entries.length === 0) {
+                throw new Error("Search returned no results.");
+            }
 
+            const videoUrl = searchData.entries[0].url || `https://www.youtube.com/watch?v=${searchData.entries[0].id}`;
 
+            // --- PHASE 2: EXTERNAL API EXTRACTION ---
+            await bot.editMessageText(`[SYSTEM] Link Acquired. Engaging External Extraction Node...`, { chat_id: chatId, message_id: msgId });
 
+            // Using Cobalt API (A robust open-source bypass engine)
+            const cobaltResponse = await axios.post('https://api.cobalt.tools/api/json', {
+                url: videoUrl,
+                downloadMode: isVideo ? 'video' : 'audio',
+                videoQuality: '720',
+                audioFormat: 'mp3',
+                filenameStyle: 'basic'
+            }, {
+                headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }
+            });
 
+            if (cobaltResponse.data && cobaltResponse.data.url) {
+                const finalMediaUrl = cobaltResponse.data.url;
 
-                        // Temporarily remove noWarnings so the engine logs everything
-            delete dlOptions.noWarnings;
+                await bot.editMessageText(`[SYSTEM] Extraction Successful. Streaming ${ext.toUpperCase()} to Telegram...`, { chat_id: chatId, message_id: msgId });
 
-            // Fire the extraction and capture the raw terminal output
-            const rawEngineOutput = await youtubedl(`ytsearch1:${searchQuery}`, dlOptions);
-            console.log(`[YT-DLP SUCCESS LOG]`, rawEngineOutput);
-
-            if (fs.existsSync(mediaPath)) {
-                const stats = fs.statSync(mediaPath);
-                const fileSizeMB = stats.size / (1024 * 1024);
-
-                if (fileSizeMB > 49.5) {
-                    await bot.editMessageText(`[ERROR] Extracted file is too large (${fileSizeMB.toFixed(1)}MB). Telegram limit is 50MB.`, { chat_id: chatId, message_id: msgId });
+                // --- PHASE 3: DELIVERY ---
+                if (isVideo) {
+                    await bot.sendVideo(chatId, finalMediaUrl, { 
+                        caption: `[SUCCESS] Downloaded: ${searchQuery}` 
+                    });
                 } else {
-                    await bot.editMessageText(`[SYSTEM] Uploading ${fileSizeMB.toFixed(1)}MB ${ext.toUpperCase()} to Telegram...`, { chat_id: chatId, message_id: msgId });
-
-                    if (isVideo) {
-                        await bot.sendVideo(chatId, mediaPath, { caption: `[SUCCESS] Downloaded: ${searchQuery}` });
-                    } else {
-                        await bot.sendAudio(chatId, mediaPath, { caption: `[SUCCESS] Downloaded: ${searchQuery}` });
-                    }
-
-                    await bot.deleteMessage(chatId, msgId).catch(() => {});
+                    await bot.sendAudio(chatId, finalMediaUrl, { 
+                        caption: `[SUCCESS] Downloaded: ${searchQuery}` 
+                    });
                 }
 
-                fs.unlinkSync(mediaPath);
+                await bot.deleteMessage(chatId, msgId).catch(() => {});
             } else {
-                throw new Error("Engine finished but no file was generated. Check Heroku logs to see if FFmpeg is missing.");
+                throw new Error("External API failed to generate a valid download stream.");
             }
 
         } catch (err) {
-            console.error(`[YT-DLP FATAL ERROR LOG]`, err);
+            console.error(`[PLAY API ERROR]`, err.message);
             
-            // Extract the specific yt-dlp error message if it exists
             let cleanError = err.message;
-            if (err.message && err.message.includes('ERROR:')) {
-                cleanError = err.message.split('\n').find(line => line.includes('ERROR:')) || err.message;
+            // Handle specific Axios or API errors
+            if (err.response && err.response.data && err.response.data.text) {
+                cleanError = err.response.data.text;
             }
-            
-            bot.editMessageText(`[ERROR] Extraction failed:\n${cleanError}`, { chat_id: chatId, message_id: msgId });
-            if (fs.existsSync(mediaPath)) fs.unlinkSync(mediaPath).catch(()=>{});
+
+            bot.editMessageText(`[ERROR] Play Engine failed:\n${cleanError}`, { chat_id: chatId, message_id: msgId });
         }
 
         playCache[chatId] = null;
