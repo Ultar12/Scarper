@@ -2545,21 +2545,24 @@ bot.on('callback_query', async (queryObj) => {
         try {
             await bot.editMessageText(`[SYSTEM] Engaging search engine for: "${searchQuery}"\nExtracting ${ext.toUpperCase()} format...`, { chat_id: chatId, message_id: msgId });
 
-         const dlOptions = isVideo ? {
+                 const dlOptions = isVideo ? {
             format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             mergeOutputFormat: 'mp4',
             output: mediaPath,
             cookies: cookiePath,
+            jsRuntimes: 'nodejs', // THE FIX: Solves YouTube's anti-bot math puzzles
             noWarnings: true
         } : {
             extractAudio: true,
             audioFormat: 'mp3',
             output: mediaPath,
             cookies: cookiePath,
+            jsRuntimes: 'nodejs', // THE FIX: Solves YouTube's anti-bot math puzzles
             noWarnings: true,
             preferFreeFormats: true,
             addMetadata: true
         };
+
 
 
 
@@ -2864,127 +2867,6 @@ bot.onText(/\/record/i, async (msg) => {
 
 
 
-// --- THE GHOST BAN CHECKER ---
-// Usage: /checkban 2348000000000
-bot.onText(/^\/checkban\s+(.+)/, async (msg, match) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
-
-    const targetNumber = match[1].replace(/[^0-9]/g, '');
-
-    let statusMsg = await bot.sendMessage(
-        chatId,
-        `[SYSTEM] Ghost Protocol Initiated.\n\nPinging Meta servers for +${targetNumber}...`
-    );
-
-    const checkerClient = new Client({
-        puppeteer: {
-            headless: true,
-            executablePath: getChromePath(),
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-        }
-    });
-
-    let isFinished = false;
-
-    checkerClient.on('qr', async () => {
-        try {
-            // Wait for WA Web to finish registering its internal event handlers
-            await new Promise(r => setTimeout(r, 3000));
-
-            // Optional: poll until window.onCodeReceivedEvent is ready
-            const page = checkerClient.pupPage;
-            if (page) {
-                await page.waitForFunction(
-                    () => typeof window.onCodeReceivedEvent === 'function',
-                    { timeout: 10000 }
-                ).catch(() => {}); // proceed even if it times out
-            }
-
-            const code = await checkerClient.requestPairingCode(targetNumber);
-
-            if (!isFinished) {
-                isFinished = true;
-                bot.editMessageText(
-                    `✅ [ACTIVE]\n\n+${targetNumber} is registered and clean.\nMeta issued a pairing code successfully.\n\nCode: ${code}`,
-                    { chat_id: chatId, message_id: statusMsg.message_id }
-                );
-                checkerClient.destroy().catch(() => {});
-            }
-
-        } catch (err) {
-            if (!isFinished) {
-                isFinished = true;
-
-                const errMsg = err.message?.toLowerCase() || '';
-                let verdict;
-
-                if (
-                    errMsg.includes('not registered') ||
-                    errMsg.includes('does not exist') ||
-                    errMsg.includes('invalid phone')
-                ) {
-                    verdict = `❌ [NOT REGISTERED]\n\n+${targetNumber} has no WhatsApp account.`;
-
-                } else if (
-                    errMsg.includes('banned') ||
-                    errMsg.includes('forbidden') ||
-                    errMsg.includes('blocked') ||
-                    errMsg.includes('unauthorized')
-                ) {
-                    verdict = `🚨 [BANNED]\n\n+${targetNumber} has an account but it is banned by Meta.`;
-
-                } else if (
-                    errMsg.includes('rate') ||
-                    errMsg.includes('too many')
-                ) {
-                    verdict = `⏳ [RATE LIMITED]\n\nMeta is throttling requests. Try again in a few minutes.`;
-
-                } else {
-                    verdict = `⚠️ [UNKNOWN]\n\n+${targetNumber}\n\nRaw Error: ${err.message}`;
-                }
-
-                bot.editMessageText(verdict, {
-                    chat_id: chatId,
-                    message_id: statusMsg.message_id
-                });
-                checkerClient.destroy().catch(() => {});
-            }
-        }
-    });
-
-    checkerClient.on('ready', () => {
-        // If it fully authenticates somehow, destroy it
-        checkerClient.destroy().catch(() => {});
-    });
-
-    try {
-        await checkerClient.initialize();
-
-        // Safety timeout: kill after 45 seconds
-        setTimeout(() => {
-            if (!isFinished) {
-                isFinished = true;
-                bot.editMessageText(
-                    `[TIMEOUT] No response from Meta. Proxy may be slow or connection dropped.`,
-                    { chat_id: chatId, message_id: statusMsg.message_id }
-                );
-                checkerClient.destroy().catch(() => {});
-            }
-        }, 45000);
-
-    } catch (err) {
-        if (!isFinished) {
-            isFinished = true;
-            bot.editMessageText(
-                `[ERROR] Ghost Engine failed to start: ${err.message}`,
-                { chat_id: chatId, message_id: statusMsg.message_id }
-            );
-        }
-    }
-});
-
-
 
 
 // Usage: /dl https://www.tiktok.com/@user/video/123456789
@@ -3054,6 +2936,7 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
             format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             mergeOutputFormat: 'mp4',
             cookies: cookiePath,
+            jsRuntimes: 'nodejs', 
             noWarnings: true
         });
 
