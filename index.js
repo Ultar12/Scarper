@@ -3405,10 +3405,6 @@ bot.onText(/^\/getfile$/i, async (msg) => {
   
 
 
-// --- CONTINUOUS TASK MODE ---
-let taskModeActive = false;
-let taskModeTimer = null;
-
 // Command to START Task Mode
 bot.onText(/^(?:Task|task)$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
