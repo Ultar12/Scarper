@@ -499,7 +499,9 @@ async function runAutoTaskScanner(chatId) {
         if (scanContext) await scanContext.close().catch(() => {});
     }
 
-        // --- 5. SEQUENTIAL EXECUTION QUEUE ---
+        
+        
+            // --- 5. SEQUENTIAL EXECUTION QUEUE ---
     if (targetsToStrike.length > 0) {
         const queueList = targetsToStrike.map(t => t.suffix).join(', ');
         
@@ -527,16 +529,12 @@ async function runAutoTaskScanner(chatId) {
                 }
             });
 
-            await new Promise(r => setTimeout(r, 2000));
-
-            while (isTaskExecuting) {
-                await new Promise(r => setTimeout(r, 2000));
-            }
             
-            await new Promise(r => setTimeout(r, 5000));
+            // We removed the while loop. It now waits exactly 60 seconds and fires the next one.
+            console.log(`[RADAR QUEUE] Sleeping for exactly 1 minute before triggering the next target...`);
+            await new Promise(r => setTimeout(r, 60000));
         }
         
-        // SILENT LOG: Replaced Telegram message with Heroku console log
         console.log(`[RADAR QUEUE] All targets processed. Returning to silent background scan.`);
     } else {
         console.log(`[RADAR] Scan finished. Targets found, but none had 3 or more occurrences.`);
@@ -544,6 +542,7 @@ async function runAutoTaskScanner(chatId) {
 
     isRadarScanning = false; 
 }
+
 
 
 
