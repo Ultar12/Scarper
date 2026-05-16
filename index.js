@@ -2578,37 +2578,34 @@ bot.on('callback_query', async (queryObj) => {
         try {
             await bot.editMessageText(`[SYSTEM] Engaging yt-dlp Python Engine for: "${searchQuery}"\nExtracting ${ext.toUpperCase()} format...`, { chat_id: chatId, message_id: msgId });
 
-            // 1. Auto-Convert JSON Cookies
+                        // Auto-Convert JSON Cookies (Using the function we added earlier)
             const activeCookiePath = prepareGhostCookies();
 
-                        // 2. Build bulletproof configuration
+            // 2. Exact Python-to-Node translation of your working config
             const dlOptions = isVideo ? {
-                // Tries HD first, if blocked, hard-forces Format ID 18 (360p MP4)
-                format: 'bestvideo+bestaudio/18/best', 
+                // Python's exact video format string:
+                format: 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 mergeOutputFormat: 'mp4',
                 output: mediaPath,
-                jsRuntimes: 'node',
-                extractorArgs: 'youtube:player_client=android', 
-                noWarnings: true
+                noPlaylist: true,     // Python's 'noplaylist': True
+                ignoreErrors: true,   // Python's 'ignoreerrors': True
+                noWarnings: true      // Python's 'quiet': True
             } : {
-                // Tries pure audio first, if blocked, hard-forces Format ID 18 and rips the MP3 out
-                format: 'bestaudio/18/best', 
-                extractAudio: true,
-                audioFormat: 'mp3',
+                // Python's exact audio format and FFmpeg extractor logic:
+                format: 'bestaudio/best',
+                extractAudio: true,   // Triggers FFmpegExtractAudio
+                audioFormat: 'mp3',   // Sets 'preferredcodec': 'mp3'
                 output: mediaPath,
-                jsRuntimes: 'node',
-                extractorArgs: 'youtube:player_client=android', 
-                noWarnings: true,
-                addMetadata: true
+                noPlaylist: true,
+                ignoreErrors: true,
+                noWarnings: true
             };
 
-
-
-
-            // Inject cookies into options if the JSON converter succeeded
+            // Inject the cookies explicitly
             if (activeCookiePath) {
                 dlOptions.cookies = activeCookiePath;
             }
+
 
             // 3. Fire the engine
             await bot.editMessageText(`[SYSTEM] Engine configured. Downloading media to RAM...`, { chat_id: chatId, message_id: msgId });
