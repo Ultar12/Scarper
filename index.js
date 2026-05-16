@@ -2581,26 +2581,27 @@ bot.on('callback_query', async (queryObj) => {
             // 1. Auto-Convert JSON Cookies
             const activeCookiePath = prepareGhostCookies();
 
-            // 2. Build bulletproof configuration
+                        // 2. Build bulletproof configuration
             const dlOptions = isVideo ? {
-                // Tries HD first, but gracefully falls back to Format 18 (best combined mp4)
-                format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/b', 
+                // Tries HD first, if blocked, hard-forces Format ID 18 (360p MP4)
+                format: 'bestvideo+bestaudio/18/best', 
                 mergeOutputFormat: 'mp4',
                 output: mediaPath,
                 jsRuntimes: 'node',
-                extractorArgs: 'youtube:player_client=android', // THE WINNER
+                extractorArgs: 'youtube:player_client=android', 
                 noWarnings: true
             } : {
-                // Tries best audio, falls back to Format 18 to extract the MP3
-                format: 'bestaudio/b', 
+                // Tries pure audio first, if blocked, hard-forces Format ID 18 and rips the MP3 out
+                format: 'bestaudio/18/best', 
                 extractAudio: true,
                 audioFormat: 'mp3',
                 output: mediaPath,
                 jsRuntimes: 'node',
-                extractorArgs: 'youtube:player_client=android', // THE WINNER
+                extractorArgs: 'youtube:player_client=android', 
                 noWarnings: true,
                 addMetadata: true
             };
+
 
 
 
