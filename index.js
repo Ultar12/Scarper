@@ -2581,24 +2581,25 @@ bot.on('callback_query', async (queryObj) => {
             // 1. Auto-Convert JSON Cookies
             const activeCookiePath = prepareGhostCookies();
 
-            // 2. Build bulletproof configuration
+                        // 2. Build bulletproof configuration
             const dlOptions = isVideo ? {
-                format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                format: 'bestvideo+bestaudio/best', // FIX: Removed strict [ext=mp4] limits
                 mergeOutputFormat: 'mp4',
                 output: mediaPath,
                 jsRuntimes: 'node',
                 extractorArgs: 'youtube:player_client=ios', // Bypasses Heroku IP Ban
                 noWarnings: true
             } : {
+                format: 'bestaudio/best', // FIX: Specifically target the iOS audio stream
                 extractAudio: true,
                 audioFormat: 'mp3',
                 output: mediaPath,
                 jsRuntimes: 'node',
                 extractorArgs: 'youtube:player_client=ios', // Bypasses Heroku IP Ban
                 noWarnings: true,
-                preferFreeFormats: true,
-                addMetadata: true
+                addMetadata: true // Removed preferFreeFormats to prevent conflicts
             };
+
 
             // Inject cookies into options if the JSON converter succeeded
             if (activeCookiePath) {
