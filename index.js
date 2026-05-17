@@ -3622,15 +3622,13 @@ const updateStatus = async (text) => {
 
 
 
-
 bot.onText(/\/withdraw\s+task/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     const adminId = process.env.ADMIN_ID || '7710721646';
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
 
     const TOTAL_TABS = 10;
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting ${TOTAL_TABS} Synchronized Firefox Clones...`);
-    
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting ${TOTAL_TABS} Synchronized Clone Tabs for Secure Mass Withdrawal...`);
     const videoDir = path.join(__dirname, 'videos');
     if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
 
@@ -3641,15 +3639,10 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
     try {
         process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
 
-        // --- THE HEROKU EPERM / SIGSEGV FIX ---
+        // EXACT WORKING LAUNCH LOGIC (No EPERM stuff)
         browser = await firefox.launch({ 
             headless: true,
-            // Firefox ignores '--no-sandbox'. It strictly requires these environment variables on Heroku.
-            env: {
-                ...process.env,
-                'MOZ_DISABLE_CONTENT_SANDBOX': '1',
-                'MOZ_FAKE_NO_SANDBOX': '1'
-            }
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
 
         context = await browser.newContext({
@@ -3658,14 +3651,13 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             recordVideo: { dir: videoDir, size: { width: 412, height: 915 } }
         });
 
-        // --- 1. SEQUENTIAL TAB SPAWNING WITH RAM SHIELD ---
+        // --- 1. SPAWN 10 CLONES ---
         await bot.editMessageText(`[SYSTEM] Spawning ${TOTAL_TABS} isolated environments...`, { chat_id: chatId, message_id: statusMsg.message_id });
         
         for (let i = 0; i < TOTAL_TABS; i++) {
             const p = await context.newPage();
-
-            // RAM SHIELD: Blocks heavy graphical assets on the 9 clone tabs to prevent Heroku OOM crashes.
-            // i === 0 (Master Tab) is skipped so your final screenshot still looks perfect.
+            
+            // RAM SHIELD: Blocks heavy images on the clones to prevent Heroku from crashing
             if (i > 0) {
                 await p.route('**/*', route => {
                     const type = route.request().resourceType();
@@ -3697,17 +3689,18 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                     }
                 }, 300);
             });
-
+            
             pages.push(p);
-            // CPU breather to prevent OS panics
-            await new Promise(r => setTimeout(r, 200)); 
+            await new Promise(r => setTimeout(r, 200)); // Breather
         }
 
         const masterPage = pages[0];
 
-        // --- 2. ACCOUNT LOGIN & TELEPORT (MASTER TAB ONLY) ---
+        // --- 2. ACCOUNT LOGIN (Master Only) ---
         await bot.editMessageText('[SYSTEM] Navigating to Account...', { chat_id: chatId, message_id: statusMsg.message_id });
-        await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        
+        // TIMEOUT BYPASS: Ignores the 30s crash if the page is already visually loaded
+        await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
         await masterPage.waitForTimeout(4000);
 
         const loginInput = await masterPage.$('input[type="text"], input[type="tel"]');
@@ -3719,18 +3712,24 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             await masterPage.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
         }
 
-        await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        // --- 3. BALANCE SCRAPER ---
+        // TIMEOUT BYPASS
+        await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
         await masterPage.waitForTimeout(5000); 
 
-        // --- 3. PRECISION BALANCE SCRAPER ---
         const rawBalance = await masterPage.evaluate(() => {
             const allText = document.body.innerText;
             const decimalMatches = allText.match(/\d+\.\d{2}/g);
-            if (decimalMatches) return Math.max(...decimalMatches.map(n => parseFloat(n)));
-            
+            if (decimalMatches) {
+                const nums = decimalMatches.map(n => parseFloat(n));
+                return Math.max(...nums);
+            }
             const generalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
             if (generalMatches) {
-                const numbers = generalMatches.map(n => parseFloat(n.replace(/,/g, ''))).filter(n => n > 100 && n < 100000); 
+                const numbers = generalMatches
+                    .map(n => n.replace(/,/g, ''))
+                    .map(n => parseFloat(n))
+                    .filter(n => n > 100 && n < 100000); 
                 return numbers.length > 0 ? Math.max(...numbers) : 0;
             }
             return 0;
@@ -3745,14 +3744,15 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             throw new Error(`Balance ${rawBalance} is too low.`);
         }
 
-        await bot.editMessageText(`[SYSTEM] Target Acquired: ${targetAmount}. Prepping ${TOTAL_TABS} clone tabs sequentially...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+        await bot.editMessageText(`[SYSTEM] Target Acquired: ${targetAmount}. Prepping ${TOTAL_TABS} clones sequentially...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
 
-        // --- 4. SEQUENTIAL PREPARATION (ONE BY ONE TO PREVENT CRASHES) ---
-        for (let i = 0; i < pages.length; i++) {
+        // --- 4. SEQUENTIAL WITHDRAW PREP (ONE BY ONE) ---
+        for (let i = 0; i < TOTAL_TABS; i++) {
             const p = pages[i];
             console.log(`[TAB ${i + 1}] Preparing...`);
 
-            await p.goto('https://www.wsjobs-ng.com/account/withdraw', { waitUntil: 'domcontentloaded' });
+            // TIMEOUT BYPASS
+            await p.goto('https://www.wsjobs-ng.com/account/withdraw', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
             await p.waitForTimeout(4000);
 
             // Click Amount Chip
@@ -3810,8 +3810,8 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             console.log(`[TAB ${i + 1}] LOADED AND READY FOR FINAL STRIKE`);
         }
 
-        // --- 5. SYNCHRONIZED MASS CLICK (PROMISE.ALL) ---
-        await bot.editMessageText(`[SYSTEM] CLONES LOADED. FIRING PROMISE.ALL CONFIRM STRIKE!`, { chat_id: chatId, message_id: statusMsg.message_id });
+        // --- 5. SYNCHRONIZED MASS CLICK (PROMISE.ALL ONLY ON THE LAST BUTTON) ---
+        await bot.editMessageText(`[SYSTEM] ALL ${TOTAL_TABS} TABS READY. FIRING PROMISE.ALL MASS CONFIRM...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
 
         await Promise.all(pages.map(async (p, i) => {
             try {
@@ -3856,7 +3856,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                 await p.mouse.click(300, 720).catch(() => {}); 
                 await p.mouse.click(300, 700).catch(() => {}); 
 
-                console.log(`[TAB ${i + 1}] STRIKE EXECUTED`);
+                console.log(`[TAB ${i + 1}] CONFIRMED`);
             } catch (err) {
                 console.log(`[TAB ${i + 1}] ERROR: ${err.message}`);
             }
@@ -3864,15 +3864,16 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
         await masterPage.waitForTimeout(5000);
 
-        // --- 6. SUCCESS REFRESH & CAPTURE ---
+        // --- 6. REFRESH & CAPTURE ---
         await bot.editMessageText(`[SYSTEM] Strike complete. Refreshing master tab for results...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
 
-        await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        // TIMEOUT BYPASS
+        await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
         await masterPage.waitForTimeout(5000); 
 
         const finalSnap = await masterPage.screenshot({ type: 'png' });
+        
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-
         await bot.sendPhoto(chatId, finalSnap, 
             { caption: `[SUCCESS] Mass Clone Withdrawal Triggered (${TOTAL_TABS} tabs)` },
             { filename: 'withdraw_mass.png' } 
@@ -3909,7 +3910,6 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         if (browser) await browser.close().catch(() => {});
     }
 });
-
 
         
         
