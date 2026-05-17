@@ -21,6 +21,9 @@ const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
 
+const TERMUX_API_URL = 'https://1d09bb91ee7fcb.lhr.life/api/download';
+
+
 
 
 const { PuppeteerScreenRecorder } = require('puppeteer-screen-recorder');
@@ -2571,7 +2574,8 @@ bot.on('callback_query', async (queryObj) => {
         return;
     }
 
-             if (data.startsWith('action_play_')) {
+             
+          if (data.startsWith('action_play_')) {
         const searchQuery = playCache[chatId];
         if (!searchQuery) {
             return bot.editMessageText(`[ERROR] Search memory expired. Please run the /play command again.`, { chat_id: chatId, message_id: msgId });
@@ -2579,47 +2583,42 @@ bot.on('callback_query', async (queryObj) => {
 
         const isVideo = data === 'action_play_video';
         const ext = isVideo ? 'mp4' : 'mp3';
-        const mediaPath = path.join(__dirname, `play_temp_${Date.now()}.${ext}`);
+        const mediaPath = path.join(__dirname, `relay_temp_${Date.now()}.${ext}`);
+        
+        // YOUR LIVE TERMUX TUNNEL
+        const TERMUX_API_URL = 'https://1d09bb91ee7fcb.lhr.life/api/download';
 
         try {
-            await bot.editMessageText(`[SYSTEM] Engaging yt-dlp Wrapper Engine for: "${searchQuery}"\nExtracting ${ext.toUpperCase()} format...`, { chat_id: chatId, message_id: msgId });
+            await bot.editMessageText(`[SYSTEM] Forwarding request to Termux Residential Node...\nBypassing Datacenter IP...`, { chat_id: chatId, message_id: msgId });
 
-            // 1. Direct path to your pre-existing cookies.txt file
-            const cookieTxtPath = path.join(__dirname, 'cookies.txt');
+            // 1. Require axios (make sure 'axios' is installed in your package.json!)
+            const axios = require('axios');
 
-            // 2. Build the precise options object
-            const dlOptions = {
-                output: mediaPath,
-                noWarnings: true,
-                noPlaylist: true,
-                noCheckCertificates: true, // Prevents Heroku/Render SSL crash
-                // Stealth headers to help bypass datacenter IP blocks
-                addHeader: ['referer:youtube.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36']
-            };
+            // 2. Send the request to your phone and expect a raw file stream back
+            const response = await axios({
+                method: 'POST',
+                url: TERMUX_API_URL,
+                data: {
+                    url: `ytsearch1:${searchQuery}`,
+                    isVideo: isVideo
+                },
+                responseType: 'stream',
+                timeout: 300000 // Gives your phone 5 minutes to download the video
+            });
 
-            // 3. Inject the direct TXT file (No conversion needed)
-            if (fs.existsSync(cookieTxtPath)) {
-                dlOptions.cookies = cookieTxtPath;
-            } else {
-                // Fallback cheat code just in case the file gets deleted
-                dlOptions.extractorArgs = 'youtube:player_client=android_vr';
-            }
+            await bot.editMessageText(`[SYSTEM] Termux Extraction Complete.\nReceiving file stream into Cloud RAM...`, { chat_id: chatId, message_id: msgId });
 
-            // 4. Format-Specific Flags
-            if (isVideo) {
-    dlOptions.format = 'best[ext=mp4]/best';
-    dlOptions.mergeOutputFormat = 'mp4';
-} else {
-    dlOptions.extractAudio = true;
-    dlOptions.audioFormat = 'mp3';
-}
+            // 3. Pipe the incoming data from your phone directly into Heroku's storage
+            const writer = fs.createWriteStream(mediaPath);
+            response.data.pipe(writer);
 
-            // 5. Fire the wrapper
-            await bot.editMessageText(`[SYSTEM] Engine configured. Downloading media to server RAM...`, { chat_id: chatId, message_id: msgId });
-            
-            await youtubedl(`ytsearch1:${searchQuery}`, dlOptions);
+            // Wait for the file transfer to completely finish
+            await new Promise((resolve, reject) => {
+                writer.on('finish', resolve);
+                writer.on('error', reject);
+            });
 
-            // 6. Verify & Deliver
+            // 4. Verify & Deliver to Telegram
             if (fs.existsSync(mediaPath)) {
                 const stats = fs.statSync(mediaPath);
                 const fileSizeMB = stats.size / (1024 * 1024);
@@ -2627,12 +2626,12 @@ bot.on('callback_query', async (queryObj) => {
                 if (fileSizeMB > 49.5) {
                     await bot.editMessageText(`[ERROR] Extracted file is too large (${fileSizeMB.toFixed(1)}MB). Telegram limit is 50MB.`, { chat_id: chatId, message_id: msgId });
                 } else {
-                    await bot.editMessageText(`[SYSTEM] Uploading ${fileSizeMB.toFixed(1)}MB ${ext.toUpperCase()} to Telegram...`, { chat_id: chatId, message_id: msgId });
+                    await bot.editMessageText(`[SYSTEM] File secured on Cloud.\nUploading ${fileSizeMB.toFixed(1)}MB to Telegram...`, { chat_id: chatId, message_id: msgId });
 
                     if (isVideo) {
-                        await bot.sendVideo(chatId, mediaPath, { caption: `[SUCCESS] Downloaded: ${searchQuery}` });
+                        await bot.sendVideo(chatId, mediaPath, { caption: `[SUCCESS] Downloaded via Termux Node: ${searchQuery}` });
                     } else {
-                        await bot.sendAudio(chatId, mediaPath, { caption: `[SUCCESS] Downloaded: ${searchQuery}` });
+                        await bot.sendAudio(chatId, mediaPath, { caption: `[SUCCESS] Downloaded via Termux Node: ${searchQuery}` });
                     }
 
                     await bot.deleteMessage(chatId, msgId).catch(() => {});
@@ -2640,24 +2639,18 @@ bot.on('callback_query', async (queryObj) => {
 
                 fs.unlinkSync(mediaPath);
             } else {
-                throw new Error("Engine finished but no file was generated.");
+                throw new Error("File transfer failed during the HTTP stream.");
             }
 
         } catch (err) {
-            console.error(`[YT-DLP WRAPPER ERROR]`, err.message);
-            
-            let cleanError = err.message;
-            if (err.message && err.message.includes('ERROR:')) {
-                cleanError = err.message.split('\n').find(line => line.includes('ERROR:')) || err.message;
-            }
-            
-            bot.editMessageText(`[ERROR] Extraction failed:\n${cleanError}`, { chat_id: chatId, message_id: msgId }).catch(()=>{});
+            console.error(`[RELAY ERROR]`, err.message);
+            bot.editMessageText(`[ERROR] Termux Relay failed:\n${err.message}`, { chat_id: chatId, message_id: msgId }).catch(()=>{});
             if (fs.existsSync(mediaPath)) fs.unlinkSync(mediaPath).catch(()=>{});
         }
 
         playCache[chatId] = null;
     }
- 
+  
  
                 
 });
