@@ -2594,13 +2594,14 @@ bot.on('callback_query', async (queryObj) => {
             // 3. Format the search string exactly like Termux
             const searchTarget = searchQuery.startsWith('http') ? searchQuery : `ytsearch1:${searchQuery}`;
 
-            // 4. THE EXACT TERMUX STRINGS (Bypassing the wrapper entirely)
+                        // 4. THE EXACT TERMUX STRINGS (Removed cookies to keep VR enabled)
             let command = '';
             if (isVideo) {
-                command = `"${ytDlpBinary}" -f "bestvideo[height<=720]+bestaudio/best" --merge-output-format mp4 -o "${mediaPath}" --extractor-args "youtube:player_client=android_vr" ${cookieFlag} "${searchTarget}"`;
+                command = `"${ytDlpBinary}" -f "bestvideo[height<=720]+bestaudio/best" --merge-output-format mp4 -o "${mediaPath}" --extractor-args "youtube:player_client=android_vr" "${searchTarget}"`;
             } else {
-                command = `"${ytDlpBinary}" -x --audio-format mp3 -o "${mediaPath}" --extractor-args "youtube:player_client=android_vr" ${cookieFlag} "${searchTarget}"`;
+                command = `"${ytDlpBinary}" -x --audio-format mp3 -o "${mediaPath}" --extractor-args "youtube:player_client=android_vr" "${searchTarget}"`;
             }
+
 
             // 5. Fire the native engine
             await bot.editMessageText(`[SYSTEM] Engine configured. Bypassing wrapper and downloading via native terminal...`, { chat_id: chatId, message_id: msgId });
