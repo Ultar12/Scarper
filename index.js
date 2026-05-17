@@ -2578,28 +2578,31 @@ bot.on('callback_query', async (queryObj) => {
         try {
             await bot.editMessageText(`[SYSTEM] Engaging yt-dlp Python Engine for: "${searchQuery}"\nExtracting ${ext.toUpperCase()} format...`, { chat_id: chatId, message_id: msgId });
 
-                                    // 1. Auto-Convert JSON Cookies (Required to bypass Datacenter IP ban)
+                                                // 1. Auto-Convert JSON Cookies
             const activeCookiePath = prepareGhostCookies();
 
-            // 2. EXACT 1:1 TERMUX COMMAND MATCH
+            // 2. ANDROID VR + FFmpeg TERMUX LOGIC
             const dlOptions = isVideo ? {
-                f: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', // Termux -f flag
-                mergeOutputFormat: 'mp4',  // Termux --merge-output-format flag
-                o: mediaPath,              // Termux -o flag
-                noplaylist: true,
-                noWarnings: true
+                format: 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', 
+                mergeOutputFormat: 'mp4', 
+                output: mediaPath,              
+                noPlaylist: true, // FIX: Capital 'P' forces the correct --no-playlist flag
+                noWarnings: true,
+                extractorArgs: 'youtube:player_client=android_vr' // THE CHEAT CODE
             } : {
-                x: true,                   // Termux -x flag (Extract Audio)
-                audioFormat: 'mp3',        // Termux --audio-format mp3
-                o: mediaPath,              // Termux -o flag
-                noplaylist: true,
-                noWarnings: true
+                extractAudio: true, // Safely triggers -x
+                audioFormat: 'mp3', 
+                output: mediaPath,              
+                noPlaylist: true, // FIX: Capital 'P' forces the correct --no-playlist flag
+                noWarnings: true,
+                extractorArgs: 'youtube:player_client=android_vr' // THE CHEAT CODE
             };
 
-            // Inject the cookies to prove Heroku is a human
+            // Inject the cookies
             if (activeCookiePath) {
                 dlOptions.cookies = activeCookiePath;
             }
+
 
 
 
