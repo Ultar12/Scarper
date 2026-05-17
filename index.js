@@ -3621,6 +3621,7 @@ const updateStatus = async (text) => {
 };
 
 
+
 bot.onText(/\/withdraw\s+task/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     const adminId = process.env.ADMIN_ID || '7710721646';
@@ -3651,7 +3652,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             recordVideo: { dir: videoDir, size: { width: 412, height: 915 } }
         });
 
-        // 2. SPAWN ALL 10 TABS
+        // 2. SPAWN ALL 10 TABS (SEQUENTIAL)
         await bot.editMessageText(`[SYSTEM] Spawning ${TOTAL_TABS} isolated memory environments...`, { chat_id: chatId, message_id: statusMsg.message_id });
         for (let i = 0; i < TOTAL_TABS; i++) {
             const p = await context.newPage();
@@ -3680,6 +3681,9 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                 }, 300);
             });
             pages.push(p);
+            
+            // Tiny breather to let the OS allocate RAM safely
+            await new Promise(r => setTimeout(r, 200));
         }
 
         const masterPage = pages[0];
@@ -3724,11 +3728,13 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             throw new Error(`Balance ${rawBalance} is too low.`);
         }
 
-        await bot.editMessageText(`[SYSTEM] Target Acquired: ${targetAmount}. Preparing all ${TOTAL_TABS} clones...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        await bot.editMessageText(`[SYSTEM] Target Acquired: ${targetAmount}. Preparing clones sequentially...`, { chat_id: chatId, message_id: statusMsg.message_id });
 
-        // 5. PARALLEL SETUP: ALL CLONES PREPARE THE WITHDRAWAL
-        await Promise.all(pages.map(async (p, index) => {
+        // 5. SEQUENTIAL SETUP: PREPARE TABS ONE AFTER THE OTHER (Zero RAM Spikes)
+        for (let index = 0; index < pages.length; index++) {
+            const p = pages[index];
             console.log(`[TAB ${index + 1}] Preparing...`);
+            
             await p.goto('https://www.wsjobs-ng.com/account/withdraw', { waitUntil: 'domcontentloaded' });
             await p.waitForTimeout(4000);
 
@@ -3759,7 +3765,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
             await p.mouse.click(206, 320).catch(() => {}); 
 
-            // Password Input with expanded locators
+            // Password Input
             const passLocatorString = 'input[type="password"], input[placeholder*="assword"], .van-password-input, .modal-body input, .modal input, input[type="tel"]';
             const passInput = p.locator(passLocatorString).last();
 
@@ -3771,9 +3777,9 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             await p.waitForTimeout(1500);
             
             console.log(`[TAB ${index + 1}] LOADED AND READY`);
-        }));
+        }
 
-        // 6. SYNCHRONIZED MASS STRIKE (RACE CONDITION TRIGGER)
+        // 6. SYNCHRONIZED MASS STRIKE (PROMISE.ALL EXCLUSIVELY FOR THE FINAL BUTTON)
         await bot.editMessageText(`[SYSTEM] CLONES READY. EXECUTING SIMULTANEOUS STRIKE!`, { chat_id: chatId, message_id: statusMsg.message_id });
         
         await Promise.all(pages.map(async (p, index) => {
@@ -3830,7 +3836,6 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await bot.sendMessage(chatId, `[WITHDRAW ERROR]: ${err.message}`).catch(() => {}); 
     } finally {
         if (context) {
-            // Safely grab video paths before destroying the context
             let videoPaths = [];
             for (let p of pages) {
                 const v = p.video();
@@ -3841,7 +3846,6 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             }
             await context.close().catch(() => {});
             
-            // Cleanup video files
             for (let vp of videoPaths) {
                 if (fs.existsSync(vp)) fs.unlinkSync(vp);
             }
