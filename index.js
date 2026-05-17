@@ -2607,12 +2607,12 @@ bot.on('callback_query', async (queryObj) => {
 
             // 4. Format-Specific Flags
             if (isVideo) {
-                dlOptions.format = 'best[height<=720]/best';
-                dlOptions.mergeOutputFormat = 'mp4';
-            } else {
-                dlOptions.extractAudio = true;
-                dlOptions.audioFormat = 'mp3';
-            }
+    dlOptions.format = 'best[ext=mp4]/best';
+    dlOptions.mergeOutputFormat = 'mp4';
+} else {
+    dlOptions.extractAudio = true;
+    dlOptions.audioFormat = 'mp3';
+}
 
             // 5. Fire the wrapper
             await bot.editMessageText(`[SYSTEM] Engine configured. Downloading media to server RAM...`, { chat_id: chatId, message_id: msgId });
