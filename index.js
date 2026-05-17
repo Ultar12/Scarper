@@ -3641,10 +3641,15 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
     try {
         process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
 
-        // Your exact working launch logic
+        // --- THE HEROKU EPERM / SIGSEGV FIX ---
         browser = await firefox.launch({ 
             headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
+            // Firefox ignores '--no-sandbox'. It strictly requires these environment variables on Heroku.
+            env: {
+                ...process.env,
+                'MOZ_DISABLE_CONTENT_SANDBOX': '1',
+                'MOZ_FAKE_NO_SANDBOX': '1'
+            }
         });
 
         context = await browser.newContext({
