@@ -2571,7 +2571,7 @@ bot.on('callback_query', async (queryObj) => {
         return;
     }
 
-          if (data.startsWith('action_play_')) {
+             if (data.startsWith('action_play_')) {
         const searchQuery = playCache[chatId];
         if (!searchQuery) {
             return bot.editMessageText(`[ERROR] Search memory expired. Please run the /play command again.`, { chat_id: chatId, message_id: msgId });
@@ -2582,35 +2582,41 @@ bot.on('callback_query', async (queryObj) => {
         const mediaPath = path.join(__dirname, `play_temp_${Date.now()}.${ext}`);
 
         try {
-            await bot.editMessageText(`[SYSTEM] Engaging Native Terminal Engine for: "${searchQuery}"\nExtracting ${ext.toUpperCase()} format...`, { chat_id: chatId, message_id: msgId });
+            await bot.editMessageText(`[SYSTEM] Engaging yt-dlp Wrapper Engine for: "${searchQuery}"\nExtracting ${ext.toUpperCase()} format...`, { chat_id: chatId, message_id: msgId });
 
-            // 1. Auto-Convert            // 1. Auto-Convert JSON Cookies (MANDATORY FOR HEROKU IP)
-            const activeCookiePath = typeof prepareGhostCookies === 'function' ? prepareGhostCookies() : '';
-            const cookieFlag = activeCookiePath ? `--cookies "${activeCookiePath}"` : '';
+            // 1. Direct path to your pre-existing cookies.txt file
+            const cookieTxtPath = path.join(__dirname, 'cookies.txt');
 
-            // 2. Locate the raw yt-dlp binary
-            const ytDlpBinary = path.join(process.cwd(), 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp');
+            // 2. Build the precise options object
+            const dlOptions = {
+                output: mediaPath,
+                noWarnings: true,
+                noPlaylist: true,
+                // Stealth headers to help bypass datacenter IP blocks
+                addHeader: ['referer:youtube.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36']
+            };
 
-            // 3. Format the search string
-            const searchTarget = searchQuery.startsWith('http') ? searchQuery : `ytsearch1:${searchQuery}`;
-
-            // 4. NATIVE TERMINAL COMMANDS (Cookies ON, VR OFF)
-            let command = '';
-            if (isVideo) {
-                // Relies purely on cookies to bypass bot checks, grabs up to 720p HD
-                command = `"${ytDlpBinary}" -f "bestvideo[height<=720]+bestaudio/best" --merge-output-format mp4 -o "${mediaPath}" ${cookieFlag} "${searchTarget}"`;
+            // 3. Inject the direct TXT file (No conversion needed)
+            if (fs.existsSync(cookieTxtPath)) {
+                dlOptions.cookies = cookieTxtPath;
             } else {
-                // Relies purely on cookies, extracts MP3
-                command = `"${ytDlpBinary}" -x --audio-format mp3 -o "${mediaPath}" ${cookieFlag} "${searchTarget}"`;
+                // Fallback cheat code just in case the file gets deleted
+                dlOptions.extractorArgs = 'youtube:player_client=android_vr';
             }
 
+            // 4. Format-Specific Flags
+            if (isVideo) {
+                dlOptions.format = 'bestvideo[height<=720]+bestaudio/best';
+                dlOptions.mergeOutputFormat = 'mp4';
+            } else {
+                dlOptions.extractAudio = true;
+                dlOptions.audioFormat = 'mp3';
+            }
 
-
-            // 5. Fire the native engine
-            await bot.editMessageText(`[SYSTEM] Engine configured. Bypassing wrapper and downloading via native terminal...`, { chat_id: chatId, message_id: msgId });
+            // 5. Fire the wrapper
+            await bot.editMessageText(`[SYSTEM] Engine configured. Downloading media to server RAM...`, { chat_id: chatId, message_id: msgId });
             
-            console.log("RUNNING NATIVE COMMAND:\n", command);
-            await execPromise(command);
+            await youtubedl(`ytsearch1:${searchQuery}`, dlOptions);
 
             // 6. Verify & Deliver
             if (fs.existsSync(mediaPath)) {
@@ -2633,18 +2639,18 @@ bot.on('callback_query', async (queryObj) => {
 
                 fs.unlinkSync(mediaPath);
             } else {
-                throw new Error("Terminal process finished but no file was generated at the expected path.");
+                throw new Error("Engine finished but no file was generated.");
             }
 
         } catch (err) {
-            console.error(`[NATIVE TERMINAL ERROR]`, err.stderr || err.message);
+            console.error(`[YT-DLP WRAPPER ERROR]`, err.message);
             
-            let cleanError = err.stderr || err.message;
-            if (cleanError && cleanError.includes('ERROR:')) {
-                cleanError = cleanError.split('\n').find(line => line.includes('ERROR:')) || cleanError;
+            let cleanError = err.message;
+            if (err.message && err.message.includes('ERROR:')) {
+                cleanError = err.message.split('\n').find(line => line.includes('ERROR:')) || err.message;
             }
             
-            bot.editMessageText(`[ERROR] Extraction failed:\n${cleanError}`, { chat_id: chatId, message_id: msgId });
+            bot.editMessageText(`[ERROR] Extraction failed:\n${cleanError}`, { chat_id: chatId, message_id: msgId }).catch(()=>{});
             if (fs.existsSync(mediaPath)) fs.unlinkSync(mediaPath).catch(()=>{});
         }
 
