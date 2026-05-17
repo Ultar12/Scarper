@@ -21,7 +21,7 @@ const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
 
-const TERMUX_API_URL = 'https://1d09bb91ee7fcb.lhr.life/api/download';
+const TERMUX_API_URL = 'https://67ca5913bba2b9.lhr.life/api/download';
 
 
 
