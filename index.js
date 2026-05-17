@@ -2578,33 +2578,29 @@ bot.on('callback_query', async (queryObj) => {
         try {
             await bot.editMessageText(`[SYSTEM] Engaging yt-dlp Python Engine for: "${searchQuery}"\nExtracting ${ext.toUpperCase()} format...`, { chat_id: chatId, message_id: msgId });
 
-                        // Auto-Convert JSON Cookies (Using the function we added earlier)
+                                    // 1. Auto-Convert JSON Cookies (Required to bypass Datacenter IP ban)
             const activeCookiePath = prepareGhostCookies();
 
-            // 2. Exact Python-to-Node translation of your working config
+            // 2. EXACT 1:1 TERMUX COMMAND MATCH
             const dlOptions = isVideo ? {
-                // Python's exact video format string:
-                format: 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                mergeOutputFormat: 'mp4',
-                output: mediaPath,
-                noPlaylist: true,     // Python's 'noplaylist': True
-                ignoreErrors: true,   // Python's 'ignoreerrors': True
-                noWarnings: true      // Python's 'quiet': True
+                f: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', // Termux -f flag
+                mergeOutputFormat: 'mp4',  // Termux --merge-output-format flag
+                o: mediaPath,              // Termux -o flag
+                noplaylist: true,
+                noWarnings: true
             } : {
-                // Python's exact audio format and FFmpeg extractor logic:
-                format: 'bestaudio/best',
-                extractAudio: true,   // Triggers FFmpegExtractAudio
-                audioFormat: 'mp3',   // Sets 'preferredcodec': 'mp3'
-                output: mediaPath,
-                noPlaylist: true,
-                ignoreErrors: true,
+                x: true,                   // Termux -x flag (Extract Audio)
+                audioFormat: 'mp3',        // Termux --audio-format mp3
+                o: mediaPath,              // Termux -o flag
+                noplaylist: true,
                 noWarnings: true
             };
 
-            // Inject the cookies explicitly
+            // Inject the cookies to prove Heroku is a human
             if (activeCookiePath) {
                 dlOptions.cookies = activeCookiePath;
             }
+
 
 
             // 3. Fire the engine
