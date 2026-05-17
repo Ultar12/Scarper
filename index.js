@@ -2575,7 +2575,7 @@ bot.on('callback_query', async (queryObj) => {
     }
 
              
-          if (data.startsWith('action_play_')) {
+              if (data.startsWith('action_play_')) {
         const searchQuery = playCache[chatId];
         if (!searchQuery) {
             return bot.editMessageText(`[ERROR] Search memory expired. Please run the /play command again.`, { chat_id: chatId, message_id: msgId });
@@ -2585,16 +2585,15 @@ bot.on('callback_query', async (queryObj) => {
         const ext = isVideo ? 'mp4' : 'mp3';
         const mediaPath = path.join(__dirname, `relay_temp_${Date.now()}.${ext}`);
         
-        // YOUR LIVE TERMUX TUNNEL
+        // YOUR LIVE SSH TUNNEL
         const TERMUX_API_URL = 'https://1d09bb91ee7fcb.lhr.life/api/download';
 
         try {
-            await bot.editMessageText(`[SYSTEM] Forwarding request to Termux Residential Node...\nBypassing Datacenter IP...`, { chat_id: chatId, message_id: msgId });
+            await bot.editMessageText(`[SYSTEM] Forwarding request to Termux Node...\nBypassing Datacenter IP...`, { chat_id: chatId, message_id: msgId });
 
-            // 1. Require axios (make sure 'axios' is installed in your package.json!)
             const axios = require('axios');
 
-            // 2. Send the request to your phone and expect a raw file stream back
+            // Send the request and expect a raw file stream back
             const response = await axios({
                 method: 'POST',
                 url: TERMUX_API_URL,
@@ -2603,22 +2602,22 @@ bot.on('callback_query', async (queryObj) => {
                     isVideo: isVideo
                 },
                 responseType: 'stream',
-                timeout: 300000 // Gives your phone 5 minutes to download the video
+                // We set timeout just under Heroku's 30s limit to catch it gracefully
+                timeout: 29000 
             });
 
-            await bot.editMessageText(`[SYSTEM] Termux Extraction Complete.\nReceiving file stream into Cloud RAM...`, { chat_id: chatId, message_id: msgId });
+            await bot.editMessageText(`[SYSTEM] Termux Extraction Complete.\nReceiving fast file stream into Heroku...`, { chat_id: chatId, message_id: msgId });
 
-            // 3. Pipe the incoming data from your phone directly into Heroku's storage
+            // Pipe the incoming data from your phone directly into Heroku's storage
             const writer = fs.createWriteStream(mediaPath);
             response.data.pipe(writer);
 
-            // Wait for the file transfer to completely finish
             await new Promise((resolve, reject) => {
                 writer.on('finish', resolve);
                 writer.on('error', reject);
             });
 
-            // 4. Verify & Deliver to Telegram
+            // Verify & Deliver to Telegram
             if (fs.existsSync(mediaPath)) {
                 const stats = fs.statSync(mediaPath);
                 const fileSizeMB = stats.size / (1024 * 1024);
@@ -2626,12 +2625,12 @@ bot.on('callback_query', async (queryObj) => {
                 if (fileSizeMB > 49.5) {
                     await bot.editMessageText(`[ERROR] Extracted file is too large (${fileSizeMB.toFixed(1)}MB). Telegram limit is 50MB.`, { chat_id: chatId, message_id: msgId });
                 } else {
-                    await bot.editMessageText(`[SYSTEM] File secured on Cloud.\nUploading ${fileSizeMB.toFixed(1)}MB to Telegram...`, { chat_id: chatId, message_id: msgId });
+                    await bot.editMessageText(`[SYSTEM] File secured on Heroku.\nUploading ${fileSizeMB.toFixed(1)}MB to Telegram...`, { chat_id: chatId, message_id: msgId });
 
                     if (isVideo) {
-                        await bot.sendVideo(chatId, mediaPath, { caption: `[SUCCESS] Downloaded via Termux Node: ${searchQuery}` });
+                        await bot.sendVideo(chatId, mediaPath, { caption: `[SUCCESS] Downloaded via Termux Relay: ${searchQuery}` });
                     } else {
-                        await bot.sendAudio(chatId, mediaPath, { caption: `[SUCCESS] Downloaded via Termux Node: ${searchQuery}` });
+                        await bot.sendAudio(chatId, mediaPath, { caption: `[SUCCESS] Downloaded via Termux Relay: ${searchQuery}` });
                     }
 
                     await bot.deleteMessage(chatId, msgId).catch(() => {});
@@ -2650,7 +2649,7 @@ bot.on('callback_query', async (queryObj) => {
 
         playCache[chatId] = null;
     }
-  
+
  
                 
 });
