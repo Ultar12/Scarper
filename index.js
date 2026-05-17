@@ -3622,14 +3622,15 @@ const updateStatus = async (text) => {
 
 
 
+
 bot.onText(/\/withdraw\s+task/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     const adminId = process.env.ADMIN_ID || '7710721646';
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
 
-    const TOTAL_TABS = 10; // 1 Master + 9 Clones
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting ${TOTAL_TABS} Synchronized Clone Tabs for Mass Withdrawal...`);
-
+    const TOTAL_TABS = 10;
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting ${TOTAL_TABS} Synchronized Firefox Clones...`);
+    
     const videoDir = path.join(__dirname, 'videos');
     if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
 
@@ -3640,24 +3641,35 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
     try {
         process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
 
+        // Your exact working launch logic
         browser = await firefox.launch({ 
             headless: true,
             args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
 
-        // 1. ONE SHARED CONTEXT SO ALL TABS SHARE THE LOGIN
         context = await browser.newContext({
             userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
             viewport: { width: 412, height: 915 },
             recordVideo: { dir: videoDir, size: { width: 412, height: 915 } }
         });
 
-        // 2. SPAWN ALL 10 TABS (SEQUENTIAL)
-        await bot.editMessageText(`[SYSTEM] Spawning ${TOTAL_TABS} isolated memory environments...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        // --- 1. SEQUENTIAL TAB SPAWNING WITH RAM SHIELD ---
+        await bot.editMessageText(`[SYSTEM] Spawning ${TOTAL_TABS} isolated environments...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        
         for (let i = 0; i < TOTAL_TABS; i++) {
             const p = await context.newPage();
-            
-            // Inject Human Sniper into EVERY clone
+
+            // RAM SHIELD: Blocks heavy graphical assets on the 9 clone tabs to prevent Heroku OOM crashes.
+            // i === 0 (Master Tab) is skipped so your final screenshot still looks perfect.
+            if (i > 0) {
+                await p.route('**/*', route => {
+                    const type = route.request().resourceType();
+                    if (['image', 'media', 'font'].includes(type)) route.abort();
+                    else route.continue();
+                });
+            }
+
+            // --- THE HUMAN SNIPER (MODAL KILLER) ---
             await p.addInitScript(() => {
                 Object.defineProperty(navigator, 'webdriver', { get: () => false });
                 setInterval(() => {
@@ -3680,16 +3692,16 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                     }
                 }, 300);
             });
+
             pages.push(p);
-            
-            // Tiny breather to let the OS allocate RAM safely
-            await new Promise(r => setTimeout(r, 200));
+            // CPU breather to prevent OS panics
+            await new Promise(r => setTimeout(r, 200)); 
         }
 
         const masterPage = pages[0];
 
-        // 3. AUTHENTICATE ON MASTER TAB
-        await bot.editMessageText('[SYSTEM] Authenticating master session...', { chat_id: chatId, message_id: statusMsg.message_id });
+        // --- 2. ACCOUNT LOGIN & TELEPORT (MASTER TAB ONLY) ---
+        await bot.editMessageText('[SYSTEM] Navigating to Account...', { chat_id: chatId, message_id: statusMsg.message_id });
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await masterPage.waitForTimeout(4000);
 
@@ -3702,10 +3714,10 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             await masterPage.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
         }
 
-        // 4. PRECISION BALANCE CHECK (Master Tab Only)
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await masterPage.waitForTimeout(5000); 
 
+        // --- 3. PRECISION BALANCE SCRAPER ---
         const rawBalance = await masterPage.evaluate(() => {
             const allText = document.body.innerText;
             const decimalMatches = allText.match(/\d+\.\d{2}/g);
@@ -3724,21 +3736,21 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
         if (!targetAmount) {
             const errSnap = await masterPage.screenshot();
-            await bot.sendPhoto(chatId, errSnap, { caption: `[DIAGNOSTIC] Detected Balance: ${rawBalance}. Too low.` });
+            await bot.sendPhoto(chatId, errSnap, { caption: `[DIAGNOSTIC] Detected Balance: ${rawBalance}. Too low.` }, { filename: 'low_balance.png' });
             throw new Error(`Balance ${rawBalance} is too low.`);
         }
 
-        await bot.editMessageText(`[SYSTEM] Target Acquired: ${targetAmount}. Preparing clones sequentially...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        await bot.editMessageText(`[SYSTEM] Target Acquired: ${targetAmount}. Prepping ${TOTAL_TABS} clone tabs sequentially...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
 
-        // 5. SEQUENTIAL SETUP: PREPARE TABS ONE AFTER THE OTHER (Zero RAM Spikes)
-        for (let index = 0; index < pages.length; index++) {
-            const p = pages[index];
-            console.log(`[TAB ${index + 1}] Preparing...`);
-            
+        // --- 4. SEQUENTIAL PREPARATION (ONE BY ONE TO PREVENT CRASHES) ---
+        for (let i = 0; i < pages.length; i++) {
+            const p = pages[i];
+            console.log(`[TAB ${i + 1}] Preparing...`);
+
             await p.goto('https://www.wsjobs-ng.com/account/withdraw', { waitUntil: 'domcontentloaded' });
             await p.waitForTimeout(4000);
 
-            // Click Amount
+            // Click Amount Chip
             await p.evaluate((amt) => {
                 const chips = Array.from(document.querySelectorAll('div, span, p, button, [class*="item"]'));
                 const targetChip = chips.find(c => c.innerText?.trim() === amt.toString() && c.offsetHeight > 0);
@@ -3748,42 +3760,63 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                 }
             }, targetAmount);
 
-            await p.waitForTimeout(2000);
+            await p.waitForTimeout(3000);
 
-            // Aggressive "Withdraw Now" Click
+            // Nuclear Button Strike (Withdraw Now)
             await p.evaluate(() => {
-                const mainBtn = Array.from(document.querySelectorAll('*')).find(b => 
-                    (b.innerText?.includes('WITHDRAW NOW') || b.innerText?.includes('SACAR AGORA')) && b.offsetHeight > 0
+                const overlays = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"]');
+                overlays.forEach(el => el.remove());
+
+                const textBlockers = Array.from(document.querySelectorAll('div')).filter(el => 
+                    el.innerText?.includes('Saka Yanzu') || el.innerText?.includes('Don Allah sauke App')
                 );
+                textBlockers.forEach(b => b.remove());
+
+                const mainBtn = Array.from(document.querySelectorAll('*')).find(b => 
+                    (b.innerText?.includes('WITHDRAW NOW') || b.innerText?.includes('SACAR AGORA')) && 
+                    b.offsetHeight > 0 && window.getComputedStyle(b).display !== 'none'
+                );
+
                 if (mainBtn) {
+                    const rect = mainBtn.getBoundingClientRect();
+                    const x = rect.left + rect.width / 2;
+                    const y = rect.top + rect.height / 2;
+
+                    const createEvent = (type) => new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, buttons: 1 });
+                    mainBtn.dispatchEvent(createEvent('mousedown'));
+                    mainBtn.dispatchEvent(createEvent('mouseup'));
+                    mainBtn.dispatchEvent(createEvent('click'));
                     mainBtn.click();
-                    ['mousedown', 'mouseup', 'touchstart', 'touchend'].forEach(type => {
-                        mainBtn.dispatchEvent(new Event(type, { bubbles: true }));
-                    });
                 }
             });
 
             await p.mouse.click(206, 320).catch(() => {}); 
+            await p.waitForTimeout(3000);
 
             // Password Input
-            const passLocatorString = 'input[type="password"], input[placeholder*="assword"], .van-password-input, .modal-body input, .modal input, input[type="tel"]';
-            const passInput = p.locator(passLocatorString).last();
-
+            const passInput = p.locator('input[type="password"], .modal-body input, [placeholder*="password"], [placeholder*="senha"]').last();
             await passInput.waitFor({ state: 'visible', timeout: 15000 });
-            await passInput.click({ force: true });
-            await p.evaluate(el => el.value = '', await passInput.elementHandle()).catch(()=>{}); 
+            await passInput.click();
+            await p.evaluate(el => el.value = '', await passInput.elementHandle()); 
             await passInput.type('111111', { delay: 100 }); 
             await p.keyboard.press('Tab'); 
             await p.waitForTimeout(1500);
-            
-            console.log(`[TAB ${index + 1}] LOADED AND READY`);
+
+            console.log(`[TAB ${i + 1}] LOADED AND READY FOR FINAL STRIKE`);
         }
 
-        // 6. SYNCHRONIZED MASS STRIKE (PROMISE.ALL EXCLUSIVELY FOR THE FINAL BUTTON)
-        await bot.editMessageText(`[SYSTEM] CLONES READY. EXECUTING SIMULTANEOUS STRIKE!`, { chat_id: chatId, message_id: statusMsg.message_id });
-        
-        await Promise.all(pages.map(async (p, index) => {
+        // --- 5. SYNCHRONIZED MASS CLICK (PROMISE.ALL) ---
+        await bot.editMessageText(`[SYSTEM] CLONES LOADED. FIRING PROMISE.ALL CONFIRM STRIKE!`, { chat_id: chatId, message_id: statusMsg.message_id });
+
+        await Promise.all(pages.map(async (p, i) => {
             try {
+                // Phase A: Native Playwright Tap
+                try {
+                    const confirmBtn = p.locator('text=/Tabbatar Cirewa|Confirm|Confirmar/i').last();
+                    await confirmBtn.tap({ force: true, delay: 150, timeout: 3000 });
+                } catch (e) {}
+
+                // Phase B: JS Mobile Touch Strike
                 await p.evaluate(() => {
                     const modalBlockers = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"]');
                     modalBlockers.forEach(el => el.remove());
@@ -3803,29 +3836,38 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
                         const evData = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
                         ['mousedown', 'mouseup', 'click'].forEach(t => target.dispatchEvent(new MouseEvent(t, evData)));
+
+                        try {
+                            const touchObj = new Touch({ identifier: Date.now(), target: target, clientX: x, clientY: y, radiusX: 2.5, radiusY: 2.5, rotationAngle: 10, force: 0.5 });
+                            target.dispatchEvent(new TouchEvent('touchstart', { cancelable: true, bubbles: true, touches: [touchObj], targetTouches: [touchObj], changedTouches: [touchObj] }));
+                            target.dispatchEvent(new TouchEvent('touchend', { cancelable: true, bubbles: true, touches: [], targetTouches: [], changedTouches: [touchObj] }));
+                        } catch(e) {}
+                        
                         target.click();
                     }
                 });
 
+                // Phase C: Physical Backup Tap
                 await p.mouse.click(300, 720).catch(() => {}); 
                 await p.mouse.click(300, 700).catch(() => {}); 
-                console.log(`[TAB ${index + 1}] CONFIRMED`);
+
+                console.log(`[TAB ${i + 1}] STRIKE EXECUTED`);
             } catch (err) {
-                console.log(`[TAB ${index + 1}] ERROR: ${err.message}`);
+                console.log(`[TAB ${i + 1}] ERROR: ${err.message}`);
             }
         }));
 
-        // Give the server time to process the 10 simultaneous hits
         await masterPage.waitForTimeout(5000);
 
-        // 7. VERIFICATION
-        await bot.editMessageText(`[SYSTEM] Strike complete. Refreshing master tab for results...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        // --- 6. SUCCESS REFRESH & CAPTURE ---
+        await bot.editMessageText(`[SYSTEM] Strike complete. Refreshing master tab for results...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
         await masterPage.waitForTimeout(5000); 
 
         const finalSnap = await masterPage.screenshot({ type: 'png' });
-        
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+
         await bot.sendPhoto(chatId, finalSnap, 
             { caption: `[SUCCESS] Mass Clone Withdrawal Triggered (${TOTAL_TABS} tabs)` },
             { filename: 'withdraw_mass.png' } 
@@ -3834,25 +3876,35 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
     } catch (err) {
         console.log(`[WITHDRAW ERROR]: ${err.message}`);
         await bot.sendMessage(chatId, `[WITHDRAW ERROR]: ${err.message}`).catch(() => {}); 
+        
+        if (context && pages.length > 0) {
+            try {
+                const errSnap = await pages[0].screenshot({ type: 'png' }).catch(() => null);
+                if (errSnap) await bot.sendPhoto(chatId, errSnap, { caption: `[DIAGNOSTIC] Screen state at failure.` }).catch(() => {});
+            } catch (e) {}
+        }
     } finally {
         if (context) {
-            let videoPaths = [];
-            for (let p of pages) {
-                const v = p.video();
-                if (v) {
-                    const vp = await v.path().catch(() => null);
-                    if (vp) videoPaths.push(vp);
+            try {
+                const activePages = context.pages();
+                const videoPaths = [];
+                for (const p of activePages) {
+                    const v = p.video();
+                    if (v) {
+                        const vp = await v.path().catch(() => null);
+                        if (vp) videoPaths.push(vp);
+                    }
                 }
-            }
-            await context.close().catch(() => {});
-            
-            for (let vp of videoPaths) {
-                if (fs.existsSync(vp)) fs.unlinkSync(vp);
-            }
+                await context.close().catch(() => {});
+                for (const vp of videoPaths) {
+                    if (fs.existsSync(vp)) fs.unlinkSync(vp);
+                }
+            } catch (e) {}
         }
         if (browser) await browser.close().catch(() => {});
     }
 });
+
 
         
         
