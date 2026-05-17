@@ -2593,7 +2593,6 @@ bot.on('callback_query', async (queryObj) => {
                 noWarnings: true,
                 noPlaylist: true,
                 noCheckCertificates: true, // Prevents Heroku/Render SSL crash
-                preferFreeFormats: true,  
                 // Stealth headers to help bypass datacenter IP blocks
                 addHeader: ['referer:youtube.com', 'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36']
             };
