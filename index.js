@@ -17,6 +17,12 @@ const { remote } = require('webdriverio');
 const axios = require('axios');
 
 
+const { exec } = require('child_process');
+const util = require('util');
+const execPromise = util.promisify(exec);
+
+
+
 const { PuppeteerScreenRecorder } = require('puppeteer-screen-recorder');
 const playCache = {};
 
