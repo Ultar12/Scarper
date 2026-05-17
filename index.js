@@ -2578,32 +2578,33 @@ bot.on('callback_query', async (queryObj) => {
         try {
             await bot.editMessageText(`[SYSTEM] Engaging yt-dlp Python Engine for: "${searchQuery}"\nExtracting ${ext.toUpperCase()} format...`, { chat_id: chatId, message_id: msgId });
 
-            // 1. Auto-Convert JSON Cookies
+                        // 1. Auto-Convert JSON Cookies
             const activeCookiePath = prepareGhostCookies();
 
-            // 2. ANDROID VR + FFmpeg + UNRESTRICTED FORMATS
+            // 2. ANDROID VR + BULLETPROOF SHORT FORMATS
             const dlOptions = isVideo ? {
-                // FIX: Stripped out [ext=mp4] so it can download .webm files
-                format: 'bestvideo[height<=720]+bestaudio/best', 
-                mergeOutputFormat: 'mp4', // FFmpeg will force whatever it downloads into an MP4
-                output: mediaPath,              
+                // bv = bestvideo, ba = bestaudio, 18 = 360p merged MP4, b = best
+                f: 'bv[height<=720]+ba/18/b', 
+                mergeOutputFormat: 'mp4', 
+                o: mediaPath,              
                 noPlaylist: true, 
                 noWarnings: true,
-                extractorArgs: 'youtube:player_client=android_vr' // THE VR CHEAT CODE
+                extractorArgs: 'youtube:player_client=android_vr' // VR Cheat Code
             } : {
-                extractAudio: true, 
+                // Tries best audio, falls back to Format 140 (M4A) or 251 (WebM) from your table
+                f: 'ba/140/251/b', 
+                x: true, // Extract Audio
                 audioFormat: 'mp3', 
-                output: mediaPath,              
+                o: mediaPath,              
                 noPlaylist: true, 
                 noWarnings: true,
-                extractorArgs: 'youtube:player_client=android_vr' // THE VR CHEAT CODE
+                extractorArgs: 'youtube:player_client=android_vr' // VR Cheat Code
             };
 
             // Inject the cookies
             if (activeCookiePath) {
                 dlOptions.cookies = activeCookiePath;
             }
-
 
 
 
