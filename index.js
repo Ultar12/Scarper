@@ -2607,7 +2607,7 @@ bot.on('callback_query', async (queryObj) => {
 
             // 4. Format-Specific Flags
             if (isVideo) {
-                dlOptions.format = 'bestvideo[height<=720]+bestaudio/best';
+                dlOptions.format = 'best[height<=720]/best';
                 dlOptions.mergeOutputFormat = 'mp4';
             } else {
                 dlOptions.extractAudio = true;
