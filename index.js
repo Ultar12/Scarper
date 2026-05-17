@@ -2565,7 +2565,7 @@ bot.on('callback_query', async (queryObj) => {
         return;
     }
 
-       if (data.startsWith('action_play_')) {
+          if (data.startsWith('action_play_')) {
         const searchQuery = playCache[chatId];
         if (!searchQuery) {
             return bot.editMessageText(`[ERROR] Search memory expired. Please run the /play command again.`, { chat_id: chatId, message_id: msgId });
@@ -2576,44 +2576,33 @@ bot.on('callback_query', async (queryObj) => {
         const mediaPath = path.join(__dirname, `play_temp_${Date.now()}.${ext}`);
 
         try {
-            await bot.editMessageText(`[SYSTEM] Engaging yt-dlp Python Engine for: "${searchQuery}"\nExtracting ${ext.toUpperCase()} format...`, { chat_id: chatId, message_id: msgId });
+            await bot.editMessageText(`[SYSTEM] Engaging Native Terminal Engine for: "${searchQuery}"\nExtracting ${ext.toUpperCase()} format...`, { chat_id: chatId, message_id: msgId });
 
-                        // 1. Auto-Convert JSON Cookies
-            const activeCookiePath = prepareGhostCookies();
+            // 1. Auto-Convert JSON Cookies
+            const activeCookiePath = typeof prepareGhostCookies === 'function' ? prepareGhostCookies() : '';
+            const cookieFlag = activeCookiePath ? `--cookies "${activeCookiePath}"` : '';
 
-            // 2. ANDROID VR + BULLETPROOF SHORT FORMATS
-            const dlOptions = isVideo ? {
-                // bv = bestvideo, ba = bestaudio, 18 = 360p merged MP4, b = best
-                f: 'bv[height<=720]+ba/18/b', 
-                mergeOutputFormat: 'mp4', 
-                o: mediaPath,              
-                noPlaylist: true, 
-                noWarnings: true,
-                extractorArgs: 'youtube:player_client=android_vr' // VR Cheat Code
-            } : {
-                // Tries best audio, falls back to Format 140 (M4A) or 251 (WebM) from your table
-                f: 'ba/140/251/b', 
-                x: true, // Extract Audio
-                audioFormat: 'mp3', 
-                o: mediaPath,              
-                noPlaylist: true, 
-                noWarnings: true,
-                extractorArgs: 'youtube:player_client=android_vr' // VR Cheat Code
-            };
+            // 2. Locate the raw yt-dlp binary inside the wrapper's folder
+            const ytDlpBinary = path.join(process.cwd(), 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp');
 
-            // Inject the cookies
-            if (activeCookiePath) {
-                dlOptions.cookies = activeCookiePath;
+            // 3. Format the search string exactly like Termux
+            const searchTarget = searchQuery.startsWith('http') ? searchQuery : `ytsearch1:${searchQuery}`;
+
+            // 4. THE EXACT TERMUX STRINGS (Bypassing the wrapper entirely)
+            let command = '';
+            if (isVideo) {
+                command = `"${ytDlpBinary}" -f "bestvideo[height<=720]+bestaudio/best" --merge-output-format mp4 -o "${mediaPath}" --extractor-args "youtube:player_client=android_vr" ${cookieFlag} "${searchTarget}"`;
+            } else {
+                command = `"${ytDlpBinary}" -x --audio-format mp3 -o "${mediaPath}" --extractor-args "youtube:player_client=android_vr" ${cookieFlag} "${searchTarget}"`;
             }
 
+            // 5. Fire the native engine
+            await bot.editMessageText(`[SYSTEM] Engine configured. Bypassing wrapper and downloading via native terminal...`, { chat_id: chatId, message_id: msgId });
+            
+            console.log("RUNNING NATIVE COMMAND:\n", command);
+            await execPromise(command);
 
-
-
-            // 3. Fire the engine
-            await bot.editMessageText(`[SYSTEM] Engine configured. Downloading media to RAM...`, { chat_id: chatId, message_id: msgId });
-            await youtubedl(`ytsearch1:${searchQuery}`, dlOptions);
-
-            // 4. Verify & Deliver
+            // 6. Verify & Deliver
             if (fs.existsSync(mediaPath)) {
                 const stats = fs.statSync(mediaPath);
                 const fileSizeMB = stats.size / (1024 * 1024);
@@ -2634,15 +2623,15 @@ bot.on('callback_query', async (queryObj) => {
 
                 fs.unlinkSync(mediaPath);
             } else {
-                throw new Error("Engine finished but no file was generated.");
+                throw new Error("Terminal process finished but no file was generated at the expected path.");
             }
 
         } catch (err) {
-            console.error(`[YT-DLP ERROR]`, err.message);
+            console.error(`[NATIVE TERMINAL ERROR]`, err.stderr || err.message);
             
-            let cleanError = err.message;
-            if (err.message && err.message.includes('ERROR:')) {
-                cleanError = err.message.split('\n').find(line => line.includes('ERROR:')) || err.message;
+            let cleanError = err.stderr || err.message;
+            if (cleanError && cleanError.includes('ERROR:')) {
+                cleanError = cleanError.split('\n').find(line => line.includes('ERROR:')) || cleanError;
             }
             
             bot.editMessageText(`[ERROR] Extraction failed:\n${cleanError}`, { chat_id: chatId, message_id: msgId });
@@ -2651,6 +2640,7 @@ bot.on('callback_query', async (queryObj) => {
 
         playCache[chatId] = null;
     }
+ 
  
                 
 });
