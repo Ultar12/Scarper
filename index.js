@@ -2584,23 +2584,26 @@ bot.on('callback_query', async (queryObj) => {
         try {
             await bot.editMessageText(`[SYSTEM] Engaging Native Terminal Engine for: "${searchQuery}"\nExtracting ${ext.toUpperCase()} format...`, { chat_id: chatId, message_id: msgId });
 
-            // 1. Auto-Convert JSON Cookies
+            // 1. Auto-Convert            // 1. Auto-Convert JSON Cookies (MANDATORY FOR HEROKU IP)
             const activeCookiePath = typeof prepareGhostCookies === 'function' ? prepareGhostCookies() : '';
             const cookieFlag = activeCookiePath ? `--cookies "${activeCookiePath}"` : '';
 
-            // 2. Locate the raw yt-dlp binary inside the wrapper's folder
+            // 2. Locate the raw yt-dlp binary
             const ytDlpBinary = path.join(process.cwd(), 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp');
 
-            // 3. Format the search string exactly like Termux
+            // 3. Format the search string
             const searchTarget = searchQuery.startsWith('http') ? searchQuery : `ytsearch1:${searchQuery}`;
 
-                        // 4. THE EXACT TERMUX STRINGS (Removed cookies to keep VR enabled)
+            // 4. NATIVE TERMINAL COMMANDS (Cookies ON, VR OFF)
             let command = '';
             if (isVideo) {
-                command = `"${ytDlpBinary}" -f "bestvideo[height<=720]+bestaudio/best" --merge-output-format mp4 -o "${mediaPath}" --extractor-args "youtube:player_client=android_vr" "${searchTarget}"`;
+                // Relies purely on cookies to bypass bot checks, grabs up to 720p HD
+                command = `"${ytDlpBinary}" -f "bestvideo[height<=720]+bestaudio/best" --merge-output-format mp4 -o "${mediaPath}" ${cookieFlag} "${searchTarget}"`;
             } else {
-                command = `"${ytDlpBinary}" -x --audio-format mp3 -o "${mediaPath}" --extractor-args "youtube:player_client=android_vr" "${searchTarget}"`;
+                // Relies purely on cookies, extracts MP3
+                command = `"${ytDlpBinary}" -x --audio-format mp3 -o "${mediaPath}" ${cookieFlag} "${searchTarget}"`;
             }
+
 
 
             // 5. Fire the native engine
