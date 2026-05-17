@@ -2578,30 +2578,32 @@ bot.on('callback_query', async (queryObj) => {
         try {
             await bot.editMessageText(`[SYSTEM] Engaging yt-dlp Python Engine for: "${searchQuery}"\nExtracting ${ext.toUpperCase()} format...`, { chat_id: chatId, message_id: msgId });
 
-                                                // 1. Auto-Convert JSON Cookies
+            // 1. Auto-Convert JSON Cookies
             const activeCookiePath = prepareGhostCookies();
 
-            // 2. ANDROID VR + FFmpeg TERMUX LOGIC
+            // 2. ANDROID VR + FFmpeg + UNRESTRICTED FORMATS
             const dlOptions = isVideo ? {
-                format: 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', 
-                mergeOutputFormat: 'mp4', 
+                // FIX: Stripped out [ext=mp4] so it can download .webm files
+                format: 'bestvideo[height<=720]+bestaudio/best', 
+                mergeOutputFormat: 'mp4', // FFmpeg will force whatever it downloads into an MP4
                 output: mediaPath,              
-                noPlaylist: true, // FIX: Capital 'P' forces the correct --no-playlist flag
+                noPlaylist: true, 
                 noWarnings: true,
-                extractorArgs: 'youtube:player_client=android_vr' // THE CHEAT CODE
+                extractorArgs: 'youtube:player_client=android_vr' // THE VR CHEAT CODE
             } : {
-                extractAudio: true, // Safely triggers -x
+                extractAudio: true, 
                 audioFormat: 'mp3', 
                 output: mediaPath,              
-                noPlaylist: true, // FIX: Capital 'P' forces the correct --no-playlist flag
+                noPlaylist: true, 
                 noWarnings: true,
-                extractorArgs: 'youtube:player_client=android_vr' // THE CHEAT CODE
+                extractorArgs: 'youtube:player_client=android_vr' // THE VR CHEAT CODE
             };
 
             // Inject the cookies
             if (activeCookiePath) {
                 dlOptions.cookies = activeCookiePath;
             }
+
 
 
 
