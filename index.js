@@ -344,24 +344,30 @@ let fileMeta = null;
 wss.on('connection', (ws) => {
     console.log('[HEROKU] Termux Phone connected successfully!');
     global.termuxSocket = ws;
+    let fileMeta = null;
 
-    ws.on('message', async (data) => {
+    // Notice the new 'isBinary' parameter here
+    ws.on('message', async (data, isBinary) => {
         try {
-            // 1. Handle incoming text metadata
-            if (typeof data === 'string' || Buffer.isBuffer(data) === false) {
-                const msg = JSON.parse(data);
+            // 1. If it is NOT binary, it is our JSON text metadata
+            if (!isBinary) {
+                const msg = JSON.parse(data.toString());
+                
                 if (msg.action === 'file_delivery') {
-                    fileMeta = msg; // Save file details before the binary stream hits
+                    fileMeta = msg; // Lock in the details
+                    console.log(`[HEROKU] Incoming file detected: ${msg.fileName}`);
                 } else if (msg.action === 'error') {
                     bot.sendMessage(msg.chatId, `[ERROR] Termux engine failed: ${msg.message}`).catch(()=>{});
                 }
             } 
-            // 2. Handle the raw binary file stream
+            // 2. If it IS binary, it is the raw file stream!
             else {
                 if (!fileMeta) return;
+                
                 const { chatId, msgId, ext, fileName } = fileMeta;
                 const mediaPath = path.join(__dirname, fileName);
                 
+                // Save the binary stream directly to Heroku's storage
                 fs.writeFileSync(mediaPath, data);
                 const stats = fs.statSync(mediaPath);
                 const fileSizeMB = stats.size / (1024 * 1024);
@@ -374,9 +380,10 @@ wss.on('connection', (ws) => {
                     await bot.sendAudio(chatId, mediaPath, { caption: `[SUCCESS] Extracted via Local Termux Node.` });
                 }
                 
+                // Clean up the file and reset for the next download
                 fs.unlinkSync(mediaPath);
                 await bot.deleteMessage(chatId, msgId).catch(() => {});
-                fileMeta = null;
+                fileMeta = null; 
             }
         } catch (err) {
             console.error('[WS SERVER ERROR]', err.message);
@@ -388,6 +395,7 @@ wss.on('connection', (ws) => {
         global.termuxSocket = null;
     });
 });
+
 
 // 3. Start the server (Notice it is server.listen, not app.listen)
 server.listen(PORT, () => console.log(`Web server & WebSocket Hub listening on port ${PORT}`));
