@@ -346,49 +346,44 @@ wss.on('connection', (ws) => {
     global.termuxSocket = ws;
     let fileMeta = null;
 
-    // Notice the new 'isBinary' parameter here
-    ws.on('message', async (data, isBinary) => {
-        try {
-            // 1. If it is NOT binary, it is our JSON text metadata
-            if (!isBinary) {
-                const msg = JSON.parse(data.toString());
-                
-                if (msg.action === 'file_delivery') {
-                    fileMeta = msg; // Lock in the details
-                    console.log(`[HEROKU] Incoming file detected: ${msg.fileName}`);
-                } else if (msg.action === 'error') {
-                    bot.sendMessage(msg.chatId, `[ERROR] Termux engine failed: ${msg.message}`).catch(()=>{});
-                }
-            } 
-            // 2. If it IS binary, it is the raw file stream!
-            else {
-                if (!fileMeta) return;
-                
-                const { chatId, msgId, ext, fileName } = fileMeta;
-                const mediaPath = path.join(__dirname, fileName);
-                
-                // Save the binary stream directly to Heroku's storage
-                fs.writeFileSync(mediaPath, data);
-                const stats = fs.statSync(mediaPath);
-                const fileSizeMB = stats.size / (1024 * 1024);
-                
-                await bot.editMessageText(`[SYSTEM] Core secured on Heroku (${fileSizeMB.toFixed(1)}MB).\nUploading to Telegram...`, { chat_id: chatId, message_id: msgId }).catch(()=>{});
-                
-                if (ext === 'mp4') {
-                    await bot.sendVideo(chatId, mediaPath, { caption: `[SUCCESS] Extracted via Local Termux Node.` });
-                } else {
-                    await bot.sendAudio(chatId, mediaPath, { caption: `[SUCCESS] Extracted via Local Termux Node.` });
-                }
-                
-                // Clean up the file and reset for the next download
-                fs.unlinkSync(mediaPath);
-                await bot.deleteMessage(chatId, msgId).catch(() => {});
-                fileMeta = null; 
+    // Notice// Inside your wss.on('connection', ...) listener
+ws.on('message', async (data, isBinary) => {
+    try {
+        if (!isBinary) {
+            const msg = JSON.parse(data.toString());
+            if (msg.action === 'file_delivery') {
+                fileMeta = msg;
+                console.log(`[HEROKU] Metadata received: ${msg.fileName} (${msg.ext})`);
             }
-        } catch (err) {
-            console.error('[WS SERVER ERROR]', err.message);
+        } else {
+            if (!fileMeta) return;
+            const { chatId, msgId, ext } = fileMeta;
+
+            await bot.editMessageText(`[SYSTEM] Streaming binary to Telegram...`, { chat_id: chatId, message_id: msgId }).catch(()=>{});
+
+            // If it's an MP4, send as Video
+            if (ext === 'mp4') {
+                await bot.sendVideo(chatId, data, { 
+                    caption: `[SUCCESS] Streamed via WebSocket.`,
+                    supports_streaming: true // This makes the video playable while downloading
+                });
+            } 
+            // If it's an MP3, send as Audio
+            else {
+                await bot.sendAudio(chatId, data, { caption: `[SUCCESS] Streamed via WebSocket.` });
+            }
+            
+            await bot.deleteMessage(chatId, msgId).catch(() => {});
+            
+            // CRITICAL: Explicitly clear the buffer from RAM after sending
+            data = null; 
+            fileMeta = null;
         }
-    });
+    } catch (err) {
+        console.error('[WS SERVER ERROR]', err);
+    }
+});
+
 
     ws.on('close', () => {
         console.log('[HEROKU] Termux disconnected.');
