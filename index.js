@@ -351,6 +351,10 @@ ws.on('message', async (data, isBinary) => {
     try {
         if (!isBinary) {
             const msg = JSON.parse(data.toString());
+
+            if (msg.action === 'ping') {
+                    return; // Ignore the ping, just let it keep the connection warm
+            }
             if (msg.action === 'file_delivery') {
                 fileMeta = msg;
                 console.log(`[HEROKU] Metadata received: ${msg.fileName} (${msg.ext})`);
