@@ -18,7 +18,7 @@
     "puppeteer-screen-recorder": "^3.0.3",
     "qrcode": "^1.5.3",
     "sharp": "^0.33.3",
-    "ws": "^8.20.1"
+    "ws": "^8.20.1",
     "webdriverio": "^8.32.0",
     "whatsapp-web.js": "^1.23.0",
     "youtube-dl-exec": "^3.0.0",
