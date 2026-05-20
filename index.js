@@ -21,9 +21,6 @@ const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
 
-const TERMUX_API_URL = 'https://67ca5913bba2b9.lhr.life/api/download';
-
-
 
 
 const { PuppeteerScreenRecorder } = require('puppeteer-screen-recorder');
@@ -318,8 +315,10 @@ console.log(`[SYSTEM] Authorized Admins: ${AUTHORIZED.join(', ')}`);
 
 
 
-
 // --- 2. HEROKU WEB SERVER SETUP ---
+const http = require('http');
+const WebSocket = require('ws');
+
 const app = express(); // 1. Create the app first!
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -334,7 +333,65 @@ if (!fs.existsSync('./public')) {
 }
 
 app.get('/', (req, res) => res.send('WhatsApp Bot running with Postgres Auth.'));
-app.listen(PORT, () => console.log(`Web server listening on port ${PORT}`));
+
+// --- DIRECT WEBSOCKET HUB (TERMUX LINK) ---
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
+global.termuxSocket = null; 
+let fileMeta = null;
+
+wss.on('connection', (ws) => {
+    console.log('[HEROKU] Termux Phone connected successfully!');
+    global.termuxSocket = ws;
+
+    ws.on('message', async (data) => {
+        try {
+            // 1. Handle incoming text metadata
+            if (typeof data === 'string' || Buffer.isBuffer(data) === false) {
+                const msg = JSON.parse(data);
+                if (msg.action === 'file_delivery') {
+                    fileMeta = msg; // Save file details before the binary stream hits
+                } else if (msg.action === 'error') {
+                    bot.sendMessage(msg.chatId, `[ERROR] Termux engine failed: ${msg.message}`).catch(()=>{});
+                }
+            } 
+            // 2. Handle the raw binary file stream
+            else {
+                if (!fileMeta) return;
+                const { chatId, msgId, ext, fileName } = fileMeta;
+                const mediaPath = path.join(__dirname, fileName);
+                
+                fs.writeFileSync(mediaPath, data);
+                const stats = fs.statSync(mediaPath);
+                const fileSizeMB = stats.size / (1024 * 1024);
+                
+                await bot.editMessageText(`[SYSTEM] Core secured on Heroku (${fileSizeMB.toFixed(1)}MB).\nUploading to Telegram...`, { chat_id: chatId, message_id: msgId }).catch(()=>{});
+                
+                if (ext === 'mp4') {
+                    await bot.sendVideo(chatId, mediaPath, { caption: `[SUCCESS] Extracted via Local Termux Node.` });
+                } else {
+                    await bot.sendAudio(chatId, mediaPath, { caption: `[SUCCESS] Extracted via Local Termux Node.` });
+                }
+                
+                fs.unlinkSync(mediaPath);
+                await bot.deleteMessage(chatId, msgId).catch(() => {});
+                fileMeta = null;
+            }
+        } catch (err) {
+            console.error('[WS SERVER ERROR]', err.message);
+        }
+    });
+
+    ws.on('close', () => {
+        console.log('[HEROKU] Termux disconnected.');
+        global.termuxSocket = null;
+    });
+});
+
+// 3. Start the server (Notice it is server.listen, not app.listen)
+server.listen(PORT, () => console.log(`Web server & WebSocket Hub listening on port ${PORT}`));
+
 
 // --- 3. TELEGRAM BOT SETUP ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || '7806461656:AAFJLm-gOKgKrvPY06b0QTE1fKlVR9waOsQ';
@@ -2575,81 +2632,33 @@ bot.on('callback_query', async (queryObj) => {
     }
 
              
-              if (data.startsWith('action_play_')) {
+          if (data.startsWith('action_play_')) {
         const searchQuery = playCache[chatId];
         if (!searchQuery) {
             return bot.editMessageText(`[ERROR] Search memory expired. Please run the /play command again.`, { chat_id: chatId, message_id: msgId });
         }
 
         const isVideo = data === 'action_play_video';
-        const ext = isVideo ? 'mp4' : 'mp3';
-        const mediaPath = path.join(__dirname, `relay_temp_${Date.now()}.${ext}`);
-        
-        // YOUR LIVE SSH TUNNEL
-        const TERMUX_API_URL = 'https://1d09bb91ee7fcb.lhr.life/api/download';
 
-        try {
-            await bot.editMessageText(`[SYSTEM] Forwarding request to Termux Node...\nBypassing Datacenter IP...`, { chat_id: chatId, message_id: msgId });
-
-            const axios = require('axios');
-
-            // Send the request and expect a raw file stream back
-            const response = await axios({
-                method: 'POST',
-                url: TERMUX_API_URL,
-                data: {
-                    url: `ytsearch1:${searchQuery}`,
-                    isVideo: isVideo
-                },
-                responseType: 'stream',
-                // We set timeout just under Heroku's 30s limit to catch it gracefully
-                timeout: 29000 
-            });
-
-            await bot.editMessageText(`[SYSTEM] Termux Extraction Complete.\nReceiving fast file stream into Heroku...`, { chat_id: chatId, message_id: msgId });
-
-            // Pipe the incoming data from your phone directly into Heroku's storage
-            const writer = fs.createWriteStream(mediaPath);
-            response.data.pipe(writer);
-
-            await new Promise((resolve, reject) => {
-                writer.on('finish', resolve);
-                writer.on('error', reject);
-            });
-
-            // Verify & Deliver to Telegram
-            if (fs.existsSync(mediaPath)) {
-                const stats = fs.statSync(mediaPath);
-                const fileSizeMB = stats.size / (1024 * 1024);
-
-                if (fileSizeMB > 49.5) {
-                    await bot.editMessageText(`[ERROR] Extracted file is too large (${fileSizeMB.toFixed(1)}MB). Telegram limit is 50MB.`, { chat_id: chatId, message_id: msgId });
-                } else {
-                    await bot.editMessageText(`[SYSTEM] File secured on Heroku.\nUploading ${fileSizeMB.toFixed(1)}MB to Telegram...`, { chat_id: chatId, message_id: msgId });
-
-                    if (isVideo) {
-                        await bot.sendVideo(chatId, mediaPath, { caption: `[SUCCESS] Downloaded via Termux Relay: ${searchQuery}` });
-                    } else {
-                        await bot.sendAudio(chatId, mediaPath, { caption: `[SUCCESS] Downloaded via Termux Relay: ${searchQuery}` });
-                    }
-
-                    await bot.deleteMessage(chatId, msgId).catch(() => {});
-                }
-
-                fs.unlinkSync(mediaPath);
-            } else {
-                throw new Error("File transfer failed during the HTTP stream.");
-            }
-
-        } catch (err) {
-            console.error(`[RELAY ERROR]`, err.message);
-            bot.editMessageText(`[ERROR] Termux Relay failed:\n${err.message}`, { chat_id: chatId, message_id: msgId }).catch(()=>{});
-            if (fs.existsSync(mediaPath)) fs.unlinkSync(mediaPath).catch(()=>{});
+        // Check if your Termux phone has actively opened the WebSocket pipe
+        if (global.termuxSocket && global.termuxSocket.readyState === 1) { 
+            await bot.editMessageText(`[SYSTEM] Direct pipe secure. Routing extraction order to Termux Hardware...`, { chat_id: chatId, message_id: msgId });
+            
+            // Send the request down the open websocket connection to Termux instantly
+            global.termuxSocket.send(JSON.stringify({
+                action: 'download',
+                url: `ytsearch1:${searchQuery}`,
+                isVideo: isVideo,
+                chatId: chatId,
+                msgId: msgId
+            }));
+        } else {
+            await bot.editMessageText(`[ERROR] Termux Node is offline. Please run "node index.js" on your phone.`, { chat_id: chatId, message_id: msgId });
         }
 
         playCache[chatId] = null;
     }
-
+        
  
                 
 });
