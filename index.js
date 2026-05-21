@@ -361,35 +361,38 @@ global.fileStorage = new Map();
         if (!isBinary) {
             const msg = JSON.parse(data.toString());
             if (msg.action === 'ping') return;
-            if (msg.action === 'file_delivery') {
-                fileMeta = msg; 
-            }
+            if (msg.action === 'file_delivery') fileMeta = msg; 
         } else {
             if (!fileMeta) return;
             const { chatId, msgId, ext } = fileMeta;
 
-            // --- WHATSAPP LOGIC ---
             if (chatId === 'API_USER') {
                 const clientData = global.waitingClients.get(msgId);
                 
-                if (clientData) {
-                    // 1. CLEAR THE PINGER: Stop the heartbeat so it doesn't corrupt the file
+                if (clientData && clientData.res) {
+                    const res = clientData.res;
+
+                    // 1. KILL THE HEARTBEAT IMMEDIATELY
                     if (clientData.heartbeat) {
                         clearInterval(clientData.heartbeat);
                     }
                     
-                    // 2. DELIVER: Push the binary file through the open response stream
-                    clientData.res.setHeader('Content-Type', ext === 'mp4' ? 'video/mp4' : 'audio/mpeg');
-                    clientData.res.write(data);
-                    clientData.res.end(); // Properly close the request
+                    // 2. CHECK: Only set headers if they haven't been sent yet
+                    if (!res.headersSent) {
+                        res.setHeader('Content-Type', ext === 'mp4' ? 'video/mp4' : 'audio/mpeg');
+                    }
                     
-                    global.waitingClients.delete(msgId); // Clean up memory
+                    // 3. SEND THE BINARY DATA
+                    res.write(data);
+                    res.end(); // Finally close the stream
+                    
+                    global.waitingClients.delete(msgId);
                 }
-                
                 fileMeta = null;
                 data = null;
-                return; // STOP: Telegram logic is skipped
+                return;
             }
+            
 
             // --- TELEGRAM LOGIC ---
             await bot.editMessageText(`[SYSTEM] Streaming binary to Telegram...`, { chat_id: chatId, message_id: msgId }).catch(()=>{});
