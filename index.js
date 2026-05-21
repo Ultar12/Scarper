@@ -1484,10 +1484,6 @@ app.post('/api/raganork-hook', async (req, res) => {
 app.post('/api/play-hook', async (req, res) => {
     const { query, isVideo, callbackUrl, secret } = req.body;
 
-    // Security Check
-    if (secret !== process.env.API_SECRET) {
-        return res.status(403).json({ success: false, error: "Unauthorized." });
-    }
 
     if (!query || !callbackUrl || !global.termuxSocket || global.termuxSocket.readyState !== 1) {
         return res.status(503).json({ success: false, error: "Termux Node offline or missing parameters." });
