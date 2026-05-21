@@ -14,7 +14,9 @@
     "node-telegram-bot-api": "^0.66.0",
     "pg": "^8.11.5",
     "playwright": "latest",
-    "puppeteer-core": "latest",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "puppeteer-core": "^25.0.4"
     "puppeteer-screen-recorder": "^3.0.3",
     "qrcode": "^1.5.3",
     "cheerio": "^1.0.0",
