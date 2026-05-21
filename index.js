@@ -2901,7 +2901,7 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
 
     if (!query) return bot.sendMessage(chatId, '_Provide a song name_', { parse_mode: 'Markdown' });
 
-    let statusMsg = await bot.sendMessage(chatId, `_Booting Chrome..._`, { parse_mode: 'Markdown' });
+    let statusMsg = await bot.sendMessage(chatId, `_Booting Stealth Chrome..._`, { parse_mode: 'Markdown' });
     let browser;
 
     try {
@@ -2914,26 +2914,31 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
         const page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 
-        // Switch to Bing to dodge Google's strict IP datacenter bans
-        await bot.editMessageText(`_Searching Bing for: ${query}_`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
-        await page.goto(`https://www.bing.com/search?q=${encodeURIComponent(query + ' lyrics site:genius.com')}`, { waitUntil: 'domcontentloaded' });
+        await bot.editMessageText(`_Searching Genius directly for: ${query}_`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
+        
+        // 1. Search Genius directly (Bypasses Google/Bing/DDG entirely)
+        await page.goto(`https://genius.com/search?q=${encodeURIComponent(query)}`, { waitUntil: 'domcontentloaded' });
+        
+        // 2. Wait for the Genius frontend to load the search results
+        await page.waitForSelector('search-result-item a', { timeout: 15000 });
 
+        // 3. Extract the first song link directly from the Genius results
         const geniusUrl = await page.evaluate(() => {
-            const link = document.querySelector('a[href*="genius.com"]');
+            const link = document.querySelector('search-result-item a');
             return link ? link.href : null;
         });
 
         // --- HARDENED DEBUG SECTION ---
         if (!geniusUrl) {
             const snap = await page.screenshot({ type: 'png' });
-            await bot.sendPhoto(chatId, snap, { caption: `[DEBUG] Search failed. No Genius link detected on Bing.` });
+            await bot.sendPhoto(chatId, snap, { caption: `[DEBUG] Search failed. No results loaded on Genius.com.` });
             await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
             await browser.close();
             return; 
         }
         // ------------------------------
 
-        await bot.editMessageText(`_Link found! Scraping Genius..._`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
+        await bot.editMessageText(`_Link found! Scraping lyrics..._`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
         await page.goto(geniusUrl, { waitUntil: 'domcontentloaded' });
 
         const data = await page.evaluate(() => {
@@ -2945,11 +2950,10 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
 
         await browser.close();
 
-        if (!data.lyrics) throw new Error("Could not extract lyrics text from Genius.");
+        if (!data.lyrics) throw new Error("Could not extract lyrics text.");
 
         const result = `*${data.title || query}*\n\n${data.lyrics}`;
         
-        // Chunking for Telegram's 4096 character limit
         if (result.length > 4000) {
             await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
             const chunks = result.match(/[\s\S]{1,4000}/g);
