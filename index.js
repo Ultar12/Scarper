@@ -1481,25 +1481,33 @@ app.post('/api/raganork-hook', async (req, res) => {
 });
 
 
-app.post('/api/play-hook', async (req, res) => {
-    const { query, isVideo, callbackUrl, secret } = req.body;
+// Add this to your Heroku index.js
+app.post('/api/play-hook', (req, res) => {
+    const { query, isVideo } = req.body;
+    console.log(`[API RECEIVED] Query: ${query}, Type: ${isVideo ? 'Video' : 'Audio'}`);
 
-
-    if (!query || !callbackUrl || !global.termuxSocket || global.termuxSocket.readyState !== 1) {
-        return res.status(503).json({ success: false, error: "Termux Node offline or missing parameters." });
+    // Check if the phone is connected
+    if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
+        console.error("[API ERROR] Phone is not connected to WebSocket.");
+        return res.status(503).json({ success: false, error: "Termux phone is disconnected." });
     }
 
-    // Dispatch job to phone
-    global.termuxSocket.send(JSON.stringify({
-        action: 'download',
-        url: `ytsearch1:${query}`,
-        isVideo: isVideo || false,
-        isApi: true,
-        callbackUrl: callbackUrl // The phone will use this to send the file back
-    }));
-
-    res.json({ success: true, message: "Extraction initiated." });
+    try {
+        // Send the order to the phone
+        global.termuxSocket.send(JSON.stringify({
+            action: 'download',
+            url: `ytsearch1:${query}`,
+            isVideo: isVideo,
+            chatId: 'API_USER',
+            msgId: Date.now()
+        }));
+        
+        return res.json({ success: true, message: "Order sent to phone." });
+    } catch (err) {
+        return res.status(500).json({ success: false, error: err.message });
+    }
 });
+
 
 
 // --- EXTERNAL DOWNLOAD API SERVICE ---
