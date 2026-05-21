@@ -2867,84 +2867,87 @@ bot.onText(/^\/m4unum$/i, async (msg) => {
 
 
 
-
-
-
+// --- PUPPETEER CHROME LYRICS SCRAPER ---
 bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
-    const chatId = msg.chat.id;
+    const chatId = msg.chat.id.toString();
     const query = match[1] ? match[1].trim() : '';
 
     if (!query) {
         return bot.sendMessage(chatId, '_Provide a song name_', { parse_mode: 'Markdown' });
     }
 
-    const statusMsg = await bot.sendMessage(chatId, `_Searching Yahoo for ${query}..._`, { parse_mode: 'Markdown' });
+    const statusMsg = await bot.sendMessage(chatId, `_Booting up Chrome engine for ${query}..._`, { parse_mode: 'Markdown' });
 
+    let browser;
     try {
-        const headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5'
-        };
-
-        // 1. Search Yahoo instead of DuckDuckGo to bypass the Captcha
-        const searchUrl = `https://search.yahoo.com/search?p=${encodeURIComponent(query + ' lyrics site:genius.com')}`;
-        const searchRes = await axios.get(searchUrl, { headers });
-        
-        let $ = cheerio.load(searchRes.data);
-        let geniusUrl = null;
-        
-        // 2. Hunt for the Genius link in Yahoo's search results
-        $('a').each((i, el) => {
-            const href = $(el).attr('href');
-            if (href && href.includes('genius.com')) {
-                if (href.includes('RU=')) {
-                    // Extract from Yahoo's redirect format (RU=.../RK=...)
-                    // Since the URL is encoded, / is %2f. We can safely split by literal /
-                    const encodedUrl = href.split('RU=')[1].split('/')[0];
-                    if (encodedUrl) {
-                        geniusUrl = decodeURIComponent(encodedUrl);
-                        return false; 
-                    }
-                } else {
-                    // Direct link fallback
-                    geniusUrl = href.startsWith('http') ? href : `https://${href.replace(/^\/\//, '')}`;
-                    return false; 
-                }
-            }
+        // Launch literal Chrome using your existing getChromePath() helper
+        browser = await puppeteer.launch({
+            headless: true,
+            executablePath: getChromePath(),
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage', // Prevents memory crash on Heroku
+                '--disable-gpu'
+            ]
         });
 
-        if (!geniusUrl) {
-            const pageTitle = $('title').text().trim();
-            const pageGlimpse = $('body').text().replace(/\s+/g, ' ').substring(0, 200).trim();
-            throw new Error(`No Genius links found on Yahoo.\n*Page Title:* ${pageTitle}\n*Page Glimpse:* ${pageGlimpse}...`);
-        }
+        const page = await browser.newPage();
+        
+        // Disguise the browser completely
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 
-        await bot.editMessageText(`_Genius link found! Extracting lyrics..._`, { 
+        await bot.editMessageText(`_Searching Google for ${query}..._`, { 
             chat_id: chatId, 
             message_id: statusMsg.message_id, 
             parse_mode: 'Markdown' 
         });
 
-        // 3. Visit the Genius page directly
-        const lyricRes = await axios.get(geniusUrl, { headers });
-        $ = cheerio.load(lyricRes.data);
+        // 1. Search Google directly
+        const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query + ' lyrics site:genius.com')}`;
+        await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
 
-        // 4. Extract the lyrics
-        let lyrics = '';
-        $('div[data-lyrics-container="true"]').each((i, el) => {
-            $(el).find('br').replaceWith('\n');
-            lyrics += $(el).text() + '\n\n';
+        // 2. Read the Google results page and find the first Genius link
+        const geniusUrl = await page.evaluate(() => {
+            const link = document.querySelector('a[href*="genius.com"]');
+            return link ? link.href : null;
         });
 
-        lyrics = lyrics.trim();
-        const title = $('h1').first().text().trim() || query;
-
-        if (!lyrics) {
-            throw new Error("Found the Genius page, but failed to extract the text. The HTML structure may have changed.");
+        if (!geniusUrl) {
+            throw new Error("Could not find a Genius link on Google's front page.");
         }
 
-        const formattedLyrics = `*${title}*\n\n${lyrics}`;
+        await bot.editMessageText(`_Genius link found! Loading page..._`, { 
+            chat_id: chatId, 
+            message_id: statusMsg.message_id, 
+            parse_mode: 'Markdown' 
+        });
+
+        // 3. Visit the Genius page
+        await page.goto(geniusUrl, { waitUntil: 'domcontentloaded' });
+
+        // 4. Extract the lyrics natively through Chrome
+        const data = await page.evaluate(() => {
+            let text = '';
+            const containers = document.querySelectorAll('div[data-lyrics-container="true"]');
+            containers.forEach(el => {
+                text += el.innerText + '\n\n';
+            });
+
+            const titleEl = document.querySelector('h1');
+            const title = titleEl ? titleEl.innerText.trim() : '';
+
+            return { lyrics: text.trim(), title };
+        });
+
+        if (!data.lyrics) {
+            throw new Error("Successfully loaded Genius, but could not extract the text.");
+        }
+
+        const formattedLyrics = `*${data.title || query}*\n\n${data.lyrics}`;
+
+        // Close the browser immediately to free up RAM before sending
+        await browser.close();
 
         // 5. Send with chunking for Telegram limits
         if (formattedLyrics.length > 4000) {
@@ -2962,25 +2965,16 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
         }
 
     } catch (err) {
-        let debugMsg = `_Scraping Error: ${err.message}_`;
+        // Guarantee the browser closes even if it crashes, otherwise Heroku will run out of RAM
+        if (browser) await browser.close().catch(() => {});
         
-        if (err.response) {
-            debugMsg += `\n\n*Status Code:* ${err.response.status}`;
-            let errorHtml = err.response.data ? err.response.data.substring(0, 600) : 'No data';
-            let cleanErrorText = errorHtml.replace(/<[^>]*>?/gm, ' ').replace(/\s\s+/g, ' ').trim();
-            debugMsg += `\n\n*Server Response:*\n\`\`\`text\n${cleanErrorText}\n\`\`\``;
-        }
-        
-        bot.editMessageText(debugMsg, { 
+        bot.editMessageText(`_Chrome Engine Error: ${err.message}_`, { 
             chat_id: chatId, 
             message_id: statusMsg.message_id, 
             parse_mode: 'Markdown' 
-        }).catch(() => {
-            bot.sendMessage(chatId, debugMsg, { parse_mode: 'Markdown' });
         });
     }
 });
-
 
 
 
