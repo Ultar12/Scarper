@@ -3121,9 +3121,7 @@ bot.onText(/\/record/i, async (msg) => {
 
 
 
-
-
-// Usage: /dl https://www.tiktok.com/@user/video/123456789
+// Usage: /dl https://www.tiktok.com/@user/video/123456789 or YouTube
 bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -3179,7 +3177,27 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
             return;
         }
 
-        // --- FALLBACK FOR IG / YOUTUBE / TWITTER (yt-dlp) ---
+        // --- YOUTUBE TERMINAL ROUTING ---
+        if (url.includes('youtube.com') || url.includes('youtu.be')) {
+            if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
+                return bot.editMessageText('[ERROR] Termux Node is offline. Start the worker script on your phone.', { chat_id: chatId, message_id: statusMsg.message_id });
+            }
+
+            await bot.editMessageText('[SYSTEM] YouTube link detected. Routing extraction order to Termux Hardware...', { chat_id: chatId, message_id: statusMsg.message_id });
+
+            // Send the exact command down the WebSocket pipe
+            global.termuxSocket.send(JSON.stringify({
+                action: 'download',
+                url: url,
+                isVideo: true, // Standard /dl implies video
+                chatId: chatId,
+                msgId: statusMsg.message_id.toString() 
+            }));
+            
+            return; // Termux and your existing WS handler will finish the job
+        }
+
+        // --- FALLBACK FOR IG / TWITTER (yt-dlp) ---
         await bot.editMessageText('[SYSTEM] Standard link detected. Engaging yt-dlp to find maximum native quality...', { chat_id: chatId, message_id: statusMsg.message_id });
         
         const videoPath = path.join(__dirname, `dl_${Date.now()}.mp4`);
@@ -3214,6 +3232,9 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
         bot.editMessageText(`[ERROR] Download failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
     }
 });
+
+
+
 
 
 // Initiation Command
