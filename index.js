@@ -2895,7 +2895,7 @@ bot.onText(/^\/m4unum$/i, async (msg) => {
 
 
 
-// --- SMART LYRICS API (TYPO & FORMAT TOLERANT) ---
+// --- SMART LYRICS API (TYPO TOLERANT + DURATION SORTING) ---
 bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     const rawQuery = match[1] ? match[1].trim() : '';
@@ -2916,20 +2916,17 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
             const itunesRes = await axios.get(`https://itunes.apple.com/search?term=${encodeURIComponent(rawQuery)}&entity=song&limit=1`);
             if (itunesRes.data && itunesRes.data.results && itunesRes.data.results.length > 0) {
                 const trackInfo = itunesRes.data.results[0];
-                // iTunes found it. Build a perfect query: "TrackName ArtistName"
                 searchTarget = `${trackInfo.trackName} ${trackInfo.artistName}`;
             } else {
-                // Fallback: Manually strip common words if iTunes fails
                 searchTarget = rawQuery.replace(/\b(by|lyrics)\b/gi, ' ').replace(/\s+/g, ' ').trim();
             }
         } catch (itunesErr) {
-            // If iTunes goes down, fallback to manual stripping
             searchTarget = rawQuery.replace(/\b(by|lyrics)\b/gi, ' ').replace(/\s+/g, ' ').trim();
         }
 
         await bot.editMessageText(`_Searching lyrics for: ${searchTarget}..._`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
 
-        // 2. FETCH LYRICS: Hit the lyrics database with the perfect query
+        // 2. FETCH LYRICS: Hit the lyrics database
         const response = await axios.get(`https://lrclib.net/api/search?q=${encodeURIComponent(searchTarget)}`);
         const data = response.data;
 
@@ -2937,13 +2934,20 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
             return bot.editMessageText(`[FAILED] Could not find lyrics for "${rawQuery}".`, { chat_id: chatId, message_id: statusMsg.message_id });
         }
 
-        const track = data.find(t => t.plainLyrics);
+        // 3. FILTER & SORT: Keep only tracks with text, sort by longest duration first
+        const validTracks = data.filter(t => t.plainLyrics && t.plainLyrics.trim().length > 0);
 
-        if (!track) {
+        if (validTracks.length === 0) {
             return bot.editMessageText(`[FAILED] Found the song, but no text lyrics are available for it.`, { chat_id: chatId, message_id: statusMsg.message_id });
         }
 
-        // 3. DELIVER
+        // Sort descending by duration (longest track gets position 0)
+        validTracks.sort((a, b) => (b.duration || 0) - (a.duration || 0));
+
+        // Pick the longest valid track
+        const track = validTracks[0];
+
+        // 4. DELIVER
         const result = `*${track.trackName} - ${track.artistName}*\n\n${track.plainLyrics}`;
 
         if (result.length > 4000) {
@@ -2960,6 +2964,7 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
         bot.editMessageText(`_API Error: ${err.message}_`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
     }
 });
+
 
 
 
