@@ -1602,6 +1602,7 @@ app.get('/api/lyrics', async (req, res) => {
 
 
 
+
 // --- EXTERNAL DOWNLOAD API SERVICE ---
 app.get('/api/download', async (req, res) => {
     const url = req.query.url;
@@ -1614,7 +1615,6 @@ app.get('/api/download', async (req, res) => {
         // --- 1. PRIMARY TIKTOK LOGIC ---
         if (url.includes('tiktok.com')) {
             try {
-                // FIX 1: Pass the raw url, exactly like the working Telegram /dl command
                 const response = await axios.get(`https://www.tikwm.com/api/?url=${url}&hd=1`);
                 const data = response.data.data;
 
@@ -1628,8 +1628,6 @@ app.get('/api/download', async (req, res) => {
 
                     const videoUrl = data.hdplay || data.play;
                     if (videoUrl) {
-                        // FIX 2: Do NOT redirect. Fetch the stream directly using a fake browser User-Agent
-                        // to bypass TikTok's bot blockers, then pipe it to the external bot.
                         const videoStream = await axios({
                             method: 'GET',
                             url: videoUrl,
@@ -1649,7 +1647,46 @@ app.get('/api/download', async (req, res) => {
             }
         }
 
-        // --- 2. FALLBACK ENGINE (IG, YouTube, Twitter) ---
+        // --- 2. YOUTUBE / TERMUX ROUTING (HEAVY MEDIA) ---
+        if (url.includes('youtube.com') || url.includes('youtu.be')) {
+            if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
+                return res.status(503).json({ error: "Termux Worker is offline" });
+            }
+
+            // Keep-alive heartbeat to prevent Heroku H15 Idle Connection Error
+            const heartbeat = setInterval(() => res.write(' '), 15000);
+
+            try {
+                const reqId = 'req_' + Date.now();
+                global.pendingHTTP = global.pendingHTTP || new Map();
+
+                const buffer = await new Promise((resolve, reject) => {
+                    const timeout = setTimeout(() => {
+                        global.pendingHTTP.delete(reqId);
+                        reject(new Error("Termux extraction timed out"));
+                    }, 300000); // 5-minute maximum
+
+                    global.pendingHTTP.set(reqId, { resolve, reject, timeout });
+
+                    global.termuxSocket.send(JSON.stringify({
+                        action: 'download',
+                        url: url,
+                        isVideo: true,
+                        chatId: 'LEVANTER', // Flag to intercept in Heroku WS listener
+                        msgId: reqId
+                    }));
+                });
+
+                clearInterval(heartbeat);
+                return res.end(buffer);
+
+            } catch (termuxErr) {
+                clearInterval(heartbeat);
+                return res.end(); // Close stream gracefully on failure
+            }
+        }
+
+        // --- 3. FALLBACK ENGINE (IG, Twitter, etc.) ---
         const videoPath = path.join(__dirname, `api_dl_${Date.now()}.mp4`);
 
         await youtubedl(url, {
@@ -1659,7 +1696,6 @@ app.get('/api/download', async (req, res) => {
             noWarnings: true
         });
 
-        // Pipe the physical file back to the external client
         res.download(videoPath, 'downloaded_video.mp4', (err) => {
             if (fs.existsSync(videoPath)) {
                 fs.unlinkSync(videoPath);
@@ -1667,7 +1703,11 @@ app.get('/api/download', async (req, res) => {
         });
 
     } catch (err) {
-        res.status(500).json({ error: `Engine extraction failed: ${err.message}` });
+        if (!res.headersSent) {
+            res.status(500).json({ error: `Engine extraction failed: ${err.message}` });
+        } else {
+            res.end();
+        }
     }
 });
 
