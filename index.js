@@ -1690,37 +1690,40 @@ app.get('/api/download', async (req, res) => {
                 return res.status(503).json({ error: "Termux Worker is offline" });
             }
 
+            const reqId = 'req_' + Date.now();
+            global.waitingClients = global.waitingClients || new Map();
+
             // Keep-alive heartbeat to prevent Heroku H15 Idle Connection Error
             const heartbeat = setInterval(() => res.write(' '), 15000);
 
-            try {
-                const reqId = 'req_' + Date.now();
-                global.pendingHTTP = global.pendingHTTP || new Map();
+            // STORE IN WAITING CLIENTS: Hand the res and heartbeat directly to the WS Receiver
+            global.waitingClients.set(reqId, { res, heartbeat });
 
-                const buffer = await new Promise((resolve, reject) => {
-                    const timeout = setTimeout(() => {
-                        global.pendingHTTP.delete(reqId);
-                        reject(new Error("Termux extraction timed out"));
-                    }, 300000); // 5-minute maximum
+            // Fire command to phone
+            global.termuxSocket.send(JSON.stringify({
+                action: 'download',
+                url: url,
+                isVideo: true,
+                chatId: 'API_USER', // Matches the WS receiver check perfectly
+                msgId: reqId
+            }));
 
-                    global.pendingHTTP.set(reqId, { resolve, reject, timeout });
+            // IMPORTANT: We do NOT close `res` or await a Promise here.
+            // The WebSocket receiver handles `res.write()` and `res.end()`.
+            // We only set a 5-minute safety timeout to clean up if Termux vanishes.
+            setTimeout(() => {
+                if (global.waitingClients.has(reqId)) {
+                    clearInterval(heartbeat);
+                    global.waitingClients.delete(reqId);
+                    if (!res.headersSent) {
+                        res.status(504).json({ error: "Termux extraction timed out" });
+                    } else {
+                        res.end(); 
+                    }
+                }
+            }, 300000); 
 
-                    global.termuxSocket.send(JSON.stringify({
-                        action: 'download',
-                        url: url,
-                        isVideo: true,
-                        chatId: 'LEVANTER', // Flag to intercept in Heroku WS listener
-                        msgId: reqId
-                    }));
-                });
-
-                clearInterval(heartbeat);
-                return res.end(buffer);
-
-            } catch (termuxErr) {
-                clearInterval(heartbeat);
-                return res.end(); // Close stream gracefully on failure
-            }
+            return; // Exit function so Node.js moves on while Termux works
         }
 
         // --- 3. FALLBACK ENGINE (IG, Twitter, etc.) ---
@@ -1747,6 +1750,7 @@ app.get('/api/download', async (req, res) => {
         }
     }
 });
+
 
 
 
