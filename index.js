@@ -2879,7 +2879,6 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
     const statusMsg = await bot.sendMessage(chatId, `_Searching DuckDuckGo for ${query}..._`, { parse_mode: 'Markdown' });
 
     try {
-        // High-quality headers to disguise the Heroku server as a real user
         const headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -2894,25 +2893,30 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
         let $ = cheerio.load(searchRes.data);
         let geniusUrl = null;
         
-        // 2. Hunt for the Genius link in the search results
+        // 2. Aggressively hunt for ANY Genius link
         $('a').each((i, el) => {
             const href = $(el).attr('href');
-            // DuckDuckGo hides links inside a redirect parameter called 'uddg'
-            if (href && href.includes('uddg=') && href.includes('genius.com')) {
-                const matchLink = href.match(/uddg=([^&]+)/);
-                if (matchLink) {
-                    geniusUrl = decodeURIComponent(matchLink[1]);
-                    return false; // Stop searching once we find it
+            if (href && href.includes('genius.com')) {
+                if (href.includes('uddg=')) {
+                    // Extract from tracking redirect
+                    const matchLink = href.match(/uddg=([^&]+)/);
+                    if (matchLink) {
+                        geniusUrl = decodeURIComponent(matchLink[1]);
+                        return false; 
+                    }
+                } else {
+                    // Grab direct link
+                    geniusUrl = href.startsWith('http') ? href : `https://${href.replace(/^\/\//, '')}`;
+                    return false; 
                 }
             }
         });
 
+        // If STILL no link, dump the page text so we know what DDG is doing
         if (!geniusUrl) {
-            return bot.editMessageText('_Could not find a Genius link on DuckDuckGo._', { 
-                chat_id: chatId, 
-                message_id: statusMsg.message_id, 
-                parse_mode: 'Markdown' 
-            });
+            const pageTitle = $('title').text().trim();
+            const pageGlimpse = $('body').text().replace(/\s+/g, ' ').substring(0, 200).trim();
+            throw new Error(`No Genius links found.\n*Page Title:* ${pageTitle}\n*Page Glimpse:* ${pageGlimpse}...`);
         }
 
         await bot.editMessageText(`_Genius link found! Extracting lyrics..._`, { 
@@ -2936,7 +2940,7 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
         const title = $('h1').first().text().trim() || query;
 
         if (!lyrics) {
-            throw new Error("Found the page, but failed to extract the lyrics text from the HTML structure.");
+            throw new Error("Found the Genius page, but failed to extract the text. The HTML structure may have changed.");
         }
 
         const formattedLyrics = `*${title}*\n\n${lyrics}`;
@@ -2957,18 +2961,13 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
         }
 
     } catch (err) {
-        // VERBOSE DEBUG LOG: Captures exactly what went wrong for you to investigate
         let debugMsg = `_Scraping Error: ${err.message}_`;
         
         if (err.response) {
-            debugMsg += `\n\n*Server Status Code:* ${err.response.status}`;
-            
-            // Extract the first 600 characters of the block message from the server
+            debugMsg += `\n\n*Status Code:* ${err.response.status}`;
             let errorHtml = err.response.data ? err.response.data.substring(0, 600) : 'No data';
-            // Strip out messy HTML tags to make it readable in Telegram
             let cleanErrorText = errorHtml.replace(/<[^>]*>?/gm, ' ').replace(/\s\s+/g, ' ').trim();
-            
-            debugMsg += `\n\n*Security Block Response:*\n\`\`\`text\n${cleanErrorText}\n\`\`\``;
+            debugMsg += `\n\n*Server Response:*\n\`\`\`text\n${cleanErrorText}\n\`\`\``;
         }
         
         bot.editMessageText(debugMsg, { 
