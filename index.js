@@ -15,6 +15,7 @@ const puppeteer = require('puppeteer-core');
 const QRCode = require('qrcode');
 const { remote } = require('webdriverio');
 const axios = require('axios');
+const cheerio = require('cheerio');
 
 
 const { exec } = require('child_process');
@@ -2863,6 +2864,87 @@ bot.onText(/^\/m4unum$/i, async (msg) => {
         bot.sendMessage(chatId, `[ERROR] Failed to extract numbers: ${err.message}`);
     }
 });
+
+
+
+
+// Strictly accepts ONLY /lyrics
+bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const query = match[1] ? match[1].trim() : '';
+
+    if (!query) {
+        return bot.sendMessage(chatId, '_Provide a song name_', { parse_mode: 'Markdown' });
+    }
+
+    const statusMsg = await bot.sendMessage(chatId, `_Scraping the web for ${query}..._`, { parse_mode: 'Markdown' });
+
+    try {
+        const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query + ' lyrics site:genius.com')}`;
+        const searchRes = await axios.get(searchUrl, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+        });
+
+        const linkMatch = searchRes.data.match(/uddg=([^&]+)/);
+        if (!linkMatch) {
+            return bot.editMessageText('_Could not find lyrics for this song._', { 
+                chat_id: chatId, 
+                message_id: statusMsg.message_id, 
+                parse_mode: 'Markdown' 
+            });
+        }
+        
+        const geniusUrl = decodeURIComponent(linkMatch[1]);
+
+        const lyricRes = await axios.get(geniusUrl, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+        });
+
+        const $ = cheerio.load(lyricRes.data);
+        let lyrics = '';
+
+        $('div[data-lyrics-container="true"]').each((i, el) => {
+            $(el).find('br').replaceWith('\n');
+            lyrics += $(el).text() + '\n\n';
+        });
+
+        lyrics = lyrics.trim();
+
+        if (!lyrics) {
+            return bot.editMessageText('_Failed to extract lyrics from the page._', { 
+                chat_id: chatId, 
+                message_id: statusMsg.message_id, 
+                parse_mode: 'Markdown' 
+            });
+        }
+
+        const title = $('h1').first().text().trim() || query;
+        const formattedLyrics = `*${title}*\n\n${lyrics}`;
+
+        if (formattedLyrics.length > 4000) {
+            await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+            
+            const chunks = formattedLyrics.match(/[\s\S]{1,4000}/g);
+            for (let chunk of chunks) {
+                await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' });
+            }
+        } else {
+            await bot.editMessageText(formattedLyrics, { 
+                chat_id: chatId, 
+                message_id: statusMsg.message_id, 
+                parse_mode: 'Markdown' 
+            });
+        }
+
+    } catch (err) {
+        bot.editMessageText(`_Scraping Error: ${err.message}_`, { 
+            chat_id: chatId, 
+            message_id: statusMsg.message_id, 
+            parse_mode: 'Markdown' 
+        });
+    }
+});
+
 
 
 
