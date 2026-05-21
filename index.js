@@ -1515,7 +1515,7 @@ app.post('/api/play-hook', (req, res) => {
             timeoutRes.status(504).json({ error: "Download took longer than 25s." });
             global.waitingClients.delete(msgId);
         }
-    }, 25000); 
+    }, 30000); 
 });
 
 
