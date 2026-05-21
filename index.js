@@ -2868,6 +2868,8 @@ bot.onText(/^\/m4unum$/i, async (msg) => {
 
 
 
+
+
 bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
     const chatId = msg.chat.id;
     const query = match[1] ? match[1].trim() : '';
@@ -2876,47 +2878,46 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
         return bot.sendMessage(chatId, '_Provide a song name_', { parse_mode: 'Markdown' });
     }
 
-    const statusMsg = await bot.sendMessage(chatId, `_Searching DuckDuckGo for ${query}..._`, { parse_mode: 'Markdown' });
+    const statusMsg = await bot.sendMessage(chatId, `_Searching Yahoo for ${query}..._`, { parse_mode: 'Markdown' });
 
     try {
         const headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Referer': 'https://html.duckduckgo.com/'
+            'Accept-Language': 'en-US,en;q=0.5'
         };
 
-        // 1. Search DuckDuckGo HTML
-        const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query + ' lyrics genius')}`;
+        // 1. Search Yahoo instead of DuckDuckGo to bypass the Captcha
+        const searchUrl = `https://search.yahoo.com/search?p=${encodeURIComponent(query + ' lyrics site:genius.com')}`;
         const searchRes = await axios.get(searchUrl, { headers });
         
         let $ = cheerio.load(searchRes.data);
         let geniusUrl = null;
         
-        // 2. Aggressively hunt for ANY Genius link
+        // 2. Hunt for the Genius link in Yahoo's search results
         $('a').each((i, el) => {
             const href = $(el).attr('href');
             if (href && href.includes('genius.com')) {
-                if (href.includes('uddg=')) {
-                    // Extract from tracking redirect
-                    const matchLink = href.match(/uddg=([^&]+)/);
-                    if (matchLink) {
-                        geniusUrl = decodeURIComponent(matchLink[1]);
+                if (href.includes('RU=')) {
+                    // Extract from Yahoo's redirect format (RU=.../RK=...)
+                    // Since the URL is encoded, / is %2f. We can safely split by literal /
+                    const encodedUrl = href.split('RU=')[1].split('/')[0];
+                    if (encodedUrl) {
+                        geniusUrl = decodeURIComponent(encodedUrl);
                         return false; 
                     }
                 } else {
-                    // Grab direct link
+                    // Direct link fallback
                     geniusUrl = href.startsWith('http') ? href : `https://${href.replace(/^\/\//, '')}`;
                     return false; 
                 }
             }
         });
 
-        // If STILL no link, dump the page text so we know what DDG is doing
         if (!geniusUrl) {
             const pageTitle = $('title').text().trim();
             const pageGlimpse = $('body').text().replace(/\s+/g, ' ').substring(0, 200).trim();
-            throw new Error(`No Genius links found.\n*Page Title:* ${pageTitle}\n*Page Glimpse:* ${pageGlimpse}...`);
+            throw new Error(`No Genius links found on Yahoo.\n*Page Title:* ${pageTitle}\n*Page Glimpse:* ${pageGlimpse}...`);
         }
 
         await bot.editMessageText(`_Genius link found! Extracting lyrics..._`, { 
@@ -2979,6 +2980,7 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
         });
     }
 });
+
 
 
 
