@@ -2895,38 +2895,57 @@ bot.onText(/^\/m4unum$/i, async (msg) => {
 
 
 
-// --- LIGHTWEIGHT LYRICS API (CLOUDFLARE IMMUNE) ---
+// --- SMART LYRICS API (TYPO & FORMAT TOLERANT) ---
 bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
-    const query = match[1] ? match[1].trim() : '';
+    const rawQuery = match[1] ? match[1].trim() : '';
 
-    // Authorization Check (Uses your existing AUTHORIZED array)
+    // Authorization Check 
     const adminId = process.env.ADMIN_ID || '7710721646';
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
 
-    if (!query) return bot.sendMessage(chatId, '_Provide a song name_', { parse_mode: 'Markdown' });
+    if (!rawQuery) return bot.sendMessage(chatId, '_Provide a song name_', { parse_mode: 'Markdown' });
 
-    let statusMsg = await bot.sendMessage(chatId, `_Querying Global Lyrics API for: ${query}..._`, { parse_mode: 'Markdown' });
+    let statusMsg = await bot.sendMessage(chatId, `_Resolving track data for: ${rawQuery}..._`, { parse_mode: 'Markdown' });
 
     try {
-        // Direct API hook. No browsers, no RAM spikes, no Cloudflare.
-        const response = await axios.get(`https://lrclib.net/api/search?q=${encodeURIComponent(query)}`);
+        // 1. SMART RESOLVER: Use iTunes to figure out the exact song and artist
+        let searchTarget = rawQuery; 
+        
+        try {
+            const itunesRes = await axios.get(`https://itunes.apple.com/search?term=${encodeURIComponent(rawQuery)}&entity=song&limit=1`);
+            if (itunesRes.data && itunesRes.data.results && itunesRes.data.results.length > 0) {
+                const trackInfo = itunesRes.data.results[0];
+                // iTunes found it. Build a perfect query: "TrackName ArtistName"
+                searchTarget = `${trackInfo.trackName} ${trackInfo.artistName}`;
+            } else {
+                // Fallback: Manually strip common words if iTunes fails
+                searchTarget = rawQuery.replace(/\b(by|lyrics)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+            }
+        } catch (itunesErr) {
+            // If iTunes goes down, fallback to manual stripping
+            searchTarget = rawQuery.replace(/\b(by|lyrics)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+        }
+
+        await bot.editMessageText(`_Searching lyrics for: ${searchTarget}..._`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
+
+        // 2. FETCH LYRICS: Hit the lyrics database with the perfect query
+        const response = await axios.get(`https://lrclib.net/api/search?q=${encodeURIComponent(searchTarget)}`);
         const data = response.data;
 
         if (!data || data.length === 0) {
-            return bot.editMessageText(`[FAILED] Could not find lyrics for "${query}".`, { chat_id: chatId, message_id: statusMsg.message_id });
+            return bot.editMessageText(`[FAILED] Could not find lyrics for "${rawQuery}".`, { chat_id: chatId, message_id: statusMsg.message_id });
         }
 
-        // Find the first result that actually contains plain text lyrics
         const track = data.find(t => t.plainLyrics);
 
         if (!track) {
             return bot.editMessageText(`[FAILED] Found the song, but no text lyrics are available for it.`, { chat_id: chatId, message_id: statusMsg.message_id });
         }
 
+        // 3. DELIVER
         const result = `*${track.trackName} - ${track.artistName}*\n\n${track.plainLyrics}`;
 
-        // Chunking for Telegram's 4096 character limit
         if (result.length > 4000) {
             await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
             const chunks = result.match(/[\s\S]{1,4000}/g);
@@ -2941,6 +2960,7 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
         bot.editMessageText(`_API Error: ${err.message}_`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
     }
 });
+
 
 
 
