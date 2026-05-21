@@ -2895,91 +2895,38 @@ bot.onText(/^\/m4unum$/i, async (msg) => {
 
 
 
+// --- LIGHTWEIGHT LYRICS API (CLOUDFLARE IMMUNE) ---
 bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     const query = match[1] ? match[1].trim() : '';
 
+    // Authorization Check (Uses your existing AUTHORIZED array)
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
+
     if (!query) return bot.sendMessage(chatId, '_Provide a song name_', { parse_mode: 'Markdown' });
 
-    let statusMsg = await bot.sendMessage(chatId, `_Booting Chrome & Video Recorder..._`, { parse_mode: 'Markdown' });
-    
-    let browser = null;
-    let recorder = null;
-    let videoPath = null;
-    
-    // Setup video directory
-    const videoDir = path.join(__dirname, 'videos');
-    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
+    let statusMsg = await bot.sendMessage(chatId, `_Querying Global Lyrics API for: ${query}..._`, { parse_mode: 'Markdown' });
 
     try {
-        browser = await puppeteer.launch({
-            headless: true,
-            executablePath: getChromePath(),
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-        });
+        // Direct API hook. No browsers, no RAM spikes, no Cloudflare.
+        const response = await axios.get(`https://lrclib.net/api/search?q=${encodeURIComponent(query)}`);
+        const data = response.data;
 
-        const page = await browser.newPage();
-        await page.setViewport({ width: 412, height: 915 });
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
-
-        // --- 1. START RECORDER ---
-        videoPath = path.join(videoDir, `lyrics_debug_${Date.now()}.mp4`);
-        recorder = new PuppeteerScreenRecorder(page, { fps: 30 });
-        await recorder.start(videoPath);
-
-        await bot.editMessageText(`_Searching Genius directly for: ${query}_`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
-        await page.goto(`https://genius.com/search?q=${encodeURIComponent(query)}`, { waitUntil: 'domcontentloaded' });
-        
-        // --- 2. FLEXIBLE LINK HUNTER (Bypasses the 15s timeout crash) ---
-        let geniusUrl = null;
-        for (let i = 0; i < 15; i++) {
-            await new Promise(r => setTimeout(r, 1000));
-            geniusUrl = await page.evaluate(() => {
-                const links = Array.from(document.querySelectorAll('a'));
-                // Hunt for any link that points to a Genius lyrics page
-                const lyricLink = links.find(a => a.href.includes('genius.com') && a.href.includes('-lyrics'));
-                return lyricLink ? lyricLink.href : null;
-            });
-            if (geniusUrl) break; // Stop waiting as soon as we find it
+        if (!data || data.length === 0) {
+            return bot.editMessageText(`[FAILED] Could not find lyrics for "${query}".`, { chat_id: chatId, message_id: statusMsg.message_id });
         }
 
-        if (!geniusUrl) {
-            await recorder.stop();
-            await bot.editMessageText(`[TIMEOUT] Could not find the song link on Genius. Sending video...`, { chat_id: chatId, message_id: statusMsg.message_id });
-            
-            if (fs.existsSync(videoPath)) {
-                await bot.sendVideo(chatId, videoPath, { caption: `[DIAGNOSTIC] Genius Search Timeout` });
-                setTimeout(() => fs.unlinkSync(videoPath), 5000);
-            }
-            await browser.close();
-            return; 
+        // Find the first result that actually contains plain text lyrics
+        const track = data.find(t => t.plainLyrics);
+
+        if (!track) {
+            return bot.editMessageText(`[FAILED] Found the song, but no text lyrics are available for it.`, { chat_id: chatId, message_id: statusMsg.message_id });
         }
 
-        // --- 3. SCRAPE LYRICS ---
-        await bot.editMessageText(`_Link found! Scraping lyrics..._`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
-        await page.goto(geniusUrl, { waitUntil: 'domcontentloaded' });
+        const result = `*${track.trackName} - ${track.artistName}*\n\n${track.plainLyrics}`;
 
-        const data = await page.evaluate(() => {
-            let text = '';
-            document.querySelectorAll('div[data-lyrics-container="true"]').forEach(el => text += el.innerText + '\n\n');
-            const title = document.querySelector('h1')?.innerText.trim();
-            return { lyrics: text.trim(), title };
-        });
-
-        await recorder.stop();
-        await browser.close();
-
-        if (!data.lyrics) {
-            if (fs.existsSync(videoPath)) {
-                await bot.sendVideo(chatId, videoPath, { caption: `[DIAGNOSTIC] Lyrics Container Not Found` });
-                setTimeout(() => fs.unlinkSync(videoPath), 5000);
-            }
-            throw new Error("Page loaded, but could not extract lyrics text.");
-        }
-
-        // --- 4. DELIVERY ---
-        const result = `*${data.title || query}*\n\n${data.lyrics}`;
-        
+        // Chunking for Telegram's 4096 character limit
         if (result.length > 4000) {
             await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
             const chunks = result.match(/[\s\S]{1,4000}/g);
@@ -2990,20 +2937,8 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
             await bot.editMessageText(result, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
         }
 
-        // Clean up the video if everything succeeded so it doesn't waste Heroku storage
-        if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
-
     } catch (err) {
-        // --- 5. CRASH HANDLER (SENDS VIDEO) ---
-        if (recorder) await recorder.stop().catch(() => {});
-        if (browser) await browser.close().catch(() => {});
-        
-        bot.editMessageText(`_Error: ${err.message}_`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
-        
-        if (videoPath && fs.existsSync(videoPath)) {
-            await bot.sendVideo(chatId, videoPath, { caption: `[DIAGNOSTIC] Crash Video` }).catch(()=>{});
-            setTimeout(() => fs.unlinkSync(videoPath), 5000);
-        }
+        bot.editMessageText(`_API Error: ${err.message}_`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
     }
 });
 
