@@ -2868,7 +2868,6 @@ bot.onText(/^\/m4unum$/i, async (msg) => {
 
 
 
-// Strictly accepts ONLY /lyrics
 bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
     const chatId = msg.chat.id;
     const query = match[1] ? match[1].trim() : '';
@@ -2877,53 +2876,74 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
         return bot.sendMessage(chatId, '_Provide a song name_', { parse_mode: 'Markdown' });
     }
 
-    const statusMsg = await bot.sendMessage(chatId, `_Scraping the web for ${query}..._`, { parse_mode: 'Markdown' });
+    const statusMsg = await bot.sendMessage(chatId, `_Searching DuckDuckGo for ${query}..._`, { parse_mode: 'Markdown' });
 
     try {
-        const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query + ' lyrics site:genius.com')}`;
-        const searchRes = await axios.get(searchUrl, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+        // High-quality headers to disguise the Heroku server as a real user
+        const headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Referer': 'https://html.duckduckgo.com/'
+        };
+
+        // 1. Search DuckDuckGo HTML
+        const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query + ' lyrics genius')}`;
+        const searchRes = await axios.get(searchUrl, { headers });
+        
+        let $ = cheerio.load(searchRes.data);
+        let geniusUrl = null;
+        
+        // 2. Hunt for the Genius link in the search results
+        $('a').each((i, el) => {
+            const href = $(el).attr('href');
+            // DuckDuckGo hides links inside a redirect parameter called 'uddg'
+            if (href && href.includes('uddg=') && href.includes('genius.com')) {
+                const matchLink = href.match(/uddg=([^&]+)/);
+                if (matchLink) {
+                    geniusUrl = decodeURIComponent(matchLink[1]);
+                    return false; // Stop searching once we find it
+                }
+            }
         });
 
-        const linkMatch = searchRes.data.match(/uddg=([^&]+)/);
-        if (!linkMatch) {
-            return bot.editMessageText('_Could not find lyrics for this song._', { 
+        if (!geniusUrl) {
+            return bot.editMessageText('_Could not find a Genius link on DuckDuckGo._', { 
                 chat_id: chatId, 
                 message_id: statusMsg.message_id, 
                 parse_mode: 'Markdown' 
             });
         }
-        
-        const geniusUrl = decodeURIComponent(linkMatch[1]);
 
-        const lyricRes = await axios.get(geniusUrl, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+        await bot.editMessageText(`_Genius link found! Extracting lyrics..._`, { 
+            chat_id: chatId, 
+            message_id: statusMsg.message_id, 
+            parse_mode: 'Markdown' 
         });
 
-        const $ = cheerio.load(lyricRes.data);
-        let lyrics = '';
+        // 3. Visit the Genius page directly
+        const lyricRes = await axios.get(geniusUrl, { headers });
+        $ = cheerio.load(lyricRes.data);
 
+        // 4. Extract the lyrics
+        let lyrics = '';
         $('div[data-lyrics-container="true"]').each((i, el) => {
             $(el).find('br').replaceWith('\n');
             lyrics += $(el).text() + '\n\n';
         });
 
         lyrics = lyrics.trim();
+        const title = $('h1').first().text().trim() || query;
 
         if (!lyrics) {
-            return bot.editMessageText('_Failed to extract lyrics from the page._', { 
-                chat_id: chatId, 
-                message_id: statusMsg.message_id, 
-                parse_mode: 'Markdown' 
-            });
+            throw new Error("Found the page, but failed to extract the lyrics text from the HTML structure.");
         }
 
-        const title = $('h1').first().text().trim() || query;
         const formattedLyrics = `*${title}*\n\n${lyrics}`;
 
+        // 5. Send with chunking for Telegram limits
         if (formattedLyrics.length > 4000) {
             await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-            
             const chunks = formattedLyrics.match(/[\s\S]{1,4000}/g);
             for (let chunk of chunks) {
                 await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' });
@@ -2937,10 +2957,26 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
         }
 
     } catch (err) {
-        bot.editMessageText(`_Scraping Error: ${err.message}_`, { 
+        // VERBOSE DEBUG LOG: Captures exactly what went wrong for you to investigate
+        let debugMsg = `_Scraping Error: ${err.message}_`;
+        
+        if (err.response) {
+            debugMsg += `\n\n*Server Status Code:* ${err.response.status}`;
+            
+            // Extract the first 600 characters of the block message from the server
+            let errorHtml = err.response.data ? err.response.data.substring(0, 600) : 'No data';
+            // Strip out messy HTML tags to make it readable in Telegram
+            let cleanErrorText = errorHtml.replace(/<[^>]*>?/gm, ' ').replace(/\s\s+/g, ' ').trim();
+            
+            debugMsg += `\n\n*Security Block Response:*\n\`\`\`text\n${cleanErrorText}\n\`\`\``;
+        }
+        
+        bot.editMessageText(debugMsg, { 
             chat_id: chatId, 
             message_id: statusMsg.message_id, 
             parse_mode: 'Markdown' 
+        }).catch(() => {
+            bot.sendMessage(chatId, debugMsg, { parse_mode: 'Markdown' });
         });
     }
 });
