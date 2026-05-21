@@ -347,46 +347,54 @@ wss.on('connection', (ws) => {
     let fileMeta = null;
 
     // Notice// Inside your wss.on('connection', ...) listener
+// Ensure this exists at the top of your Heroku index.js
+global.fileStorage = new Map();
+
 ws.on('message', async (data, isBinary) => {
     try {
         if (!isBinary) {
             const msg = JSON.parse(data.toString());
-
-            if (msg.action === 'ping') {
-                    return; // Ignore the ping, just let it keep the connection warm
-            }
+            if (msg.action === 'ping') return;
             if (msg.action === 'file_delivery') {
-                fileMeta = msg;
-                console.log(`[HEROKU] Metadata received: ${msg.fileName} (${msg.ext})`);
+                fileMeta = msg; 
             }
         } else {
             if (!fileMeta) return;
             const { chatId, msgId, ext } = fileMeta;
 
-            await bot.editMessageText(`[SYSTEM] Streaming binary to Telegram...`, { chat_id: chatId, message_id: msgId }).catch(()=>{});
-
-            // If it's an MP4, send as Video
-            if (ext === 'mp4') {
-                await bot.sendVideo(chatId, data, { 
-                    caption: `[SUCCESS] Streamed via WebSocket.`,
-                    supports_streaming: true // This makes the video playable while downloading
-                });
-            } 
-            // If it's an MP3, send as Audio
-            else {
-                await bot.sendAudio(chatId, data, { caption: `[SUCCESS] Streamed via WebSocket.` });
+            // --- WHATSAPP LOGIC ---
+            if (chatId === 'API_USER') {
+                const waitingRes = global.waitingClients.get(msgId);
+                
+                if (waitingRes) {
+                    // Instantly push the binary file to the waiting Levanter bot
+                    waitingRes.setHeader('Content-Type', ext === 'mp4' ? 'video/mp4' : 'audio/mpeg');
+                    waitingRes.send(data);
+                    
+                    global.waitingClients.delete(msgId); // Clean up
+                }
+                
+                fileMeta = null;
+                data = null;
+                return; // STOP: Do not execute Telegram delivery
             }
+
+            // --- TELEGRAM LOGIC ---
+            await bot.editMessageText(`[SYSTEM] Streaming binary to Telegram...`, { chat_id: chatId, message_id: msgId }).catch(()=>{});
+            
+            if (ext === 'mp4') await bot.sendVideo(chatId, data, { supports_streaming: true }).catch(console.error);
+            else await bot.sendAudio(chatId, data).catch(console.error);
             
             await bot.deleteMessage(chatId, msgId).catch(() => {});
             
-            // CRITICAL: Explicitly clear the buffer from RAM after sending
-            data = null; 
             fileMeta = null;
+            data = null;
         }
     } catch (err) {
         console.error('[WS SERVER ERROR]', err);
     }
 });
+
 
 
     ws.on('close', () => {
@@ -1481,31 +1489,38 @@ app.post('/api/raganork-hook', async (req, res) => {
 });
 
 
-// Add this to your Heroku index.js
+// Add this at the top of Heroku index.js
+global.waitingClients = new Map();
+
 app.post('/api/play-hook', (req, res) => {
     const { query, isVideo } = req.body;
-    console.log(`[API RECEIVED] Query: ${query}, Type: ${isVideo ? 'Video' : 'Audio'}`);
+    const msgId = Date.now(); 
 
-    // Check if the phone is connected
     if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
-        console.error("[API ERROR] Phone is not connected to WebSocket.");
-        return res.status(503).json({ success: false, error: "Termux phone is disconnected." });
+        return res.status(503).json({ error: "Termux disconnected." });
     }
 
-    try {
-        // Send the order to the phone
-        global.termuxSocket.send(JSON.stringify({
-            action: 'download',
-            url: `ytsearch1:${query}`,
-            isVideo: isVideo,
-            chatId: 'API_USER',
-            msgId: Date.now()
-        }));
-        
-        return res.json({ success: true, message: "Order sent to phone." });
-    } catch (err) {
-        return res.status(500).json({ success: false, error: err.message });
-    }
+    // 1. Tell Termux to start downloading
+    global.termuxSocket.send(JSON.stringify({
+        action: 'download',
+        url: `ytsearch1:${query}`,
+        isVideo: isVideo,
+        chatId: 'API_USER',
+        msgId: msgId
+    }));
+
+    // 2. HOLD THE CONNECTION OPEN
+    // We save the 'res' object so we can send the file through it later
+    global.waitingClients.set(msgId, res);
+
+    // Safety: Close connection if Termux takes longer than 3 minutes
+    setTimeout(() => {
+        if (global.waitingClients.has(msgId)) {
+            const timeoutRes = global.waitingClients.get(msgId);
+            timeoutRes.status(504).json({ error: "Download timeout from phone." });
+            global.waitingClients.delete(msgId);
+        }
+    }, 180000); 
 });
 
 
