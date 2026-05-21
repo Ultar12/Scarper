@@ -354,7 +354,9 @@ wss.on('connection', (ws) => {
 // Ensure this exists at the top of your Heroku index.js
 global.fileStorage = new Map();
 
-ws.on('message', async (data, isBinary) => {
+
+
+  ws.on('message', async (data, isBinary) => {
     try {
         if (!isBinary) {
             const msg = JSON.parse(data.toString());
@@ -368,19 +370,25 @@ ws.on('message', async (data, isBinary) => {
 
             // --- WHATSAPP LOGIC ---
             if (chatId === 'API_USER') {
-                const waitingRes = global.waitingClients.get(msgId);
+                const clientData = global.waitingClients.get(msgId);
                 
-                if (waitingRes) {
-                    // Instantly push the binary file to the waiting Levanter bot
-                    waitingRes.setHeader('Content-Type', ext === 'mp4' ? 'video/mp4' : 'audio/mpeg');
-                    waitingRes.send(data);
+                if (clientData) {
+                    // 1. CLEAR THE PINGER: Stop the heartbeat so it doesn't corrupt the file
+                    if (clientData.heartbeat) {
+                        clearInterval(clientData.heartbeat);
+                    }
                     
-                    global.waitingClients.delete(msgId); // Clean up
+                    // 2. DELIVER: Push the binary file through the open response stream
+                    clientData.res.setHeader('Content-Type', ext === 'mp4' ? 'video/mp4' : 'audio/mpeg');
+                    clientData.res.write(data);
+                    clientData.res.end(); // Properly close the request
+                    
+                    global.waitingClients.delete(msgId); // Clean up memory
                 }
                 
                 fileMeta = null;
                 data = null;
-                return; // STOP: Do not execute Telegram delivery
+                return; // STOP: Telegram logic is skipped
             }
 
             // --- TELEGRAM LOGIC ---
@@ -398,7 +406,6 @@ ws.on('message', async (data, isBinary) => {
         console.error('[WS SERVER ERROR]', err);
     }
 });
-
 
 
     ws.on('close', () => {
@@ -1503,6 +1510,7 @@ app.post('/api/play-hook', (req, res) => {
         return res.status(503).json({ error: "Termux disconnected." });
     }
 
+    // Tell Termux to start the work
     global.termuxSocket.send(JSON.stringify({
         action: 'download',
         url: `ytsearch1:${query}`,
@@ -1511,16 +1519,28 @@ app.post('/api/play-hook', (req, res) => {
         msgId: msgId
     }));
 
-    global.waitingClients.set(msgId, res);
+    // Start the invisible heartbeat
+    res.setHeader('Content-Type', isVideo ? 'video/mp4' : 'audio/mpeg');
+    res.setHeader('Transfer-Encoding', 'chunked');
 
+    const heartbeat = setInterval(() => {
+        // This keeps the Heroku connection active without corrupting binary data
+        res.write(' '); 
+    }, 15000);
+
+    global.waitingClients.set(msgId, { res, heartbeat });
+
+    // 2-minute absolute fail-safe
     setTimeout(() => {
         if (global.waitingClients.has(msgId)) {
-            const timeoutRes = global.waitingClients.get(msgId);
-            timeoutRes.status(504).json({ error: "Download took longer than 25s." });
+            clearInterval(heartbeat);
+            const client = global.waitingClients.get(msgId);
+            client.res.end();
             global.waitingClients.delete(msgId);
         }
-    }, 50000); 
+    }, 120000); 
 });
+
 
 
 
