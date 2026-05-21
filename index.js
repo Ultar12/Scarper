@@ -1546,6 +1546,59 @@ app.post('/api/play-hook', (req, res) => {
 
 
 
+// --- EXTERNAL LYRICS API ENDPOINT ---
+app.get('/api/lyrics', async (req, res) => {
+    const rawQuery = req.query.q;
+    
+    if (!rawQuery) {
+        return res.status(400).json({ success: false, error: "Missing query parameter 'q'." });
+    }
+
+    try {
+        // 1. SMART RESOLVER (iTunes)
+        let searchTarget = rawQuery; 
+        try {
+            const itunesRes = await axios.get(`https://itunes.apple.com/search?term=${encodeURIComponent(rawQuery)}&entity=song&limit=1`);
+            if (itunesRes.data && itunesRes.data.results && itunesRes.data.results.length > 0) {
+                const trackInfo = itunesRes.data.results[0];
+                searchTarget = `${trackInfo.trackName} ${trackInfo.artistName}`;
+            } else {
+                searchTarget = rawQuery.replace(/\b(by|lyrics)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+            }
+        } catch (e) {
+            searchTarget = rawQuery.replace(/\b(by|lyrics)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+        }
+
+        // 2. FETCH & SORT (LRCLIB)
+        const response = await axios.get(`https://lrclib.net/api/search?q=${encodeURIComponent(searchTarget)}`);
+        const data = response.data;
+
+        if (!data || data.length === 0) {
+            return res.status(404).json({ success: false, error: `Could not find lyrics for "${rawQuery}".` });
+        }
+
+        const validTracks = data.filter(t => t.plainLyrics && t.plainLyrics.trim().length > 0);
+
+        if (validTracks.length === 0) {
+            return res.status(404).json({ success: false, error: `Found the song, but no text lyrics are available.` });
+        }
+
+        // Sort descending by duration to grab the full song, not the snippet
+        validTracks.sort((a, b) => (b.duration || 0) - (a.duration || 0));
+        const track = validTracks[0];
+
+        // 3. RESPOND
+        res.status(200).json({
+            success: true,
+            title: track.trackName,
+            artist: track.artistName,
+            lyrics: track.plainLyrics
+        });
+
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
 
 
 
