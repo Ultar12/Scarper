@@ -361,7 +361,29 @@ global.fileStorage = new Map();
         if (!isBinary) {
             const msg = JSON.parse(data.toString());
             if (msg.action === 'ping') return;
-            if (msg.action === 'file_delivery') fileMeta = msg; 
+            
+            if (msg.action === 'file_delivery') {
+                fileMeta = msg; 
+            } 
+            // --- CATCH TERMUX ERRORS (e.g., 50MB limit hits or yt-dlp crashes) ---
+            else if (msg.action === 'error') {
+                if (msg.chatId === 'API_USER') {
+                    const clientData = global.waitingClients.get(msg.msgId);
+                    if (clientData && clientData.res) {
+                        if (clientData.heartbeat) clearInterval(clientData.heartbeat);
+                        
+                        if (!clientData.res.headersSent) {
+                            clientData.res.status(500).json({ error: msg.message });
+                        } else {
+                            clientData.res.end(); // Close stream gracefully if headers already fired
+                        }
+                        global.waitingClients.delete(msg.msgId);
+                    }
+                } else {
+                    // Route error to Telegram
+                    await bot.editMessageText(`[ERROR] Termux: ${msg.message}`, { chat_id: msg.chatId, message_id: msg.msgId }).catch(()=>{});
+                }
+            }
         } else {
             if (!fileMeta) return;
             const { chatId, msgId, ext } = fileMeta;
@@ -397,8 +419,22 @@ global.fileStorage = new Map();
             // --- TELEGRAM LOGIC ---
             await bot.editMessageText(`[SYSTEM] Streaming binary to Telegram...`, { chat_id: chatId, message_id: msgId }).catch(()=>{});
             
-            if (ext === 'mp4') await bot.sendVideo(chatId, data, { supports_streaming: true }).catch(console.error);
-            else await bot.sendAudio(chatId, data).catch(console.error);
+            // FIX: Added filename and contentType to destroy the DeprecationWarning
+            if (ext === 'mp4') {
+                await bot.sendVideo(
+                    chatId, 
+                    data, 
+                    { supports_streaming: true },
+                    { filename: `video_${Date.now()}.mp4`, contentType: 'video/mp4' }
+                ).catch(console.error);
+            } else {
+                await bot.sendAudio(
+                    chatId, 
+                    data,
+                    {},
+                    { filename: `audio_${Date.now()}.mp3`, contentType: 'audio/mpeg' }
+                ).catch(console.error);
+            }
             
             await bot.deleteMessage(chatId, msgId).catch(() => {});
             
@@ -409,6 +445,7 @@ global.fileStorage = new Map();
         console.error('[WS SERVER ERROR]', err);
     }
 });
+
 
 
     ws.on('close', () => {
