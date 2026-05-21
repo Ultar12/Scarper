@@ -1481,6 +1481,29 @@ app.post('/api/raganork-hook', async (req, res) => {
 });
 
 
+app.post('/api/play-hook', async (req, res) => {
+    const { query, isVideo, callbackUrl, secret } = req.body;
+
+    // Security Check
+    if (secret !== process.env.API_SECRET) {
+        return res.status(403).json({ success: false, error: "Unauthorized." });
+    }
+
+    if (!query || !callbackUrl || !global.termuxSocket || global.termuxSocket.readyState !== 1) {
+        return res.status(503).json({ success: false, error: "Termux Node offline or missing parameters." });
+    }
+
+    // Dispatch job to phone
+    global.termuxSocket.send(JSON.stringify({
+        action: 'download',
+        url: `ytsearch1:${query}`,
+        isVideo: isVideo || false,
+        isApi: true,
+        callbackUrl: callbackUrl // The phone will use this to send the file back
+    }));
+
+    res.json({ success: true, message: "Extraction initiated." });
+});
 
 
 // --- EXTERNAL DOWNLOAD API SERVICE ---
