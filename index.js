@@ -16,6 +16,9 @@ const QRCode = require('qrcode');
 const { remote } = require('webdriverio');
 const axios = require('axios');
 const cheerio = require('cheerio');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+puppeteer.use(StealthPlugin());
+
 
 
 const { exec } = require('child_process');
@@ -2867,7 +2870,6 @@ bot.onText(/^\/m4unum$/i, async (msg) => {
 
 
 
-// --- PUPPETEER CHROME LYRICS SCRAPER ---
 bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     const query = match[1] ? match[1].trim() : '';
@@ -2876,105 +2878,65 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
         return bot.sendMessage(chatId, '_Provide a song name_', { parse_mode: 'Markdown' });
     }
 
-    const statusMsg = await bot.sendMessage(chatId, `_Booting up Chrome engine for ${query}..._`, { parse_mode: 'Markdown' });
+    const statusMsg = await bot.sendMessage(chatId, `_Booting Chrome (Stealth Mode) for ${query}..._`, { parse_mode: 'Markdown' });
 
     let browser;
     try {
-        // Launch literal Chrome using your existing getChromePath() helper
         browser = await puppeteer.launch({
             headless: true,
             executablePath: getChromePath(),
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage', // Prevents memory crash on Heroku
+                '--disable-dev-shm-usage',
                 '--disable-gpu'
             ]
         });
 
         const page = await browser.newPage();
-        
-        // Disguise the browser completely
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 
-        await bot.editMessageText(`_Searching Google for ${query}..._`, { 
-            chat_id: chatId, 
-            message_id: statusMsg.message_id, 
-            parse_mode: 'Markdown' 
-        });
+        await bot.editMessageText(`_Searching Google..._`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
 
-        // 1. Search Google directly
-        const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query + ' lyrics site:genius.com')}`;
-        await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
+        await page.goto(`https://www.google.com/search?q=${encodeURIComponent(query + ' lyrics site:genius.com')}`, { waitUntil: 'domcontentloaded' });
 
-        // 2. Read the Google results page and find the first Genius link
         const geniusUrl = await page.evaluate(() => {
             const link = document.querySelector('a[href*="genius.com"]');
             return link ? link.href : null;
         });
 
-        if (!geniusUrl) {
-            throw new Error("Could not find a Genius link on Google's front page.");
-        }
+        if (!geniusUrl) throw new Error("Could not find a Genius link.");
 
-        await bot.editMessageText(`_Genius link found! Loading page..._`, { 
-            chat_id: chatId, 
-            message_id: statusMsg.message_id, 
-            parse_mode: 'Markdown' 
-        });
-
-        // 3. Visit the Genius page
         await page.goto(geniusUrl, { waitUntil: 'domcontentloaded' });
 
-        // 4. Extract the lyrics natively through Chrome
         const data = await page.evaluate(() => {
             let text = '';
-            const containers = document.querySelectorAll('div[data-lyrics-container="true"]');
-            containers.forEach(el => {
-                text += el.innerText + '\n\n';
-            });
-
-            const titleEl = document.querySelector('h1');
-            const title = titleEl ? titleEl.innerText.trim() : '';
-
+            document.querySelectorAll('div[data-lyrics-container="true"]').forEach(el => text += el.innerText + '\n\n');
+            const title = document.querySelector('h1')?.innerText.trim();
             return { lyrics: text.trim(), title };
         });
 
-        if (!data.lyrics) {
-            throw new Error("Successfully loaded Genius, but could not extract the text.");
-        }
-
-        const formattedLyrics = `*${data.title || query}*\n\n${data.lyrics}`;
-
-        // Close the browser immediately to free up RAM before sending
         await browser.close();
 
-        // 5. Send with chunking for Telegram limits
+        if (!data.lyrics) throw new Error("Could not extract lyrics.");
+
+        const formattedLyrics = `*${data.title || query}*\n\n${data.lyrics}`;
+        
         if (formattedLyrics.length > 4000) {
             await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-            const chunks = formattedLyrics.match(/[\s\S]{1,4000}/g);
-            for (let chunk of chunks) {
+            for (let chunk of formattedLyrics.match(/[\s\S]{1,4000}/g)) {
                 await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' });
             }
         } else {
-            await bot.editMessageText(formattedLyrics, { 
-                chat_id: chatId, 
-                message_id: statusMsg.message_id, 
-                parse_mode: 'Markdown' 
-            });
+            await bot.editMessageText(formattedLyrics, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
         }
 
     } catch (err) {
-        // Guarantee the browser closes even if it crashes, otherwise Heroku will run out of RAM
         if (browser) await browser.close().catch(() => {});
-        
-        bot.editMessageText(`_Chrome Engine Error: ${err.message}_`, { 
-            chat_id: chatId, 
-            message_id: statusMsg.message_id, 
-            parse_mode: 'Markdown' 
-        });
+        bot.editMessageText(`_Error: ${err.message}_`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
     }
 });
+
 
 
 
