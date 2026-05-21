@@ -2874,30 +2874,22 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     const query = match[1] ? match[1].trim() : '';
 
-    if (!query) {
-        return bot.sendMessage(chatId, '_Provide a song name_', { parse_mode: 'Markdown' });
-    }
+    if (!query) return bot.sendMessage(chatId, '_Provide a song name_', { parse_mode: 'Markdown' });
 
-    const statusMsg = await bot.sendMessage(chatId, `_Booting Chrome (Stealth Mode) for ${query}..._`, { parse_mode: 'Markdown' });
-
+    let statusMsg = await bot.sendMessage(chatId, `_Booting Chrome..._`, { parse_mode: 'Markdown' });
     let browser;
+
     try {
         browser = await puppeteer.launch({
             headless: true,
             executablePath: getChromePath(),
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu'
-            ]
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
         });
 
         const page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 
-        await bot.editMessageText(`_Searching Google..._`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
-
+        await bot.editMessageText(`_Searching Google for: ${query}_`, { chat_id: chatId, message_id: statusMsg.message_id });
         await page.goto(`https://www.google.com/search?q=${encodeURIComponent(query + ' lyrics site:genius.com')}`, { waitUntil: 'domcontentloaded' });
 
         const geniusUrl = await page.evaluate(() => {
@@ -2905,8 +2897,17 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
             return link ? link.href : null;
         });
 
-        if (!geniusUrl) throw new Error("Could not find a Genius link.");
+        // --- HARDENED DEBUG SECTION ---
+        if (!geniusUrl) {
+            const snap = await page.screenshot({ type: 'png' });
+            await bot.sendPhoto(chatId, snap, { caption: `[DEBUG] Search failed. No Genius link detected on this page.` });
+            await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+            await browser.close();
+            return; 
+        }
+        // ------------------------------
 
+        await bot.editMessageText(`_Link found! Scraping..._`, { chat_id: chatId, message_id: statusMsg.message_id });
         await page.goto(geniusUrl, { waitUntil: 'domcontentloaded' });
 
         const data = await page.evaluate(() => {
@@ -2918,24 +2919,17 @@ bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
 
         await browser.close();
 
-        if (!data.lyrics) throw new Error("Could not extract lyrics.");
+        if (!data.lyrics) throw new Error("Could not extract lyrics text.");
 
-        const formattedLyrics = `*${data.title || query}*\n\n${data.lyrics}`;
-        
-        if (formattedLyrics.length > 4000) {
-            await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-            for (let chunk of formattedLyrics.match(/[\s\S]{1,4000}/g)) {
-                await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' });
-            }
-        } else {
-            await bot.editMessageText(formattedLyrics, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
-        }
+        const result = `*${data.title || query}*\n\n${data.lyrics}`;
+        await bot.editMessageText(result, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
 
     } catch (err) {
         if (browser) await browser.close().catch(() => {});
         bot.editMessageText(`_Error: ${err.message}_`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
     }
 });
+
 
 
 
