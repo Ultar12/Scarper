@@ -1491,16 +1491,18 @@ app.post('/api/raganork-hook', async (req, res) => {
 
 // Add this at the top of Heroku index.js
 global.waitingClients = new Map();
+global.fileStorage = new Map();
 
+// 1. The Instant Reply Route
 app.post('/api/play-hook', (req, res) => {
     const { query, isVideo } = req.body;
-    const msgId = Date.now(); 
+    const msgId = Date.now().toString(); 
 
     if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
         return res.status(503).json({ error: "Termux disconnected." });
     }
 
-    // 1. Tell Termux to start downloading
+    // Tell Termux to start downloading
     global.termuxSocket.send(JSON.stringify({
         action: 'download',
         url: `ytsearch1:${query}`,
@@ -1509,19 +1511,24 @@ app.post('/api/play-hook', (req, res) => {
         msgId: msgId
     }));
 
-    // 2. HOLD THE CONNECTION OPEN
-    // We save the 'res' object so we can send the file through it later
-    global.waitingClients.set(msgId, res);
-
-    // Safety: Close connection if Termux takes longer than 3 minutes
-    setTimeout(() => {
-        if (global.waitingClients.has(msgId)) {
-            const timeoutRes = global.waitingClients.get(msgId);
-            timeoutRes.status(504).json({ error: "Download timeout from phone." });
-            global.waitingClients.delete(msgId);
-        }
-    }, 180000); 
+    // Reply INSTANTLY so Heroku doesn't timeout
+    res.json({ success: true, msgId: msgId });
 });
+
+// 2. The File Pickup Route
+app.get('/api/check/:id', (req, res) => {
+    const data = global.fileStorage.get(req.params.id);
+    
+    if (data) {
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.send(data);
+        global.fileStorage.delete(req.params.id); // Clear memory
+    } else {
+        // If Termux is still working, return 404 (Not Ready)
+        res.status(404).send('Not ready yet');
+    }
+});
+
 
 
 
