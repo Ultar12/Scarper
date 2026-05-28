@@ -5465,9 +5465,6 @@ bot.on('message', async (msg) => {
             return;
         }
                 
-                    
-    
-});
 
 
 // --- 5. WHATSAPP CLIENT INITIALIZATION ---
