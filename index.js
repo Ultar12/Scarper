@@ -2838,6 +2838,102 @@ bot.on('callback_query', async (queryObj) => {
         return;
     }
 
+
+        if (data === 'm4u_retry_code') {
+        if (!m4uPage || !m4uSession) {
+            bot.answerCallbackQuery(queryObj.id, { text: 'Session expired or browser closed.', show_alert: true });
+            return;
+        }
+        
+        bot.answerCallbackQuery(queryObj.id, { text: 'Retrying Get Code...' });
+        let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Manual retry initiated. Tapping 'Get Code' again...`);
+        m4uSession.state = 'FETCHING_CODE';
+
+        try {
+            await m4uPage.evaluate(() => {
+                Array.from(document.querySelectorAll('*')).forEach(el => {
+                    if (el.innerText && el.innerText.trim().toLowerCase() === 'get code' && el.offsetParent !== null) el.click();
+                });
+            });
+
+            let fetchResult = null;
+            for (let i = 0; i < 30; i++) { // 30 second manual retry loop
+                await new Promise(r => setTimeout(r, 1000));
+                
+                fetchResult = await m4uPage.evaluate(() => {
+                    const bodyText = document.body.innerText.toLowerCase();
+                    if (bodyText.includes('failed to obtain')) return { status: 'failed_to_obtain', message: 'Failed to obtain code from the server.' };
+                    if (bodyText.includes('network error') || bodyText.includes('frequently')) return { status: 'error', message: 'Network error or requested too frequently.' };
+                    
+                    const possibleContainers = Array.from(document.querySelectorAll('div, section'));
+                    for (let c of possibleContainers) {
+                        if (c.children.length >= 8 && c.children.length <= 15) {
+                            const chars = Array.from(c.children).map(child => (child.innerText || '').trim()).filter(txt => txt.length === 1 && /[A-Z0-9]/i.test(txt));
+                            if (chars.length === 8) {
+                                const copyBtn = c.children[c.children.length - 1];
+                                if (copyBtn) copyBtn.click();
+                                return { status: 'success', code: chars.join('') };
+                            }
+                        }
+                    }
+                    return { status: 'pending' };
+                });
+
+                if (fetchResult && fetchResult.status !== 'pending') break;
+            }
+
+            if (!fetchResult || fetchResult.status === 'pending') {
+                m4uSession.state = 'WAITING_NUMBER';
+                await bot.editMessageText(`[TIMEOUT] Could not detect code after 30 seconds of retrying.`, { chat_id: chatId, message_id: statusMsg.message_id });
+            } 
+            else if (fetchResult.status === 'failed_to_obtain' || fetchResult.status === 'error') {
+                m4uSession.state = 'WAITING_NUMBER';
+                bot.editMessageText(`[ERROR] ${fetchResult.message}\n\nServer rejected it again.`, { 
+                    chat_id: chatId, message_id: statusMsg.message_id,
+                    reply_markup: { inline_keyboard: [[ { text: 'Retry Again', callback_data: 'm4u_retry_code' } ]] }
+                });
+            } 
+            else if (fetchResult.status === 'success') {
+                bot.editMessageText(`[SUCCESS] Code obtained on retry!\n\nWaiting for you to enter it in WhatsApp...`, { 
+                    chat_id: chatId, message_id: statusMsg.message_id,
+                    reply_markup: { inline_keyboard: [[ { text: `Copy: ${fetchResult.code}`, copy_text: { text: fetchResult.code } } ]] }
+                });
+                
+                // Trigger the background linker loop (Same as main script)
+                m4uSession.state = 'WAITING_FOR_LINK';
+                (async () => {
+                    let popupClosed = false;
+                    for(let i = 0; i < 900; i++) { 
+                        if (!m4uSession || m4uSession.state !== 'WAITING_FOR_LINK') return; 
+                        const isClosed = await m4uPage.evaluate(() => {
+                            const p = Array.from(document.querySelectorAll('input')).find(i => i.placeholder && i.placeholder.toLowerCase().includes('phone number'));
+                            return !p || p.offsetParent === null;
+                        });
+                        if(isClosed) { popupClosed = true; break; }
+                        await new Promise(r => setTimeout(r, 2000));
+                    }
+                    if (!m4uSession || m4uSession.state !== 'WAITING_FOR_LINK') return;
+
+                    if (popupClosed) {
+                        m4uSession.linkedCount++; 
+                        bot.sendMessage(chatId, `[VERIFIED] Number successfully linked!\n\nTotal: ${m4uSession.linkedCount} | Ready for next number.`);
+                        await m4uPage.reload({ waitUntil: 'domcontentloaded' });
+                        await m4uPage.evaluate(async () => {
+                            await new Promise(r => setTimeout(r, 1000));
+                            const addBtn = Array.from(document.querySelectorAll('*')).find(el => el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null);
+                            if (addBtn) addBtn.click();
+                        });
+                        m4uSession.state = 'WAITING_NUMBER';
+                    }
+                })();
+            }
+        } catch (e) {
+            bot.sendMessage(chatId, `[ERROR] Retry failed: ${e.message}`);
+        }
+        return;
+    }
+
+
              
           if (data.startsWith('action_play_')) {
         const searchQuery = playCache[chatId];
