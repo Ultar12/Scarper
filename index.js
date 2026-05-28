@@ -5165,29 +5165,62 @@ bot.on('message', async (msg) => {
         }
 
 
-        // --- PHASE B: NUMBER PROCESSING AND MONITORING ---
+        
+
+            // --- PHASE B: NUMBER PROCESSING AND MONITORING ---
         if (m4uSession.state === 'WAITING_NUMBER' || m4uSession.state === 'WAITING_FOR_LINK') {
-            const targetNumber = msg.text.trim().replace(/[^0-9]/g, '');
-            let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Processing number ${targetNumber}...`);
+            let input = msg.text.trim();
+            let countryCode = m4uSession.country || '234';
+            let localNum = input.replace(/[^0-9]/g, '');
+
+            // --- SMART NUMBER PARSER ---
+            if (input.includes(' ')) {
+                const parts = input.split(/\s+/);
+                countryCode = parts[0].replace(/[^0-9]/g, '');
+                localNum = parts.slice(1).join('').replace(/[^0-9]/g, '');
+            } else {
+                const cleanNum = input.replace(/[^0-9]/g, '');
+                if (cleanNum.startsWith('0')) {
+                    localNum = cleanNum.substring(1);
+                } else {
+                    const globalCodes = ['880', '254', '256', '263', '225', '221', '228', '233', '971', '966', '234', '58', '91', '92', '62', '55', '44', '27', '20', '1'];
+                    let found = false;
+                    for (let code of globalCodes) {
+                        if (cleanNum.startsWith(code) && cleanNum.length > code.length + 4) {
+                            countryCode = code;
+                            localNum = cleanNum.substring(code.length);
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) localNum = cleanNum;
+                }
+            }
+            const fullNumber = `+${countryCode}${localNum}`;
+
+            let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Processing target: ${fullNumber}...`);
             resetM4uTimer(chatId); 
 
-            // If we were waiting for a previous link, it means you want to skip/abort it.
             const wasWaitingForLink = (m4uSession.state === 'WAITING_FOR_LINK');
-            m4uSession.state = 'FETCHING_CODE'; // Changing state kills the background monitoring loop safely
+            m4uSession.state = 'FETCHING_CODE'; 
 
             try {
-                // If you are overriding a pending link, close the old popup to wipe the slate clean
+                // --- HARD REFRESH ON ABORT ---
                 if (wasWaitingForLink) {
-                    await bot.editMessageText(`[SYSTEM] Aborting previous number. Resetting popup for ${targetNumber}...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                    await bot.editMessageText(`[SYSTEM] Aborting previous link. Force refreshing site...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                    await m4uPage.reload({ waitUntil: 'domcontentloaded' });
+                    await new Promise(r => setTimeout(r, 4000));
+                    
+                    // Re-open empty popup
                     await m4uPage.evaluate(() => {
                         Array.from(document.querySelectorAll('*')).forEach(el => {
-                            if (el.innerText && el.innerText.trim() === 'Close' && el.offsetParent !== null) el.click();
+                            if (el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null) el.click();
                         });
                     });
-                    await new Promise(r => setTimeout(r, 1500));
+                    await new Promise(r => setTimeout(r, 2000));
                 }
 
-                // Check if popup is open. If not, click "Add" to get a fresh empty box
+                // Check if popup is open (if not aborting)
                 const isPopupOpenNow = await m4uPage.evaluate(() => {
                     const phoneInput = Array.from(document.querySelectorAll('input')).find(i => i.placeholder && i.placeholder.toLowerCase().includes('phone number'));
                     return phoneInput && phoneInput.offsetParent !== null;
@@ -5202,9 +5235,54 @@ bot.on('message', async (msg) => {
                     await new Promise(r => setTimeout(r, 2000));
                 }
 
-                await bot.editMessageText(`[SYSTEM] Requesting code for ${targetNumber}...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                // --- SMART COUNTRY SWITCHER ---
+                if (countryCode !== m4uSession.country) {
+                    await bot.editMessageText(`[SYSTEM] Switching country code to +${countryCode}...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                    
+                    // Open selector
+                    await m4uPage.evaluate(() => {
+                        const elements = Array.from(document.querySelectorAll('*'));
+                        for (let el of elements) {
+                            if ((el.innerText || '').trim().match(/^\+\d{1,4}$/) && el.offsetParent !== null && el.children.length === 0) {
+                                el.click(); return true;
+                            }
+                        }
+                    });
+                    await new Promise(r => setTimeout(r, 2000));
+                    
+                    // Search box
+                    const allInputs = await m4uPage.$$('input');
+                    for (let input of allInputs) {
+                        const ph = await m4uPage.evaluate(el => el.placeholder || '', input);
+                        if (ph.toLowerCase().includes('country')) {
+                            await input.click();
+                            await input.evaluate(el => el.value = '');
+                            await input.type(countryCode, { delay: 100 });
+                            break;
+                        }
+                    }
+                    await new Promise(r => setTimeout(r, 2000));
+                    
+                    // Click the exact match
+                    await m4uPage.evaluate((cc) => {
+                        const targetCode = '+' + cc;
+                        const allElements = Array.from(document.querySelectorAll('*'));
+                        for (let el of allElements) {
+                            if (el.children.length === 0 && (el.innerText || '').trim() === targetCode && el.offsetParent !== null) {
+                                el.click(); 
+                                if (el.parentElement) el.parentElement.click(); 
+                                return;
+                            }
+                        }
+                    }, countryCode);
+                    await new Promise(r => setTimeout(r, 2000));
+                    
+                    m4uSession.country = countryCode;
+                }
 
-                // Clear the input perfectly
+                await bot.editMessageText(`[SYSTEM] Requesting code for ${localNum}...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+
+                // Clear & Inject local number
                 await m4uPage.evaluate(() => {
                     const inputs = Array.from(document.querySelectorAll('input'));
                     const phoneInput = inputs.find(i => i.placeholder && i.placeholder.toLowerCase().includes('phone number'));
@@ -5214,9 +5292,7 @@ bot.on('message', async (msg) => {
                 const inputHandles = await m4uPage.$$('input');
                 for (let handle of inputHandles) {
                     const isPhone = await m4uPage.evaluate(el => el.placeholder && el.placeholder.toLowerCase().includes('phone number'), handle);
-                    if (isPhone) {
-                        await handle.type(targetNumber, { delay: 50 });
-                    }
+                    if (isPhone) await handle.type(localNum, { delay: 50 });
                 }
                 
                 // Click 'get code'
@@ -5226,31 +5302,30 @@ bot.on('message', async (msg) => {
                     });
                 });
 
-                // --- SMART DETECTION LOOP ---
+
+                // --- 30-SECOND SMART DETECTION LOOP ---
                 let fetchResult = null;
+                let addedZero = false;
                 
-                for (let i = 0; i < 15; i++) {
+                for (let i = 0; i < 30; i++) {
                     await new Promise(r => setTimeout(r, 1000));
 
                     fetchResult = await m4uPage.evaluate(() => {
                         const bodyText = document.body.innerText.toLowerCase();
                         
-                        if (bodyText.includes('failed to obtain') || bodyText.includes('network error') || bodyText.includes('frequently')) {
-                            return { status: 'error', message: 'Failed to obtain code from the server.' };
-                        }
+                        // Error detections
+                        if (bodyText.includes('failed to obtain')) return { status: 'failed_to_obtain', message: 'Failed to obtain code from the server.' };
+                        if (bodyText.includes('network error') || bodyText.includes('frequently')) return { status: 'error', message: 'Network error or requested too frequently.' };
 
+                        // Success detection
                         const possibleContainers = Array.from(document.querySelectorAll('div, section'));
                         for (let c of possibleContainers) {
                             if (c.children.length >= 8 && c.children.length <= 15) {
-                                const chars = Array.from(c.children)
-                                    .map(child => (child.innerText || '').trim())
-                                    .filter(txt => txt.length === 1 && /[A-Z0-9]/i.test(txt));
-
+                                const chars = Array.from(c.children).map(child => (child.innerText || '').trim()).filter(txt => txt.length === 1 && /[A-Z0-9]/i.test(txt));
                                 if (chars.length === 8) {
                                     const codeString = chars.join('');
                                     const copyBtn = c.children[c.children.length - 1];
                                     if (copyBtn) copyBtn.click();
-
                                     return { status: 'success', code: codeString };
                                 }
                             }
@@ -5258,23 +5333,53 @@ bot.on('message', async (msg) => {
                         return { status: 'pending' };
                     });
 
+                    // Break out if we got a definitive answer
                     if (fetchResult && fetchResult.status !== 'pending') break;
+
+                    // --- 15-SECOND AUTO-ZERO INJECTION ---
+                    if (i === 15 && !addedZero) {
+                        addedZero = true;
+                        await bot.editMessageText(`[SYSTEM] 15s timeout reached. Adding '0' to number and retrying automatically...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                        
+                        await m4uPage.evaluate(() => {
+                            const inputs = Array.from(document.querySelectorAll('input'));
+                            const phoneInput = inputs.find(i => i.placeholder && i.placeholder.toLowerCase().includes('phone number'));
+                            if (phoneInput) {
+                                phoneInput.value = '0' + phoneInput.value;
+                                phoneInput.dispatchEvent(new Event('input', { bubbles: true }));
+                            }
+                        });
+                        await new Promise(r => setTimeout(r, 500));
+
+                        // Smash 'get code' again
+                        await m4uPage.evaluate(() => {
+                            Array.from(document.querySelectorAll('*')).forEach(el => {
+                                if (el.innerText && el.innerText.trim().toLowerCase() === 'get code' && el.offsetParent !== null) el.click();
+                            });
+                        });
+                    }
                 }
 
                 // --- PROCESS THE RESULT ---
                 if (!fetchResult || fetchResult.status === 'pending') {
                     m4uSession.state = 'WAITING_NUMBER';
                     const errSnap = await m4uPage.screenshot({ type: 'png' });
-                    await bot.sendPhoto(chatId, errSnap, { caption: `[TIMEOUT] Could not detect code or failure message after 15 seconds. Here is the screen state:` });
+                    await bot.sendPhoto(chatId, errSnap, { caption: `[TIMEOUT] Could not detect code after full 30 seconds.` });
                 } 
-                else if (fetchResult.status === 'error') {
+                else if (fetchResult.status === 'failed_to_obtain' || fetchResult.status === 'error') {
                     m4uSession.state = 'WAITING_NUMBER';
-                    bot.sendMessage(chatId, `[ERROR] For number ${targetNumber}:\n${fetchResult.message}`);
+                    
+                    // Deploy Error UI with Interactive Retry Button
+                    bot.sendMessage(chatId, `[ERROR] ${fetchResult.message} for ${fullNumber}\n\nTap below to force another request.`, {
+                        reply_markup: {
+                            inline_keyboard: [[
+                                { text: '🔄 Retry Get Code', callback_data: 'm4u_retry_code' }
+                            ]]
+                        }
+                    });
                 } 
                 else if (fetchResult.status === 'success') {
-                    
-                    // SEND THE INLINE COPY BUTTON
-                    const successMsg = `[SUCCESS] Code obtained for ${targetNumber}!\n\nWaiting for you to enter it in WhatsApp... (Monitoring popup)`;
+                    const successMsg = `[SUCCESS] Code obtained for ${fullNumber}!\n\nWaiting for you to enter it in WhatsApp... (Monitoring popup)`;
                     
                     bot.sendMessage(chatId, successMsg, { 
                         parse_mode: 'Markdown',
@@ -5288,12 +5393,10 @@ bot.on('message', async (msg) => {
                     // --- ENTER BACKGROUND MONITORING MODE ---
                     m4uSession.state = 'WAITING_FOR_LINK';
 
-                    // Fire-and-forget background loop (Waits up to 30 mins for the popup to close automatically)
                     (async () => {
                         let popupClosed = false;
                         
-                        for(let i = 0; i < 900; i++) { // 900 loops * 2 seconds = 30 minutes
-                            // If you send a new number, the state changes and this loop safely kills itself!
+                        for(let i = 0; i < 900; i++) { 
                             if (!m4uSession || m4uSession.state !== 'WAITING_FOR_LINK') return; 
 
                             const isClosed = await m4uPage.evaluate(() => {
@@ -5308,29 +5411,23 @@ bot.on('message', async (msg) => {
                             await new Promise(r => setTimeout(r, 2000));
                         }
 
-                        // Verify state didn't change while we were sleeping
                         if (!m4uSession || m4uSession.state !== 'WAITING_FOR_LINK') return;
 
-                            if (popupClosed) {
+                        if (popupClosed) {
                             m4uSession.linkedCount++; 
                             bot.sendMessage(chatId, `[VERIFIED] Number successfully linked!\n\nTotal: ${m4uSession.linkedCount} | Refreshing...`);
                             
-                            // --- NEW: SAVE TO DATABASE ---
                             try {
                                 await pool.query(
                                     `INSERT INTO m4u_linked_numbers (phone_number) VALUES ($1) ON CONFLICT DO NOTHING`, 
-                                    [targetNumber]
+                                    [localNum]
                                 );
                             } catch (dbErr) {
-                                console.error(`[DB ERROR] Could not save ${targetNumber}:`, dbErr.message);
+                                console.error(`[DB ERROR] Could not save:`, dbErr.message);
                             }
                             
-                            // 1. FAST RELOAD: Only wait for the initial DOM load
                             await m4uPage.reload({ waitUntil: 'domcontentloaded' });
-                            
-                            // 2. IMMEDIATE ADD STRIKE: Force click the Add button
                             await m4uPage.evaluate(async () => {
-                                // Wait briefly for the JS to hydrate the button
                                 await new Promise(r => setTimeout(r, 1000));
                                 const addBtn = Array.from(document.querySelectorAll('*')).find(el => 
                                     el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null
@@ -5339,22 +5436,16 @@ bot.on('message', async (msg) => {
                             });
                             
                             await new Promise(r => setTimeout(r, 1000));
-                            
                             m4uSession.state = 'WAITING_NUMBER';
                             bot.sendMessage(chatId, `[SYSTEM] Ready for next number.`);
-                        }
-
-                           else {
-                            // 30 mins timeout reached without linking
+                        } else {
                             bot.sendMessage(chatId, `[TIMEOUT] The popup didn't close within 30 minutes. Resetting the popup for a new number...`);
-                            
                             await m4uPage.evaluate(() => {
                                 Array.from(document.querySelectorAll('*')).forEach(el => {
                                     if (el.innerText && el.innerText.trim() === 'Close' && el.offsetParent !== null) el.click();
                                 });
                             });
                             await new Promise(r => setTimeout(r, 1500));
-                            
                             await m4uPage.evaluate(() => {
                                 Array.from(document.querySelectorAll('*')).forEach(el => {
                                     if (el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null) el.click();
@@ -5364,7 +5455,7 @@ bot.on('message', async (msg) => {
                             
                             m4uSession.state = 'WAITING_NUMBER';
                         }
-                    })(); // Executes asynchronously
+                    })(); 
                 }
 
             } catch (err) {
@@ -5373,7 +5464,9 @@ bot.on('message', async (msg) => {
             }
             return;
         }
-    }
+                
+                    
+    
 });
 
 
