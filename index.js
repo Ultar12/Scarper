@@ -2839,17 +2839,51 @@ bot.on('callback_query', async (queryObj) => {
     }
 
 
-            if (data === 'm4u_retry_code') {
+
+        if (data === 'm4u_retry_code') {
         if (!m4uPage || !m4uSession) {
             bot.answerCallbackQuery(queryObj.id, { text: 'Session expired or browser closed.', show_alert: true });
             return;
         }
         
-        bot.answerCallbackQuery(queryObj.id, { text: 'Retrying Get Code...' });
-        let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Manual retry initiated. Tapping 'Get Code' again...`);
+        bot.answerCallbackQuery(queryObj.id, { text: 'Modifying number and retrying...' });
+        let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Manual retry initiated. Modifying number...`);
         m4uSession.state = 'FETCHING_CODE';
 
         try {
+            // --- THE 5-ZERO CYCLER LOGIC ---
+            const injectedNumber = await m4uPage.evaluate(() => {
+                const inputs = Array.from(document.querySelectorAll('input'));
+                const phoneInput = inputs.find(i => i.placeholder && i.placeholder.toLowerCase().includes('phone number'));
+                
+                if (phoneInput) {
+                    let currentVal = phoneInput.value || '';
+                    
+                    // Count how many zeros are currently at the front
+                    const leadingZeros = currentVal.match(/^0+/);
+                    const zeroCount = leadingZeros ? leadingZeros[0].length : 0;
+
+                    if (zeroCount >= 5) {
+                        // Max reached. Reset by stripping all leading zeros.
+                        phoneInput.value = currentVal.replace(/^0+/, '');
+                    } else {
+                        // Add one zero to the front
+                        phoneInput.value = '0' + currentVal;
+                    }
+                    
+                    // Dispatch the event so the website's framework registers the change
+                    phoneInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    return phoneInput.value;
+                }
+                return null;
+            });
+
+            if (injectedNumber) {
+                await bot.editMessageText(`[SYSTEM] Target updated to: ${injectedNumber}\nTapping 'Get Code'...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                await new Promise(r => setTimeout(r, 1000)); // Give the site a second to register the new number
+            }
+
+            // Click Get Code
             await m4uPage.evaluate(() => {
                 Array.from(document.querySelectorAll('*')).forEach(el => {
                     if (el.innerText && el.innerText.trim().toLowerCase() === 'get code' && el.offsetParent !== null) el.click();
@@ -2892,16 +2926,15 @@ bot.on('callback_query', async (queryObj) => {
                 m4uSession.state = 'WAITING_NUMBER';
                 await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
                 
-                // Snap a picture of the failure
                 const errSnap = await m4uPage.screenshot({ type: 'png' });
                 bot.sendPhoto(chatId, errSnap, {
-                    caption: `[ERROR] ${fetchResult.message}`,
-                    reply_markup: { inline_keyboard: [[ { text: 'Retry Again', callback_data: 'm4u_retry_code' } ]] }
+                    caption: `[ERROR] ${fetchResult.message}\n\nServer rejected: ${injectedNumber}`,
+                    reply_markup: { inline_keyboard: [[ { text: '🔄 Retry Get Code', callback_data: 'm4u_retry_code' } ]] }
                 });
             } 
             else if (fetchResult.status === 'success') {
                 await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
-                bot.sendMessage(chatId, `[SUCCESS] Code obtained on retry!\n\nWaiting for you to enter it in WhatsApp...`, { 
+                bot.sendMessage(chatId, `[SUCCESS] Code obtained on retry for ${injectedNumber}!\n\nWaiting for you to enter it in WhatsApp...`, { 
                     reply_markup: { inline_keyboard: [[ { text: `Copy: ${fetchResult.code}`, copy_text: { text: fetchResult.code } } ]] }
                 });
                 
@@ -2937,6 +2970,7 @@ bot.on('callback_query', async (queryObj) => {
         }
         return;
     }
+
 
 
 
