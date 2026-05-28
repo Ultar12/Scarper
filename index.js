@@ -2928,8 +2928,8 @@ bot.on('callback_query', async (queryObj) => {
                 
                 const errSnap = await m4uPage.screenshot({ type: 'png' });
                 bot.sendPhoto(chatId, errSnap, {
-                    caption: `[ERROR] ${fetchResult.message}\n\nServer rejected: ${injectedNumber}`,
-                    reply_markup: { inline_keyboard: [[ { text: '🔄 Retry Get Code', callback_data: 'm4u_retry_code' } ]] }
+                    caption: `[ERROR] ${fetchResult.message}`,
+                    reply_markup: { inline_keyboard: [[ { text: 'Retry Get Code', callback_data: 'm4u_retry_code' } ]] }
                 });
             } 
             else if (fetchResult.status === 'success') {
