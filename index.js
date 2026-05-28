@@ -2839,7 +2839,7 @@ bot.on('callback_query', async (queryObj) => {
     }
 
 
-        if (data === 'm4u_retry_code') {
+            if (data === 'm4u_retry_code') {
         if (!m4uPage || !m4uSession) {
             bot.answerCallbackQuery(queryObj.id, { text: 'Session expired or browser closed.', show_alert: true });
             return;
@@ -2857,7 +2857,9 @@ bot.on('callback_query', async (queryObj) => {
             });
 
             let fetchResult = null;
-            for (let i = 0; i < 30; i++) { // 30 second manual retry loop
+            
+            // Watch the screen continuously (Up to 5 minutes)
+            for (let i = 0; i < 300; i++) { 
                 await new Promise(r => setTimeout(r, 1000));
                 
                 fetchResult = await m4uPage.evaluate(() => {
@@ -2884,22 +2886,25 @@ bot.on('callback_query', async (queryObj) => {
 
             if (!fetchResult || fetchResult.status === 'pending') {
                 m4uSession.state = 'WAITING_NUMBER';
-                await bot.editMessageText(`[TIMEOUT] Could not detect code after 30 seconds of retrying.`, { chat_id: chatId, message_id: statusMsg.message_id });
+                await bot.editMessageText(`[TIMEOUT] Could not detect code or failure message.`, { chat_id: chatId, message_id: statusMsg.message_id });
             } 
             else if (fetchResult.status === 'failed_to_obtain' || fetchResult.status === 'error') {
                 m4uSession.state = 'WAITING_NUMBER';
-                bot.editMessageText(`[ERROR] ${fetchResult.message}\n\nServer rejected it again.`, { 
-                    chat_id: chatId, message_id: statusMsg.message_id,
+                await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+                
+                // Snap a picture of the failure
+                const errSnap = await m4uPage.screenshot({ type: 'png' });
+                bot.sendPhoto(chatId, errSnap, {
+                    caption: `[ERROR] ${fetchResult.message}`,
                     reply_markup: { inline_keyboard: [[ { text: 'Retry Again', callback_data: 'm4u_retry_code' } ]] }
                 });
             } 
             else if (fetchResult.status === 'success') {
-                bot.editMessageText(`[SUCCESS] Code obtained on retry!\n\nWaiting for you to enter it in WhatsApp...`, { 
-                    chat_id: chatId, message_id: statusMsg.message_id,
+                await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+                bot.sendMessage(chatId, `[SUCCESS] Code obtained on retry!\n\nWaiting for you to enter it in WhatsApp...`, { 
                     reply_markup: { inline_keyboard: [[ { text: `Copy: ${fetchResult.code}`, copy_text: { text: fetchResult.code } } ]] }
                 });
                 
-                // Trigger the background linker loop (Same as main script)
                 m4uSession.state = 'WAITING_FOR_LINK';
                 (async () => {
                     let popupClosed = false;
@@ -2932,6 +2937,7 @@ bot.on('callback_query', async (queryObj) => {
         }
         return;
     }
+
 
 
              
@@ -5263,25 +5269,24 @@ bot.on('message', async (msg) => {
 
         
 
-            // --- PHASE B: NUMBER PROCESSING AND MONITORING ---
+                    // --- PHASE B: NUMBER PROCESSING AND MONITORING ---
         if (m4uSession.state === 'WAITING_NUMBER' || m4uSession.state === 'WAITING_FOR_LINK') {
             let input = msg.text.trim();
             let countryCode = m4uSession.country || '234';
             let localNum = input.replace(/[^0-9]/g, '');
 
-            // --- SMART NUMBER PARSER ---
-            if (input.includes(' ')) {
-                const parts = input.split(/\s+/);
-                countryCode = parts[0].replace(/[^0-9]/g, '');
-                localNum = parts.slice(1).join('').replace(/[^0-9]/g, '');
-            } else {
-                const cleanNum = input.replace(/[^0-9]/g, '');
-                if (cleanNum.startsWith('0')) {
-                    localNum = cleanNum.substring(1);
+            // --- STRICT PARSER: ONLY switch country if the user explicitly types a '+' sign ---
+            if (input.startsWith('+')) {
+                if (input.includes(' ')) {
+                    const parts = input.split(/\s+/);
+                    countryCode = parts[0].replace(/[^0-9]/g, '');
+                    localNum = parts.slice(1).join('').replace(/[^0-9]/g, '');
                 } else {
-                    const globalCodes = ['880', '254', '256', '263', '225', '221', '228', '233', '971', '966', '234', '58', '91', '92', '62', '55', '44', '27', '20', '1'];
+                    const cleanNum = input.replace(/[^0-9]/g, '');
+                    // Common global codes + User requested European codes (49, 48)
+                    const validCodes = ['880', '254', '256', '263', '225', '221', '228', '233', '971', '966', '234', '58', '49', '48', '91', '92', '62', '55', '44', '27', '20', '1'];
                     let found = false;
-                    for (let code of globalCodes) {
+                    for (let code of validCodes) {
                         if (cleanNum.startsWith(code) && cleanNum.length > code.length + 4) {
                             countryCode = code;
                             localNum = cleanNum.substring(code.length);
@@ -5289,10 +5294,17 @@ bot.on('message', async (msg) => {
                             break;
                         }
                     }
-                    if (!found) localNum = cleanNum;
+                    if (!found) {
+                        // Fallback: If no known code matched perfectly, we assume it's just a local number
+                        localNum = cleanNum;
+                    }
                 }
+            } else {
+                // If it does not start with '+', do NOT change the country code. Just extract the numbers.
+                localNum = input.replace(/[^0-9]/g, '');
             }
-            const fullNumber = `+${countryCode}${localNum}`;
+
+            const fullNumber = `+${countryCode} ${localNum}`;
 
             let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Processing target: ${fullNumber}...`);
             resetM4uTimer(chatId); 
@@ -5302,40 +5314,41 @@ bot.on('message', async (msg) => {
 
             try {
                 // --- HARD REFRESH ON ABORT ---
+                // If a new number is sent while waiting for the previous one to link, refresh the page first.
                 if (wasWaitingForLink) {
                     await bot.editMessageText(`[SYSTEM] Aborting previous link. Force refreshing site...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                    
                     await m4uPage.reload({ waitUntil: 'domcontentloaded' });
                     await new Promise(r => setTimeout(r, 4000));
                     
-                    // Re-open empty popup
+                    // Re-open the Add popup after refresh
                     await m4uPage.evaluate(() => {
                         Array.from(document.querySelectorAll('*')).forEach(el => {
                             if (el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null) el.click();
                         });
                     });
                     await new Promise(r => setTimeout(r, 2000));
-                }
-
-                // Check if popup is open (if not aborting)
-                const isPopupOpenNow = await m4uPage.evaluate(() => {
-                    const phoneInput = Array.from(document.querySelectorAll('input')).find(i => i.placeholder && i.placeholder.toLowerCase().includes('phone number'));
-                    return phoneInput && phoneInput.offsetParent !== null;
-                });
-
-                if (!isPopupOpenNow) {
-                    await m4uPage.evaluate(() => {
-                        Array.from(document.querySelectorAll('*')).forEach(el => {
-                            if (el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null) el.click();
-                        });
+                } else {
+                    // Check if popup is open (if not aborting)
+                    const isPopupOpenNow = await m4uPage.evaluate(() => {
+                        const phoneInput = Array.from(document.querySelectorAll('input')).find(i => i.placeholder && i.placeholder.toLowerCase().includes('phone number'));
+                        return phoneInput && phoneInput.offsetParent !== null;
                     });
-                    await new Promise(r => setTimeout(r, 2000));
+
+                    if (!isPopupOpenNow) {
+                        await m4uPage.evaluate(() => {
+                            Array.from(document.querySelectorAll('*')).forEach(el => {
+                                if (el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null) el.click();
+                            });
+                        });
+                        await new Promise(r => setTimeout(r, 2000));
+                    }
                 }
 
                 // --- SMART COUNTRY SWITCHER ---
                 if (countryCode !== m4uSession.country) {
                     await bot.editMessageText(`[SYSTEM] Switching country code to +${countryCode}...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
                     
-                    // Open selector
                     await m4uPage.evaluate(() => {
                         const elements = Array.from(document.querySelectorAll('*'));
                         for (let el of elements) {
@@ -5346,7 +5359,6 @@ bot.on('message', async (msg) => {
                     });
                     await new Promise(r => setTimeout(r, 2000));
                     
-                    // Search box
                     const allInputs = await m4uPage.$$('input');
                     for (let input of allInputs) {
                         const ph = await m4uPage.evaluate(el => el.placeholder || '', input);
@@ -5359,7 +5371,6 @@ bot.on('message', async (msg) => {
                     }
                     await new Promise(r => setTimeout(r, 2000));
                     
-                    // Click the exact match
                     await m4uPage.evaluate((cc) => {
                         const targetCode = '+' + cc;
                         const allElements = Array.from(document.querySelectorAll('*'));
@@ -5391,29 +5402,24 @@ bot.on('message', async (msg) => {
                     if (isPhone) await handle.type(localNum, { delay: 50 });
                 }
                 
-                // Click 'get code'
                 await m4uPage.evaluate(() => {
                     Array.from(document.querySelectorAll('*')).forEach(el => {
                         if (el.innerText && el.innerText.trim().toLowerCase() === 'get code' && el.offsetParent !== null) el.click();
                     });
                 });
 
-
-                // --- 30-SECOND SMART DETECTION LOOP ---
+                // --- CONTINUOUS DOM WATCHER (NO TIMEOUT INTERRUPTIONS) ---
                 let fetchResult = null;
-                let addedZero = false;
                 
-                for (let i = 0; i < 30; i++) {
+                for (let i = 0; i < 300; i++) { // Watches for up to 5 minutes
                     await new Promise(r => setTimeout(r, 1000));
 
                     fetchResult = await m4uPage.evaluate(() => {
                         const bodyText = document.body.innerText.toLowerCase();
                         
-                        // Error detections
                         if (bodyText.includes('failed to obtain')) return { status: 'failed_to_obtain', message: 'Failed to obtain code from the server.' };
                         if (bodyText.includes('network error') || bodyText.includes('frequently')) return { status: 'error', message: 'Network error or requested too frequently.' };
 
-                        // Success detection
                         const possibleContainers = Array.from(document.querySelectorAll('div, section'));
                         for (let c of possibleContainers) {
                             if (c.children.length >= 8 && c.children.length <= 15) {
@@ -5429,52 +5435,35 @@ bot.on('message', async (msg) => {
                         return { status: 'pending' };
                     });
 
-                    // Break out if we got a definitive answer
                     if (fetchResult && fetchResult.status !== 'pending') break;
-
-                    // --- 15-SECOND AUTO-ZERO INJECTION ---
-                    if (i === 15 && !addedZero) {
-                        addedZero = true;
-                        await bot.editMessageText(`[SYSTEM] 15s timeout reached. Adding '0' to number and retrying automatically...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
-                        
-                        await m4uPage.evaluate(() => {
-                            const inputs = Array.from(document.querySelectorAll('input'));
-                            const phoneInput = inputs.find(i => i.placeholder && i.placeholder.toLowerCase().includes('phone number'));
-                            if (phoneInput) {
-                                phoneInput.value = '0' + phoneInput.value;
-                                phoneInput.dispatchEvent(new Event('input', { bubbles: true }));
-                            }
-                        });
-                        await new Promise(r => setTimeout(r, 500));
-
-                        // Smash 'get code' again
-                        await m4uPage.evaluate(() => {
-                            Array.from(document.querySelectorAll('*')).forEach(el => {
-                                if (el.innerText && el.innerText.trim().toLowerCase() === 'get code' && el.offsetParent !== null) el.click();
-                            });
-                        });
-                    }
                 }
 
-                // --- PROCESS THE RESULT ---
+                // --- PROCESS THE RESULT (WITH SCREENSHOTS) ---
                 if (!fetchResult || fetchResult.status === 'pending') {
                     m4uSession.state = 'WAITING_NUMBER';
+                    await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+                    
                     const errSnap = await m4uPage.screenshot({ type: 'png' });
-                    await bot.sendPhoto(chatId, errSnap, { caption: `[TIMEOUT] Could not detect code after full 30 seconds.` });
+                    await bot.sendPhoto(chatId, errSnap, { caption: `[TIMEOUT] Could not detect code or failure message.` });
                 } 
                 else if (fetchResult.status === 'failed_to_obtain' || fetchResult.status === 'error') {
                     m4uSession.state = 'WAITING_NUMBER';
+                    await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
                     
-                    // Deploy Error UI with Interactive Retry Button
-                    bot.sendMessage(chatId, `[ERROR] ${fetchResult.message} for ${fullNumber}\n\nTap below to force another request.`, {
+                    // Snap a picture of the failure
+                    const errSnap = await m4uPage.screenshot({ type: 'png' });
+                    bot.sendPhoto(chatId, errSnap, {
+                        caption: `[ERROR] ${fetchResult.message} for ${fullNumber}\n\nTap below to force another request.`,
                         reply_markup: {
                             inline_keyboard: [[
-                                { text: '🔄 Retry Get Code', callback_data: 'm4u_retry_code' }
+                                { text: 'Retry Get Code', callback_data: 'm4u_retry_code' }
                             ]]
                         }
                     });
                 } 
                 else if (fetchResult.status === 'success') {
+                    await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+                    
                     const successMsg = `[SUCCESS] Code obtained for ${fullNumber}!\n\nWaiting for you to enter it in WhatsApp... (Monitoring popup)`;
                     
                     bot.sendMessage(chatId, successMsg, { 
@@ -5560,6 +5549,8 @@ bot.on('message', async (msg) => {
             }
             return;
         }
+
+                    
                 
     }
 
