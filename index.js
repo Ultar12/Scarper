@@ -5401,7 +5401,7 @@ bot.on('message', async (msg) => {
                     }
                 }
 
-                // --- SMART COUNTRY SWITCHER ---
+                                // --- SMART COUNTRY SWITCHER ---
                 if (countryCode !== m4uSession.country) {
                     await bot.editMessageText(`[SYSTEM] Switching country code to +${countryCode}...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
                     
@@ -5438,10 +5438,20 @@ bot.on('message', async (msg) => {
                             }
                         }
                     }, countryCode);
-                    await new Promise(r => setTimeout(r, 2000));
+                    await new Promise(r => setTimeout(r, 3000));
                     
                     m4uSession.country = countryCode;
+
+                    // --- THE FIX: RE-OPEN THE POPUP AFTER SWITCHING COUNTRY ---
+                    await bot.editMessageText(`[SYSTEM] Country selected. Re-opening input popup...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                    await m4uPage.evaluate(() => {
+                        Array.from(document.querySelectorAll('*')).forEach(el => {
+                            if (el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null) el.click();
+                        });
+                    });
+                    await new Promise(r => setTimeout(r, 2000));
                 }
+
 
                 await bot.editMessageText(`[SYSTEM] Requesting code for ${localNum}...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
 
