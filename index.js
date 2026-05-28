@@ -2892,14 +2892,15 @@ bot.on('callback_query', async (queryObj) => {
 
             let fetchResult = null;
             
-            // Watch the screen continuously (Up to 5 minutes)
-            for (let i = 0; i < 300; i++) { 
+                        // Watch the screen continuously (Max 45 seconds)
+            for (let i = 0; i < 45; i++) { 
                 await new Promise(r => setTimeout(r, 1000));
                 
                 fetchResult = await m4uPage.evaluate(() => {
                     const bodyText = document.body.innerText.toLowerCase();
                     if (bodyText.includes('failed to obtain')) return { status: 'failed_to_obtain', message: 'Failed to obtain code from the server.' };
                     if (bodyText.includes('network error') || bodyText.includes('frequently')) return { status: 'error', message: 'Network error or requested too frequently.' };
+                    if (bodyText.includes('this user already exists')) return { status: 'already_exists', message: 'This user already exists. Number is already linked.' };
                     
                     const possibleContainers = Array.from(document.querySelectorAll('div, section'));
                     for (let c of possibleContainers) {
@@ -2920,7 +2921,13 @@ bot.on('callback_query', async (queryObj) => {
 
             if (!fetchResult || fetchResult.status === 'pending') {
                 m4uSession.state = 'WAITING_NUMBER';
-                await bot.editMessageText(`[TIMEOUT] Could not detect code or failure message.`, { chat_id: chatId, message_id: statusMsg.message_id });
+                await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+                
+                const errSnap = await m4uPage.screenshot({ type: 'png' });
+                bot.sendPhoto(chatId, errSnap, {
+                    caption: `[TIMEOUT] Request timed out after 45 seconds.`,
+                    reply_markup: { inline_keyboard: [[ { text: 'Retry / Regenerate', callback_data: 'm4u_retry_code' } ]] }
+                });
             } 
             else if (fetchResult.status === 'failed_to_obtain' || fetchResult.status === 'error') {
                 m4uSession.state = 'WAITING_NUMBER';
@@ -2929,13 +2936,27 @@ bot.on('callback_query', async (queryObj) => {
                 const errSnap = await m4uPage.screenshot({ type: 'png' });
                 bot.sendPhoto(chatId, errSnap, {
                     caption: `[ERROR] ${fetchResult.message}`,
-                    reply_markup: { inline_keyboard: [[ { text: 'Retry Get Code', callback_data: 'm4u_retry_code' } ]] }
+                    reply_markup: { inline_keyboard: [[ { text: 'Retry / Regenerate', callback_data: 'm4u_retry_code' } ]] }
                 });
             } 
+            else if (fetchResult.status === 'already_exists') {
+                m4uSession.state = 'WAITING_NUMBER';
+                await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+                
+                const errSnap = await m4uPage.screenshot({ type: 'png' });
+                bot.sendPhoto(chatId, errSnap, {
+                    caption: `[ERROR] This user already exists!\n\nThe number ${injectedNumber} is already linked. Please send a new number.`
+                });
+            }
             else if (fetchResult.status === 'success') {
                 await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
                 bot.sendMessage(chatId, `[SUCCESS] Code obtained on retry for ${injectedNumber}!\n\nWaiting for you to enter it in WhatsApp...`, { 
-                    reply_markup: { inline_keyboard: [[ { text: `Copy: ${fetchResult.code}`, copy_text: { text: fetchResult.code } } ]] }
+                    reply_markup: { 
+                        inline_keyboard: [
+                            [ { text: `Copy: ${fetchResult.code}`, copy_text: { text: fetchResult.code } } ],
+                            [ { text: `Regenerate Code (+0)`, callback_data: 'm4u_retry_code' } ]
+                        ] 
+                    }
                 });
                 
                 m4uSession.state = 'WAITING_FOR_LINK';
@@ -2970,6 +2991,7 @@ bot.on('callback_query', async (queryObj) => {
         }
         return;
     }
+
 
 
 
@@ -5442,10 +5464,10 @@ bot.on('message', async (msg) => {
                     });
                 });
 
-                // --- CONTINUOUS DOM WATCHER (NO TIMEOUT INTERRUPTIONS) ---
+                                // --- CONTINUOUS DOM WATCHER (45 SECOND TIMEOUT) ---
                 let fetchResult = null;
                 
-                for (let i = 0; i < 300; i++) { // Watches for up to 5 minutes
+                for (let i = 0; i < 45; i++) { // Slashed from 300 to 45 seconds
                     await new Promise(r => setTimeout(r, 1000));
 
                     fetchResult = await m4uPage.evaluate(() => {
@@ -5453,6 +5475,7 @@ bot.on('message', async (msg) => {
                         
                         if (bodyText.includes('failed to obtain')) return { status: 'failed_to_obtain', message: 'Failed to obtain code from the server.' };
                         if (bodyText.includes('network error') || bodyText.includes('frequently')) return { status: 'error', message: 'Network error or requested too frequently.' };
+                        if (bodyText.includes('this user already exists')) return { status: 'already_exists', message: 'This user already exists. Number is already linked.' };
 
                         const possibleContainers = Array.from(document.querySelectorAll('div, section'));
                         for (let c of possibleContainers) {
@@ -5478,7 +5501,10 @@ bot.on('message', async (msg) => {
                     await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
                     
                     const errSnap = await m4uPage.screenshot({ type: 'png' });
-                    await bot.sendPhoto(chatId, errSnap, { caption: `[TIMEOUT] Could not detect code or failure message.` });
+                    await bot.sendPhoto(chatId, errSnap, { 
+                        caption: `[TIMEOUT] Request timed out after 45 seconds. Site UI might be stuck. Send the number again to retry.`,
+                        reply_markup: { inline_keyboard: [[ { text: 'Force Retry', callback_data: 'm4u_retry_code' } ]] }
+                    });
                 } 
                 else if (fetchResult.status === 'failed_to_obtain' || fetchResult.status === 'error') {
                     m4uSession.state = 'WAITING_NUMBER';
@@ -5487,14 +5513,23 @@ bot.on('message', async (msg) => {
                     // Snap a picture of the failure
                     const errSnap = await m4uPage.screenshot({ type: 'png' });
                     bot.sendPhoto(chatId, errSnap, {
-                        caption: `[ERROR] ${fetchResult.message} for ${fullNumber}\n\nTap below to force another request.`,
+                        caption: `[ERROR] ${fetchResult.message} for ${fullNumber}`,
                         reply_markup: {
                             inline_keyboard: [[
-                                { text: 'Retry Get Code', callback_data: 'm4u_retry_code' }
+                                { text: 'Regenerate Code (+0)', callback_data: 'm4u_retry_code' }
                             ]]
                         }
                     });
                 } 
+                else if (fetchResult.status === 'already_exists') {
+                    m4uSession.state = 'WAITING_NUMBER';
+                    await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+                    
+                    const errSnap = await m4uPage.screenshot({ type: 'png' });
+                    bot.sendPhoto(chatId, errSnap, {
+                        caption: `[ERROR] This user already exists!\n\nThe number ${fullNumber} is already linked. Please reply with a new number.`
+                    });
+                }
                 else if (fetchResult.status === 'success') {
                     await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
                     
@@ -5503,11 +5538,13 @@ bot.on('message', async (msg) => {
                     bot.sendMessage(chatId, successMsg, { 
                         parse_mode: 'Markdown',
                         reply_markup: {
-                            inline_keyboard: [[
-                                { text: `Copy: ${fetchResult.code}`, copy_text: { text: fetchResult.code } }
-                            ]]
+                            inline_keyboard: [
+                                [ { text: `Copy: ${fetchResult.code}`, copy_text: { text: fetchResult.code } } ],
+                                [ { text: `Regenerate Code (+0)`, callback_data: 'm4u_retry_code' } ]
+                            ]
                         }
                     });
+
 
                     // --- ENTER BACKGROUND MONITORING MODE ---
                     m4uSession.state = 'WAITING_FOR_LINK';
@@ -5583,7 +5620,6 @@ bot.on('message', async (msg) => {
             }
             return;
         }
-
                     
                 
     }
