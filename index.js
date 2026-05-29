@@ -2839,51 +2839,115 @@ bot.on('callback_query', async (queryObj) => {
     }
 
 
-
-        if (data === 'm4u_retry_code') {
+    if (data === 'm4u_retry_code') {
         if (!m4uPage || !m4uSession) {
             bot.answerCallbackQuery(queryObj.id, { text: 'Session expired or browser closed.', show_alert: true });
             return;
         }
         
-        bot.answerCallbackQuery(queryObj.id, { text: 'Modifying number and retrying...' });
+        bot.answerCallbackQuery(queryObj.id, { text: 'Refreshing page and modifying number...' });
         let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Manual retry initiated. Modifying number...`);
         m4uSession.state = 'FETCHING_CODE';
 
         try {
-            // --- THE 5-ZERO CYCLER LOGIC ---
-            const injectedNumber = await m4uPage.evaluate(() => {
+            // --- 1. EXTRACT CURRENT NUMBER BEFORE REFRESH ---
+            const newNumber = await m4uPage.evaluate(() => {
                 const inputs = Array.from(document.querySelectorAll('input'));
                 const phoneInput = inputs.find(i => i.placeholder && i.placeholder.toLowerCase().includes('phone number'));
                 
                 if (phoneInput) {
                     let currentVal = phoneInput.value || '';
-                    
-                    // Count how many zeros are currently at the front
                     const leadingZeros = currentVal.match(/^0+/);
                     const zeroCount = leadingZeros ? leadingZeros[0].length : 0;
 
                     if (zeroCount >= 5) {
-                        // Max reached. Reset by stripping all leading zeros.
-                        phoneInput.value = currentVal.replace(/^0+/, '');
+                        return currentVal.replace(/^0+/, '');
                     } else {
-                        // Add one zero to the front
-                        phoneInput.value = '0' + currentVal;
+                        return '0' + currentVal;
                     }
-                    
-                    // Dispatch the event so the website's framework registers the change
-                    phoneInput.dispatchEvent(new Event('input', { bubbles: true }));
-                    return phoneInput.value;
                 }
                 return null;
             });
 
-            if (injectedNumber) {
-                await bot.editMessageText(`[SYSTEM] Target updated to: ${injectedNumber}\nTapping 'Get Code'...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
-                await new Promise(r => setTimeout(r, 1000)); // Give the site a second to register the new number
+            if (!newNumber) {
+                throw new Error("Could not detect the previous number to modify.");
             }
 
-            // Click Get Code
+            await bot.editMessageText(`[SYSTEM] Target updated to: ${newNumber}\nRefreshing page to clear cache...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+
+            // --- 2. HARD REFRESH ---
+            await m4uPage.reload({ waitUntil: 'domcontentloaded' });
+            await new Promise(r => setTimeout(r, 4000));
+
+            // --- 3. RE-OPEN MODAL ---
+            await m4uPage.evaluate(() => {
+                Array.from(document.querySelectorAll('*')).forEach(el => {
+                    if (el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null) el.click();
+                });
+            });
+            await new Promise(r => setTimeout(r, 2000));
+
+            // --- 4. RESTORE COUNTRY CODE (CRITICAL AFTER REFRESH) ---
+            if (m4uSession.country) {
+                await bot.editMessageText(`[SYSTEM] Restoring country code (+${m4uSession.country})...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                
+                await m4uPage.evaluate(() => {
+                    const elements = Array.from(document.querySelectorAll('*'));
+                    for (let el of elements) {
+                        if ((el.innerText || '').trim().match(/^\+\d{1,4}$/) && el.offsetParent !== null && el.children.length === 0) {
+                            el.click(); return true;
+                        }
+                    }
+                });
+                await new Promise(r => setTimeout(r, 2000));
+                
+                const allInputs = await m4uPage.$$('input');
+                for (let input of allInputs) {
+                    const ph = await m4uPage.evaluate(el => el.placeholder || '', input);
+                    if (ph.toLowerCase().includes('country')) {
+                        await input.click();
+                        await input.evaluate(el => el.value = '');
+                        await input.type(m4uSession.country, { delay: 100 });
+                        break;
+                    }
+                }
+                await new Promise(r => setTimeout(r, 2000));
+                
+                await m4uPage.evaluate((cc) => {
+                    const targetCode = '+' + cc;
+                    const allElements = Array.from(document.querySelectorAll('*'));
+                    for (let el of allElements) {
+                        if (el.children.length === 0 && (el.innerText || '').trim() === targetCode && el.offsetParent !== null) {
+                            el.click(); 
+                            if (el.parentElement) el.parentElement.click(); 
+                            return;
+                        }
+                    }
+                }, m4uSession.country);
+                await new Promise(r => setTimeout(r, 3000));
+
+                // Re-open popup
+                await m4uPage.evaluate(() => {
+                    Array.from(document.querySelectorAll('*')).forEach(el => {
+                        if (el.innerText && el.innerText.trim().toLowerCase() === 'add' && el.offsetParent !== null) el.click();
+                    });
+                });
+                await new Promise(r => setTimeout(r, 2000));
+            }
+
+            // --- 5. INJECT NEW NUMBER & CLICK ---
+            await bot.editMessageText(`[SYSTEM] Target restored: ${newNumber}\nTapping 'Get Code'...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+
+            await m4uPage.evaluate((num) => {
+                const inputs = Array.from(document.querySelectorAll('input'));
+                const phoneInput = inputs.find(i => i.placeholder && i.placeholder.toLowerCase().includes('phone number'));
+                if (phoneInput) {
+                    phoneInput.value = num;
+                    phoneInput.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+            }, newNumber);
+            await new Promise(r => setTimeout(r, 1000));
+
             await m4uPage.evaluate(() => {
                 Array.from(document.querySelectorAll('*')).forEach(el => {
                     if (el.innerText && el.innerText.trim().toLowerCase() === 'get code' && el.offsetParent !== null) el.click();
@@ -2892,7 +2956,7 @@ bot.on('callback_query', async (queryObj) => {
 
             let fetchResult = null;
             
-                        // Watch the screen continuously (Max 45 seconds)
+            // Watch the screen continuously (Max 45 seconds)
             for (let i = 0; i < 45; i++) { 
                 await new Promise(r => setTimeout(r, 1000));
                 
@@ -2945,12 +3009,12 @@ bot.on('callback_query', async (queryObj) => {
                 
                 const errSnap = await m4uPage.screenshot({ type: 'png' });
                 bot.sendPhoto(chatId, errSnap, {
-                    caption: `[ERROR] This user already exists!\n\nThe number ${injectedNumber} is already linked. Please send a new number.`
+                    caption: `[ERROR] This user already exists!\n\nThe number ${newNumber} is already linked. Please send a new number.`
                 });
             }
             else if (fetchResult.status === 'success') {
                 await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
-                bot.sendMessage(chatId, `[SUCCESS] Code obtained on retry for ${injectedNumber}!\n\nWaiting for you to enter it in WhatsApp...`, { 
+                bot.sendMessage(chatId, `[SUCCESS] Code obtained on retry for ${newNumber}!\n\nWaiting for you to enter it in WhatsApp...`, { 
                     reply_markup: { 
                         inline_keyboard: [
                             [ { text: `Copy: ${fetchResult.code}`, copy_text: { text: fetchResult.code } } ],
@@ -2991,6 +3055,7 @@ bot.on('callback_query', async (queryObj) => {
         }
         return;
     }
+
 
 
 
