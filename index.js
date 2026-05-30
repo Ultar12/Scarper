@@ -18,6 +18,8 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
+const { parsePhoneNumberFromString } = require('libphonenumber-js');
+
 
 
 
@@ -1079,6 +1081,357 @@ async function scrapeRecentOTPNumbers() {
         if (browser) await browser.close().catch(() => {});
     }
 }
+
+
+
+
+// =========================================================
+// --- NUMBER PANEL AUTOMATION ENGINE (BACKGROUND WORKER) ---
+// =========================================================
+
+
+const NP_BASE_URL = "http://51.89.99.105/NumberPanel";
+const NP_POLL_SEC = 16 * 1000;
+
+// --- DEDICATED SENDER BOT CONFIGURATION ---
+const NP_BOT_TOKEN = '8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY';
+const NP_TARGET_CHAT_ID = '-1003645249777';
+// Initialize as send-only (polling: false) to prevent webhook/polling conflicts with your main bot
+const npBot = new TelegramBot(NP_BOT_TOKEN, { polling: false }); 
+
+const NP_ACCOUNTS = [
+    { name: "sukuna65", username: "sukuna65", password: "sukuna65", topic_id: null },
+];
+
+const NP_COUNTRY_FLAGS = {
+    "ethiopia": "🇪🇹", "egypt": "🇪🇬", "mali": "🇲🇱", "indonesia": "🇮🇩",
+    "guinea": "🇬🇳", "togo": "🇹🇬", "ghana": "🇬🇭", "tanzania": "🇹🇿",
+    "bangladesh": "🇧🇩", "kenya": "🇰🇪", "nigeria": "🇳🇬", "india": "🇮🇳",
+    "pakistan": "🇵🇰", "philippines": "🇵🇭", "vietnam": "🇻🇳", "thailand": "🇹🇭",
+    "brazil": "🇧🇷", "mexico": "🇲🇽", "russia": "🇷🇺", "ukraine": "🇺🇦",
+    "poland": "🇵🇱", "germany": "🇩🇪", "france": "🇫🇷", "spain": "🇪🇸",
+    "italy": "🇮🇹", "uk": "🇬🇧", "usa": "🇺🇸", "canada": "🇨🇦",
+    "australia": "🇦🇺", "south africa": "🇿🇦", "morocco": "🇲🇦", "algeria": "🇩🇿",
+    "tunisia": "🇹🇳", "cameroon": "🇨🇲", "senegal": "🇸🇳", "ivory coast": "🇨🇮",
+    "benin": "🇧🇯", "burkina faso": "🇧🇫", "niger": "🇳🇪", "chad": "🇹🇩"
+};
+
+// --- DATABASE INITIALIZATION ---
+pool.query(`CREATE TABLE IF NOT EXISTS numberpanel_sent (id VARCHAR(255) PRIMARY KEY);`)
+    .then(() => console.log('[SYSTEM] NumberPanel Tracking DB Ready.'))
+    .catch(console.error);
+
+async function isNpSeen(key) {
+    try {
+        const res = await pool.query('SELECT 1 FROM numberpanel_sent WHERE id = $1', [key]);
+        return res.rows.length > 0;
+    } catch (err) { return false; }
+}
+
+async function markNpSeen(key) {
+    try {
+        await pool.query('INSERT INTO numberpanel_sent (id) VALUES ($1) ON CONFLICT DO NOTHING', [key]);
+    } catch (err) {}
+}
+
+// --- UTILITY FUNCTIONS ---
+function isoToFlag(iso) {
+    if (!iso) return "🌍";
+    try {
+        return iso.toUpperCase().replace(/./g, char => String.fromCodePoint(char.charCodeAt(0) + 127397));
+    } catch (e) { return "🌍"; }
+}
+
+function getNpFlag(numberStr, countryName) {
+    if (numberStr) {
+        try {
+            const parsed = parsePhoneNumberFromString("+" + numberStr.replace(/^\+/, ''));
+            if (parsed && parsed.country) return isoToFlag(parsed.country);
+        } catch (e) {}
+    }
+    if (countryName) {
+        const lowerName = countryName.toLowerCase();
+        for (const [k, v] of Object.entries(NP_COUNTRY_FLAGS)) {
+            if (lowerName.includes(k)) return v;
+        }
+    }
+    return "🌍";
+}
+
+function solveNpCaptcha(html) {
+    const match = html.match(/(\d+)\s*([\+\-\*\/])\s*(\d+)\s*=\s*\?/);
+    if (!match) return null;
+    const a = parseInt(match[1]);
+    const op = match[2];
+    const b = parseInt(match[3]);
+    
+    if (op === '+') return (a + b).toString();
+    if (op === '-') return (a - b).toString();
+    if (op === '*') return (a * b).toString();
+    if (op === '/' && b !== 0) return Math.floor(a / b).toString();
+    return null;
+}
+
+function extractOTP(msg) {
+    const patterns = [/\b(\d{3}-\d{3})\b/, /\b(\d{6})\b/, /\b(\d{4})\b/, /\b(\d{5})\b/, /\b(\d{8})\b/];
+    for (let pat of patterns) {
+        const match = msg.match(pat);
+        if (match) return match[1];
+    }
+    return null;
+}
+
+function updateCookies(headers, currentCookies) {
+    if (headers['set-cookie']) {
+        headers['set-cookie'].forEach(cookieStr => {
+            const parts = cookieStr.split(';')[0].split('=');
+            currentCookies[parts[0]] = parts.slice(1).join('=');
+        });
+    }
+    return currentCookies;
+}
+
+function getCookieString(cookies) {
+    return Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+}
+
+// --- ENGINE STATE ---
+const npSessions = {};
+
+// --- LOGIN ROUTINE ---
+async function loginNumberPanel(username, password, force = false) {
+    if (npSessions[username] && !force) return npSessions[username];
+
+    const cookies = {};
+    const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Connection': 'keep-alive'
+    };
+
+    try {
+        let res1 = await axios.get(`${NP_BASE_URL}/login`, { headers, validateStatus: () => true });
+        updateCookies(res1.headers, cookies);
+        
+        const cap = solveNpCaptcha(res1.data);
+        if (!cap) throw new Error("Captcha solve failed.");
+
+        headers['Cookie'] = getCookieString(cookies);
+        headers['Content-Type'] = 'application/x-www-form-urlencoded';
+        headers['Origin'] = 'http://51.89.99.105';
+        headers['Referer'] = `${NP_BASE_URL}/login`;
+
+        const loginData = new URLSearchParams({ username, password, capt: cap }).toString();
+
+        let res2 = await axios.post(`${NP_BASE_URL}/signin`, loginData, { 
+            headers, 
+            maxRedirects: 0, 
+            validateStatus: status => status >= 200 && status < 400 
+        });
+
+        updateCookies(res2.headers, cookies);
+
+        if (res2.status !== 302) throw new Error(`Login failed with status ${res2.status}`);
+        if (!cookies['x12']) throw new Error("Login failed - x12 cookie not set.");
+
+        const loc = res2.headers.location || "agent/";
+        const role = loc.includes("client") ? "client" : "agent";
+
+        headers['Cookie'] = getCookieString(cookies);
+        let res3 = await axios.get(`${NP_BASE_URL}/${role}/SMSCDRStats`, { headers, validateStatus: () => true });
+        
+        const sessMatch = res3.data.match(/sesskey=([^&"\s']+)/);
+        const sesskey = sessMatch ? sessMatch[1] : null;
+
+        console.log(`[SYSTEM] NumberPanel Logged In: ${username} (role=${role})`);
+        
+        npSessions[username] = { cookies, role, sesskey, headers };
+        return npSessions[username];
+
+    } catch (err) {
+        console.error(`[ERROR] NumberPanel Login Error: ${err.message}`);
+        return null;
+    }
+}
+
+// --- DATA FETCHING ROUTINE ---
+async function fetchNpSms(sessionData) {
+    if (!sessionData.cookies['x12']) {
+        console.log("[WARNING] x12 cookie missing - session likely expired");
+        return null;
+    }
+
+    const today = new Date();
+    const dateStr = today.toISOString().split('T')[0];
+
+    const params = new URLSearchParams({
+        "fdate1": `${dateStr} 00:00:00`,
+        "fdate2": `${dateStr} 23:59:59`,
+        "frange": "", "fnum": "", "fcli": "",
+        "fgdate": "", "fgmonth": "", "fgrange": "",
+        "fgnumber": "", "fgcli": "", "fg": "0",
+        "sEcho": "1", "iColumns": "7",
+        "sColumns": ",,,,,,",
+        "iDisplayStart": "0", "iDisplayLength": "100",
+        "mDataProp_0": "0", "sSearch_0": "", "bRegex_0": "false", "bSearchable_0": "true", "bSortable_0": "true",
+        "mDataProp_1": "1", "sSearch_1": "", "bRegex_1": "false", "bSearchable_1": "true", "bSortable_1": "true",
+        "mDataProp_2": "2", "sSearch_2": "", "bRegex_2": "false", "bSearchable_2": "true", "bSortable_2": "true",
+        "mDataProp_3": "3", "sSearch_3": "", "bRegex_3": "false", "bSearchable_3": "true", "bSortable_3": "true",
+        "mDataProp_4": "4", "sSearch_4": "", "bRegex_4": "false", "bSearchable_4": "true", "bSortable_4": "true",
+        "mDataProp_5": "5", "sSearch_5": "", "bRegex_5": "false", "bSearchable_5": "true", "bSortable_5": "true",
+        "mDataProp_6": "6", "sSearch_6": "", "bRegex_6": "false", "bSearchable_6": "true", "bSortable_6": "true",
+        "sSearch": "", "bRegex": "false",
+        "iSortCol_0": "0", "sSortDir_0": "desc", "iSortingCols": "1",
+        "_": Date.now().toString()
+    });
+
+    if (sessionData.sesskey) params.append("sesskey", sessionData.sesskey);
+
+    const headers = { ...sessionData.headers };
+    headers['Cookie'] = getCookieString(sessionData.cookies);
+    headers['X-Requested-With'] = 'XMLHttpRequest';
+    headers['Accept'] = 'application/json, text/javascript, */*; q=0.01';
+    headers['Referer'] = `${NP_BASE_URL}/${sessionData.role}/SMSCDRStats`;
+
+    try {
+        const response = await axios.get(`${NP_BASE_URL}/${sessionData.role}/res/data_smscdr.php?${params.toString()}`, {
+            headers,
+            timeout: 20000,
+            validateStatus: () => true
+        });
+
+        if ([302, 303, 307, 403].includes(response.status)) return null;
+
+        const records = [];
+        const aaData = response.data.aaData || [];
+
+        for (let rec of aaData) {
+            if (!Array.isArray(rec) || rec.length < 6 || typeof rec[2] !== 'string') continue;
+
+            const num = String(rec[2]).trim();
+            const svc = String(rec[3]).trim();
+            const msg = rec[5] ? String(rec[5]).trim() : "";
+            const country = String(rec[1]).split("-")[0].trim(); 
+
+            if (!/^\d+$/.test(num) || num.length < 7) continue;
+
+            records.push({ num, svc, country, msg });
+        }
+        return records;
+
+    } catch (e) {
+        return [];
+    }
+}
+
+// --- TELEGRAM MESSAGE BUILDER (ULTAR TEMPLATE) ---
+async function sendNpMessage(sms, name, topicId) {
+    const code = extractOTP(sms.msg) || "FAILED";
+    const maskedNumber = "+" + sms.num;
+    const fullCountry = sms.country || "Unknown";
+    const flagEmoji = getNpFlag(sms.num, fullCountry);
+    const platform = sms.svc;
+
+    const design = 
+        `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
+        `┃❃╭──────────────\n` +
+        `┃❃│ Platform : ${platform}\n` +
+        `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
+        `┃❃│ Number   : ${maskedNumber}\n` +
+        `┃❃│ Code     : CODE_FIX\n` +
+        `┃❃╰───────────────\n` +
+        `╰═════════════════⊷`;
+
+    try {
+        const formattedText = design.replace('CODE_FIX', `\`${code}\``);
+
+        const options = {
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true,
+            reply_markup: { 
+                inline_keyboard: [
+                    [{ text: `Copy: ${code}`, copy_text: { text: code } }], 
+                    [
+                        { text: `Owner`, url: `https://t.me/Staries1` },
+                        { text: `Channel`, url: `https://t.me/+Rci2m853ppA0NWY1` }
+                    ]
+                ] 
+            }
+        };
+
+        if (topicId) options.message_thread_id = topicId;
+
+        // Routing through the dedicated npBot instance
+        const tgMsg = await npBot.sendMessage(NP_TARGET_CHAT_ID, formattedText, options);
+        console.log(`[NP SYSTEM] Sent | ${platform} | ${maskedNumber} | OTP=${code}`);
+
+        // 10-Minute Auto-Delete (600,000ms)
+        const deleteDelay = 600000; 
+        setTimeout(async () => { 
+            try { 
+                // Routing deletion through npBot instance
+                await npBot.deleteMessage(NP_TARGET_CHAT_ID, tgMsg.message_id); 
+            } catch (e) {} 
+        }, deleteDelay);
+
+        return true;
+
+    } catch (err) {
+        console.error(`[NP SYSTEM] Send failed: ${err.message}`);
+        return false;
+    }
+}
+
+// --- THE BACKGROUND ENGINE ---
+async function pollNumberPanel(acc) {
+    const { name, username, password, topic_id } = acc;
+
+    try {
+        const sess = await loginNumberPanel(username, password);
+        if (!sess) {
+            setTimeout(() => pollNumberPanel(acc), 30000); 
+            return;
+        }
+
+        const records = await fetchNpSms(sess);
+        
+        if (records === null) { // Cookie died or redirected
+            await loginNumberPanel(username, password, true); // Force refresh
+            setTimeout(() => pollNumberPanel(acc), 5000);
+            return;
+        }
+
+        let newMsgCount = 0;
+
+        for (let sms of records) {
+            const key = `${sms.num}|${sms.msg.substring(0, 80)}`;
+            const seen = await isNpSeen(key);
+            
+            if (!seen) {
+                const sent = await sendNpMessage(sms, name, topic_id);
+                if (sent) {
+                    await markNpSeen(key);
+                    newMsgCount++;
+                }
+                await new Promise(r => setTimeout(r, 300)); // Anti-flood throttling
+            }
+        }
+
+        if (newMsgCount > 0) {
+            console.log(`[NP SYSTEM] [${name}] ${records.length} fetched | ${newMsgCount} new | ${records.length - newMsgCount} dup`);
+        }
+
+    } catch (e) {
+        console.error(`[NP SYSTEM] [${name}] Loop Error: ${e.message}`);
+    }
+
+    // Schedule next run
+    setTimeout(() => pollNumberPanel(acc), NP_POLL_SEC);
+}
+
+// Ignite the Engine
+NP_ACCOUNTS.forEach(acc => pollNumberPanel(acc));
+
 
 
 
