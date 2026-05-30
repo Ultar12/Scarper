@@ -1324,63 +1324,7 @@ async function fetchNpSms(sessionData) {
     }
 }
 
-// --- TELEGRAM MESSAGE BUILDER (ULTAR TEMPLATE) ---
-async function sendNpMessage(sms, name, topicId) {
-    const code = extractOTP(sms.msg) || "FAILED";
-    const maskedNumber = "+" + sms.num;
-    const fullCountry = sms.country || "Unknown";
-    const flagEmoji = getNpFlag(sms.num, fullCountry);
-    const platform = sms.svc;
 
-    const design = 
-        `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
-        `┃❃╭──────────────\n` +
-        `┃❃│ Platform : ${platform}\n` +
-        `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
-        `┃❃│ Number   : ${maskedNumber}\n` +
-        `┃❃│ Code     : CODE_FIX\n` +
-        `┃❃╰───────────────\n` +
-        `╰═════════════════⊷`;
-
-    try {
-        const formattedText = design.replace('CODE_FIX', `\`${code}\``);
-
-        const options = {
-            parse_mode: 'Markdown',
-            disable_web_page_preview: true,
-            reply_markup: { 
-                inline_keyboard: [
-                    [{ text: `Copy: ${code}`, copy_text: { text: code } }], 
-                    [
-                        { text: `Owner`, url: `https://t.me/Staries1` },
-                        { text: `Channel`, url: `https://t.me/+Rci2m853ppA0NWY1` }
-                    ]
-                ] 
-            }
-        };
-
-        if (topicId) options.message_thread_id = topicId;
-
-        // Routing through the dedicated npBot instance
-        const tgMsg = await npBot.sendMessage(NP_TARGET_CHAT_ID, formattedText, options);
-        console.log(`[NP SYSTEM] Sent | ${platform} | ${maskedNumber} | OTP=${code}`);
-
-        // 10-Minute Auto-Delete (600,000ms)
-        const deleteDelay = 600000; 
-        setTimeout(async () => { 
-            try { 
-                // Routing deletion through npBot instance
-                await npBot.deleteMessage(NP_TARGET_CHAT_ID, tgMsg.message_id); 
-            } catch (e) {} 
-        }, deleteDelay);
-
-        return true;
-
-    } catch (err) {
-        console.error(`[NP SYSTEM] Send failed: ${err.message}`);
-        return false;
-    }
-}
 
 // --- THE BACKGROUND ENGINE ---
 async function pollNumberPanel(acc) {
@@ -1433,6 +1377,59 @@ async function pollNumberPanel(acc) {
 NP_ACCOUNTS.forEach(acc => pollNumberPanel(acc));
 
 
+// --- TELEGRAM MESSAGE BUILDER (ULTAR EXACT TEMPLATE) ---
+async function sendNpMessage(sms, name, topicId) {
+    const code = extractOTP(sms.msg) || "FAILED";
+    
+    // --- NUMBER MASKING LOGIC ---
+    // Takes 584265403173 -> Keeps first 4 (5842), adds •••, keeps last 4 (3173) -> 5842•••3173
+    const cleanNum = sms.num.replace(/[^0-9]/g, '');
+    const maskedNumber = cleanNum.substring(0, 4) + '•••' + cleanNum.slice(-4);
+    
+    const fullCountry = sms.country || "Unknown";
+    const flagEmoji = getNpFlag(sms.num, fullCountry);
+    const platform = sms.svc;
+
+    // Exact template requested
+    const design = 
+        `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
+        `┃❃╭──────────────\n` +
+        `┃❃│ Platform : ${platform}\n` +
+        `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
+        `┃❃│ Number   : ${maskedNumber}\n` +
+        `┃❃╰───────────────\n` +
+        `╰═════════════════⊷`;
+
+    try {
+        const formattedText = design.replace('CODE_FIX', `\`${code}\``);
+
+        const tgMsg = await npBot.sendMessage(NP_TARGET_CHAT_ID, formattedText, {
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true,
+            reply_markup: { 
+                inline_keyboard: [
+                    [{ text: `Copy: ${code}`, copy_text: { text: code }, style: 'success' }], 
+                    [
+                        { text: `Owner`, url: `https://t.me/Staries1`, style: 'primary' },
+                        { text: `Channel`, url: `https://t.me/+Rci2m853ppA0NWY1`, style: 'primary' }
+                    ]
+                ] 
+            }
+        });
+
+        const deleteDelay = 600000; 
+        setTimeout(async () => { 
+            try { await npBot.deleteMessage(NP_TARGET_CHAT_ID, tgMsg.message_id); } catch (e) {} 
+        }, deleteDelay);
+
+        console.log(`[NP SYSTEM] Sent | ${platform} | ${maskedNumber} | OTP=${code}`);
+        return true;
+
+    } catch (err) {
+        console.error(`[NP SYSTEM] Send failed: ${err.message}`);
+        return false;
+    }
+}
 
 
 async function performM4USignIn(chatId) {
