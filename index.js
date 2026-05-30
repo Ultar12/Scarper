@@ -1379,7 +1379,8 @@ NP_ACCOUNTS.forEach(acc => pollNumberPanel(acc));
 
 // --- TELEGRAM MESSAGE BUILDER (ULTAR EXACT TEMPLATE) ---
 async function sendNpMessage(sms, name, topicId) {
-    const code = extractOTP(sms.msg) || "FAILED";
+    const code = (extractOTP(sms.msg) || "FAILED").replace(/-/g, '');
+
     
     // --- NUMBER MASKING LOGIC ---
     // Takes 584265403173 -> Keeps first 4 (5842), adds •••, keeps last 4 (3173) -> 5842•••3173
