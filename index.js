@@ -1090,7 +1090,7 @@ async function scrapeRecentOTPNumbers() {
 // =========================================================
 
 
-const NP_BASE_URL = "http://51.89.99.105/NumberPanel";
+const NP_BASE_URL = "https://timesms.org";
 const NP_POLL_SEC = 16 * 1000;
 
 // --- DEDICATED SENDER BOT CONFIGURATION ---
@@ -1100,7 +1100,7 @@ const NP_TARGET_CHAT_ID = '-1003645249777';
 const npBot = new TelegramBot(NP_BOT_TOKEN, { polling: false }); 
 
 const NP_ACCOUNTS = [
-    { name: "sukuna65", username: "sukuna65", password: "sukuna65", topic_id: null },
+    { name: "Suzume", username: "Suzume", password: "Suzume", topic_id: null },
 ];
 
 const NP_COUNTRY_FLAGS = {
