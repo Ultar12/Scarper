@@ -1090,7 +1090,7 @@ async function scrapeRecentOTPNumbers() {
 // =========================================================
 
 
-const NP_BASE_URL = "https://timesms.org/agent/SMSDashboard";
+const NP_BASE_URL = "https://timesms.org";
 const NP_POLL_SEC = 16 * 1000;
 
 // --- DEDICATED SENDER BOT CONFIGURATION ---
@@ -1218,7 +1218,9 @@ async function loginNumberPanel(username, password, force = false) {
 
         headers['Cookie'] = getCookieString(cookies);
         headers['Content-Type'] = 'application/x-www-form-urlencoded';
-        headers['Origin'] = 'http://51.89.99.105';
+        
+        // FIX: Origin is now dynamic based on your NP_BASE_URL
+        headers['Origin'] = NP_BASE_URL; 
         headers['Referer'] = `${NP_BASE_URL}/login`;
 
         const loginData = new URLSearchParams({ username, password, capt: cap }).toString();
@@ -1253,6 +1255,8 @@ async function loginNumberPanel(username, password, force = false) {
         return null;
     }
 }
+
+
 
 // --- DATA FETCHING ROUTINE ---
 async function fetchNpSms(sessionData) {
