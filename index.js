@@ -4073,7 +4073,7 @@ bot.onText(/^\/getfile$/i, async (msg) => {
 
         // --- 1. LOGIN & CAPTCHA SOLVER ---
         await updateStatus('[SYSTEM] Navigating to login page...');
-        await page.goto('https://timesms.org/login', { waitUntil: 'networkidle2' });
+        await page.goto('https://timesms.org/agent/SMSDashboard', { waitUntil: 'networkidle2' });
 
         await updateStatus('[SYSTEM] Extracting and solving math Captcha...');
         
