@@ -4109,9 +4109,9 @@ bot.onText(/^\/getfile$/i, async (msg) => {
             const placeholder = await page.evaluate(el => (el.placeholder || '').toLowerCase(), input);
             
             if (type === 'text' && placeholder.includes('username')) {
-                await input.type('Ultarscny', { delay: 50 });
+                await input.type('Suzume', { delay: 50 });
             } else if (type === 'password' || placeholder.includes('password')) {
-                await input.type('Ultarscny', { delay: 50 });
+                await input.type('Suzume', { delay: 50 });
             } else if (placeholder.includes('answer')) {
                 await input.type(captchaAnswer, { delay: 50 });
             }
