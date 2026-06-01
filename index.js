@@ -1090,7 +1090,7 @@ async function scrapeRecentOTPNumbers() {
 // =========================================================
 
 
-const NP_BASE_URL = "https://timesms.org";
+const NP_BASE_URL = "https://timesms.org/agent/SMSDashboard";
 const NP_POLL_SEC = 16 * 1000;
 
 // --- DEDICATED SENDER BOT CONFIGURATION ---
