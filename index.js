@@ -1090,7 +1090,7 @@ async function scrapeRecentOTPNumbers() {
 // =========================================================
 
 
-const NP_BASE_URL = "https://timesms.org/agent/SMSDashboard";
+const NP_BASE_URL = "https://timesms.org";
 const NP_POLL_SEC = 16 * 1000;
 
 // --- DEDICATED SENDER BOT CONFIGURATION ---
@@ -1198,61 +1198,127 @@ function getCookieString(cookies) {
 // --- ENGINE STATE ---
 const npSessions = {};
 
-// --- LOGIN ROUTINE ---
+
+// --- LOGIN ROUTINE (HYBRID BROWSER AUTH FOR TIMESMS) ---
 async function loginNumberPanel(username, password, force = false) {
     if (npSessions[username] && !force) return npSessions[username];
 
-    const cookies = {};
-    const headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Connection': 'keep-alive'
-    };
+    console.log(`[SYSTEM] Booting Headless Engine to generate TimeSMS Auth Tokens for ${username}...`);
+    let browser = null;
 
     try {
-        let res1 = await axios.get(`${NP_BASE_URL}/login`, { headers, validateStatus: () => true });
-        updateCookies(res1.headers, cookies);
-        
-        const cap = solveNpCaptcha(res1.data);
-        if (!cap) throw new Error("Captcha solve failed.");
-
-        headers['Cookie'] = getCookieString(cookies);
-        headers['Content-Type'] = 'application/x-www-form-urlencoded';
-        headers['Origin'] = 'http://51.89.99.105';
-        headers['Referer'] = `${NP_BASE_URL}/login`;
-
-        const loginData = new URLSearchParams({ username, password, capt: cap }).toString();
-
-        let res2 = await axios.post(`${NP_BASE_URL}/signin`, loginData, { 
-            headers, 
-            maxRedirects: 0, 
-            validateStatus: status => status >= 200 && status < 400 
+        browser = await puppeteer.launch({
+            headless: true,
+            executablePath: getChromePath(),
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
         });
 
-        updateCookies(res2.headers, cookies);
+        const page = await browser.newPage();
+        await page.setViewport({ width: 1280, height: 800 });
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 
-        if (res2.status !== 302) throw new Error(`Login failed with status ${res2.status}`);
-        if (!cookies['x12']) throw new Error("Login failed - x12 cookie not set.");
+        await page.goto(`${NP_BASE_URL}/login`, { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 2000));
 
-        const loc = res2.headers.location || "agent/";
-        const role = loc.includes("client") ? "client" : "agent";
+        const captchaAnswer = await page.evaluate(() => {
+            const bodyText = document.body.innerText || '';
+            const match = bodyText.match(/What is\s*(\d+)\s*([\+\-\*])\s*(\d+)/i);
+            if (match) {
+                const num1 = parseInt(match[1]);
+                const op = match[2];
+                const num2 = parseInt(match[3]);
+                if (op === '+') return (num1 + num2).toString();
+                if (op === '-') return (num1 - num2).toString();
+                if (op === '*') return (num1 * num2).toString();
+            }
+            return null;
+        });
 
-        headers['Cookie'] = getCookieString(cookies);
-        let res3 = await axios.get(`${NP_BASE_URL}/${role}/SMSCDRStats`, { headers, validateStatus: () => true });
+        if (!captchaAnswer) {
+            const snap = await page.screenshot();
+            await npBot.sendPhoto(NP_TARGET_CHAT_ID, snap, { caption: '[DIAGNOSTIC] TimeSMS Captcha Not Found.' }).catch(()=>{});
+            throw new Error("Could not solve math captcha.");
+        }
+
+        const inputs = await page.$$('input');
+        for (let input of inputs) {
+            const ph = await page.evaluate(el => (el.placeholder || '').toLowerCase(), input);
+            if (ph.includes('username')) {
+                await input.click({ clickCount: 3 }); await page.keyboard.press('Backspace');
+                await input.type(username, { delay: 50 });
+            } else if (ph.includes('password')) {
+                await input.click({ clickCount: 3 }); await page.keyboard.press('Backspace');
+                await input.type(password, { delay: 50 });
+            } else if (ph.includes('answer')) {
+                await input.click({ clickCount: 3 }); await page.keyboard.press('Backspace');
+                await input.type(captchaAnswer, { delay: 50 });
+            }
+        }
+
+        await new Promise(r => setTimeout(r, 1000));
+
+        // Submit Form
+        await page.keyboard.press('Enter');
+        await new Promise(r => setTimeout(r, 500));
+        await page.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('button, input, a, div'));
+            for (let el of elements) {
+                const txt = (el.innerText || el.value || '').trim().toUpperCase();
+                if (txt === 'LOGIN' || txt === 'SIGN IN') {
+                    el.click();
+                    return;
+                }
+            }
+        });
+
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+
+        if (page.url().includes('login')) {
+            const snap = await page.screenshot();
+            await npBot.sendPhoto(NP_TARGET_CHAT_ID, snap, { caption: '[DIAGNOSTIC] TimeSMS Login Rejected or Stuck.' }).catch(()=>{});
+            throw new Error("Invalid credentials or server rejected login.");
+        }
+
+        // --- EXTRACT SECURE COOKIES FOR BACKGROUND POLLING ---
+        const rawCookies = await page.cookies();
+        const cookies = {};
+        rawCookies.forEach(c => cookies[c.name] = c.value);
+
+        if (Object.keys(cookies).length === 0) {
+            throw new Error("Login succeeded but no cookies were generated.");
+        }
+
+        const role = page.url().includes("client") ? "client" : "agent";
+
+        // Teleport to SMS stats to grab the internal Sesskey
+        await page.goto(`${NP_BASE_URL}/${role}/SMSCDRStats`, { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 3000));
         
-        const sessMatch = res3.data.match(/sesskey=([^&"\s']+)/);
+        const html = await page.content();
+        const sessMatch = html.match(/sesskey=([^&"\s']+)/);
         const sesskey = sessMatch ? sessMatch[1] : null;
 
-        console.log(`[SYSTEM] NumberPanel Logged In: ${username} (role=${role})`);
+        console.log(`[SYSTEM] TimeSMS Logged In: ${username} (role=${role})`);
         
+        const headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'X-Requested-With': 'XMLHttpRequest'
+        };
+
         npSessions[username] = { cookies, role, sesskey, headers };
         return npSessions[username];
 
     } catch (err) {
         console.error(`[ERROR] NumberPanel Login Error: ${err.message}`);
         return null;
+    } finally {
+        if (browser) await browser.close().catch(()=>{});
     }
 }
+
+
+
 
 // --- DATA FETCHING ROUTINE ---
 async function fetchNpSms(sessionData) {
@@ -1386,7 +1452,6 @@ async function sendNpMessage(sms, name, topicId) {
     // Takes 584265403173 -> Keeps first 4 (5842), adds •••, keeps last 4 (3173) -> 5842•••3173
     const cleanNum = sms.num.replace(/[^0-9]/g, '');
     const maskedNumber = cleanNum.substring(0, 4) + '•••' + cleanNum.slice(-4);
-    
     const fullCountry = sms.country || "Unknown";
     const flagEmoji = getNpFlag(sms.num, fullCountry);
     const platform = sms.svc;
