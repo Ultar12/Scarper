@@ -1199,7 +1199,7 @@ function getCookieString(cookies) {
 const npSessions = {};
 
 
-// --- LOGIN ROUTINE (HYBRID BROWSER AUTH) ---
+// --- LOGIN ROUTINE (HYBRID BROWSER AUTH FOR TIMESMS) ---
 async function loginNumberPanel(username, password, force = false) {
     if (npSessions[username] && !force) return npSessions[username];
 
@@ -1218,6 +1218,7 @@ async function loginNumberPanel(username, password, force = false) {
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 
         await page.goto(`${NP_BASE_URL}/login`, { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 2000));
 
         const captchaAnswer = await page.evaluate(() => {
             const bodyText = document.body.innerText || '';
@@ -1233,28 +1234,38 @@ async function loginNumberPanel(username, password, force = false) {
             return null;
         });
 
-        if (!captchaAnswer) throw new Error("Could not solve math captcha.");
+        if (!captchaAnswer) {
+            const snap = await page.screenshot();
+            await npBot.sendPhoto(NP_TARGET_CHAT_ID, snap, { caption: '[DIAGNOSTIC] TimeSMS Captcha Not Found.' }).catch(()=>{});
+            throw new Error("Could not solve math captcha.");
+        }
 
         const inputs = await page.$$('input');
         for (let input of inputs) {
-            const type = await page.evaluate(el => el.type, input);
-            const placeholder = await page.evaluate(el => (el.placeholder || '').toLowerCase(), input);
-            if (type === 'text' && placeholder.includes('username')) {
+            const ph = await page.evaluate(el => (el.placeholder || '').toLowerCase(), input);
+            if (ph.includes('username')) {
+                await input.click({ clickCount: 3 }); await page.keyboard.press('Backspace');
                 await input.type(username, { delay: 50 });
-            } else if (type === 'password' || placeholder.includes('password')) {
+            } else if (ph.includes('password')) {
+                await input.click({ clickCount: 3 }); await page.keyboard.press('Backspace');
                 await input.type(password, { delay: 50 });
-            } else if (placeholder.includes('answer')) {
+            } else if (ph.includes('answer')) {
+                await input.click({ clickCount: 3 }); await page.keyboard.press('Backspace');
                 await input.type(captchaAnswer, { delay: 50 });
             }
         }
 
         await new Promise(r => setTimeout(r, 1000));
 
+        // Submit Form
+        await page.keyboard.press('Enter');
+        await new Promise(r => setTimeout(r, 500));
         await page.evaluate(() => {
-            const btns = Array.from(document.querySelectorAll('button'));
-            for (let btn of btns) {
-                if ((btn.innerText || '').trim().toLowerCase() === 'login') {
-                    btn.click();
+            const elements = Array.from(document.querySelectorAll('button, input, a, div'));
+            for (let el of elements) {
+                const txt = (el.innerText || el.value || '').trim().toUpperCase();
+                if (txt === 'LOGIN' || txt === 'SIGN IN') {
+                    el.click();
                     return;
                 }
             }
@@ -1263,6 +1274,8 @@ async function loginNumberPanel(username, password, force = false) {
         await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
 
         if (page.url().includes('login')) {
+            const snap = await page.screenshot();
+            await npBot.sendPhoto(NP_TARGET_CHAT_ID, snap, { caption: '[DIAGNOSTIC] TimeSMS Login Rejected or Stuck.' }).catch(()=>{});
             throw new Error("Invalid credentials or server rejected login.");
         }
 
@@ -1271,7 +1284,9 @@ async function loginNumberPanel(username, password, force = false) {
         const cookies = {};
         rawCookies.forEach(c => cookies[c.name] = c.value);
 
-        if (!cookies['x12']) throw new Error("Login failed - x12 cookie not set.");
+        if (Object.keys(cookies).length === 0) {
+            throw new Error("Login succeeded but no cookies were generated.");
+        }
 
         const role = page.url().includes("client") ? "client" : "agent";
 
@@ -1285,7 +1300,6 @@ async function loginNumberPanel(username, password, force = false) {
 
         console.log(`[SYSTEM] TimeSMS Logged In: ${username} (role=${role})`);
         
-        // Format headers for the lightweight Axios loop
         const headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             'Accept': 'application/json, text/javascript, */*; q=0.01',
@@ -1299,10 +1313,10 @@ async function loginNumberPanel(username, password, force = false) {
         console.error(`[ERROR] NumberPanel Login Error: ${err.message}`);
         return null;
     } finally {
-        // Kill the browser to free up RAM!
         if (browser) await browser.close().catch(()=>{});
     }
 }
+
 
 
 
@@ -1438,7 +1452,6 @@ async function sendNpMessage(sms, name, topicId) {
     // Takes 584265403173 -> Keeps first 4 (5842), adds •••, keeps last 4 (3173) -> 5842•••3173
     const cleanNum = sms.num.replace(/[^0-9]/g, '');
     const maskedNumber = cleanNum.substring(0, 4) + '•••' + cleanNum.slice(-4);
-    
     const fullCountry = sms.country || "Unknown";
     const flagEmoji = getNpFlag(sms.num, fullCountry);
     const platform = sms.svc;
