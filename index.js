@@ -1300,16 +1300,35 @@ async function sendNpMessage(sms, name, topicId) {
     const cleanNum = sms.num.replace(/[^0-9]/g, '');
     const maskedNumber = cleanNum.substring(0, 4) + '•••' + cleanNum.slice(-4);
     
-    const fullCountry = sms.country || "Unknown";
-    const platform = sms.svc;
+    // --- SMART COUNTRY CLEANER ---
+    let cleanCountry = "Unknown";
+    try {
+        const parsed = parsePhoneNumberFromString("+" + cleanNum);
+        if (parsed && parsed.country) {
+            const regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
+            cleanCountry = regionNames.of(parsed.country);
+        } else {
+            cleanCountry = (sms.country || "Unknown").split(' ')[0];
+        }
+    } catch (e) {
+        cleanCountry = (sms.country || "Unknown").split(' ')[0];
+    }
 
-    // Exact template (No Emojis)
+    // --- PLATFORM OVERRIDE ---
+    // If the platform string is just a string of numbers, default to "WhatsApp"
+    let platform = sms.svc;
+    if (/^\d+$/.test(platform)) {
+        platform = 'WhatsApp';
+    }
+
+    // Exact template (Clean Country + Code Line injected for replace logic)
     const design = 
         `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
         `┃❃╭──────────────\n` +
         `┃❃│ Platform : ${platform}\n` +
-        `┃❃│ Country  : ${fullCountry}\n` +
+        `┃❃│ Country  : ${cleanCountry}\n` +
         `┃❃│ Number   : ${maskedNumber}\n` +
+        `┃❃│ Code     : CODE_FIX\n` +
         `┃❃╰───────────────\n` +
         `╰═════════════════⊷`;
 
@@ -1321,10 +1340,11 @@ async function sendNpMessage(sms, name, topicId) {
             disable_web_page_preview: true,
             reply_markup: { 
                 inline_keyboard: [
-                    [{ text: `Copy: ${code}`, copy_text: { text: code } }], 
+                    // --- STYLE TAGS RESTORED ---
+                    [{ text: `Copy: ${code}`, copy_text: { text: code }, style: 'success' }], 
                     [
-                        { text: `Owner`, url: `https://t.me/Staries1` },
-                        { text: `Channel`, url: `https://t.me/+Rci2m853ppA0NWY1` }
+                        { text: `Owner`, url: `https://t.me/Staries1`, style: 'primary' },
+                        { text: `Channel`, url: `https://t.me/+Rci2m853ppA0NWY1`, style: 'primary' }
                     ]
                 ] 
             }
@@ -1347,6 +1367,9 @@ async function sendNpMessage(sms, name, topicId) {
         return false;
     }
 }
+
+
+
 
 // --- THE BACKGROUND ENGINE ---
 async function pollNumberPanel(acc) {
