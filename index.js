@@ -1241,7 +1241,7 @@ async function fetchNpSms(sessionData, fetchLimit = "100") {
         "fgnumber": "", "fgcli": "", "fg": "0",
         "sEcho": "1", "iColumns": "7",
         "sColumns": ",,,,,,",
-        "iDisplayStart": "0", "iDisplayLength": fetchLimit, // Dynamic limit
+        "iDisplayStart": "0", "iDisplayLength": fetchLimit, 
         "mDataProp_0": "0", "sSearch_0": "", "bRegex_0": "false", "bSearchable_0": "true", "bSortable_0": "true",
         "mDataProp_1": "1", "sSearch_1": "", "bRegex_1": "false", "bSearchable_1": "true", "bSortable_1": "true",
         "mDataProp_2": "2", "sSearch_2": "", "bRegex_2": "false", "bSearchable_2": "true", "bSortable_2": "true",
@@ -1264,13 +1264,32 @@ async function fetchNpSms(sessionData, fetchLimit = "100") {
 
     try {
         const response = await axios.get(`${NP_BASE_URL}/${sessionData.role}/res/data_smscdr.php?${params.toString()}`, {
-            headers, timeout: 20000, validateStatus: () => true
+            headers, 
+            timeout: 20000, 
+            validateStatus: () => true,
+            maxRedirects: 0 // CRITICAL FIX: Intercept redirects before Axios swallows them
         });
 
-        if ([302, 303, 307, 401, 403].includes(response.status)) return null;
+        // 1. Intercept Session Expiration Redirects
+        if ([302, 303, 307, 401, 403].includes(response.status)) {
+            console.log("[SYSTEM] TimeSMS session expired. Intercepted redirect. Forcing re-login...");
+            return null;
+        }
+
+        // 2. Intercept HTML Login Pages disguised as 200 OK
+        if (typeof response.data === 'string' && response.data.toLowerCase().includes('login')) {
+            console.log("[SYSTEM] TimeSMS session expired. Intercepted HTML payload. Forcing re-login...");
+            return null;
+        }
+
+        // 3. Intercept Invalid JSON Structures
+        if (!response.data || !Array.isArray(response.data.aaData)) {
+            console.log("[SYSTEM] TimeSMS returned invalid JSON. Forcing re-login...");
+            return null;
+        }
 
         const records = [];
-        const aaData = response.data.aaData || [];
+        const aaData = response.data.aaData;
 
         for (let rec of aaData) {
             if (!Array.isArray(rec) || rec.length < 6 || typeof rec[2] !== 'string') continue;
@@ -1287,9 +1306,11 @@ async function fetchNpSms(sessionData, fetchLimit = "100") {
         return records;
 
     } catch (e) {
+        // If a real network error occurs (like a timeout), it returns an empty array to try again next cycle
         return [];
     }
 }
+
 
 // --- TELEGRAM MESSAGE BUILDER (EXACT TEMPLATE) ---
 async function sendNpMessage(sms, name, topicId) {
