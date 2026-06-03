@@ -1439,6 +1439,364 @@ NP_ACCOUNTS.forEach(acc => pollNumberPanel(acc));
 
 
 
+// =========================================================
+// --- ORIGINAL NUMBER PANEL ENGINE (51.89.99.105) ---
+// --- Fully Isolated to prevent TimeSMS collisions ---
+// =========================================================
+
+const RAW_NP_BASE_URL = "http://51.89.99.105/NumberPanel";
+const RAW_NP_POLL_SEC = 16 * 1000;
+
+// You can run a second instance of the bot safely with polling: false
+const RAW_NP_BOT_TOKEN = '8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY';
+const RAW_NP_TARGET_CHAT_ID = '-1003645249777';
+const rawNpBot = new TelegramBot(RAW_NP_BOT_TOKEN, { polling: false }); 
+
+const RAW_NP_ACCOUNTS = [
+    { name: "Eren", username: "your_username", password: "your_password", topic_id: null },
+];
+
+const RAW_NP_COUNTRY_FLAGS = {
+    "ethiopia": "🇪🇹", "egypt": "🇪🇬", "mali": "🇲🇱", "indonesia": "🇮🇩",
+    "guinea": "🇬🇳", "togo": "🇹🇬", "ghana": "🇬🇭", "tanzania": "🇹🇿",
+    "bangladesh": "🇧🇩", "kenya": "🇰🇪", "nigeria": "🇳🇬", "india": "🇮🇳",
+    "pakistan": "🇵🇰", "philippines": "🇵🇭", "vietnam": "🇻🇳", "thailand": "🇹🇭",
+    "brazil": "🇧🇷", "mexico": "🇲🇽", "russia": "🇷🇺", "ukraine": "🇺🇦",
+    "poland": "🇵🇱", "germany": "🇩🇪", "france": "🇫🇷", "spain": "🇪🇸",
+    "italy": "🇮🇹", "uk": "🇬🇧", "usa": "🇺🇸", "canada": "🇨🇦",
+    "australia": "🇦🇺", "south africa": "🇿🇦", "morocco": "🇲🇦", "algeria": "🇩🇿",
+    "tunisia": "🇹🇳", "cameroon": "🇨🇲", "senegal": "🇸🇳", "ivory coast": "🇨🇮",
+    "benin": "🇧🇯", "burkina faso": "🇧🇫", "niger": "🇳🇪", "chad": "🇹🇩"
+};
+
+// --- ISOLATED DATABASE INITIALIZATION ---
+// Uses a different table name so it doesn't mix with TimeSMS OTPs
+pool.query(`CREATE TABLE IF NOT EXISTS raw_numberpanel_sent (id VARCHAR(255) PRIMARY KEY);`)
+    .then(() => console.log('[SYSTEM] Original NumberPanel DB Ready.'))
+    .catch(console.error);
+
+async function isRawNpSeen(key) {
+    try {
+        const res = await pool.query('SELECT 1 FROM raw_numberpanel_sent WHERE id = $1', [key]);
+        return res.rows.length > 0;
+    } catch (err) { return false; }
+}
+
+async function markRawNpSeen(key) {
+    try {
+        await pool.query('INSERT INTO raw_numberpanel_sent (id) VALUES ($1) ON CONFLICT DO NOTHING', [key]);
+    } catch (err) {}
+}
+
+// --- UTILITY FUNCTIONS ---
+function getRawNpFlag(numberStr, countryName) {
+    if (numberStr) {
+        try {
+            const parsed = parsePhoneNumberFromString("+" + numberStr.replace(/^\+/, ''));
+            if (parsed && parsed.country) {
+                return parsed.country.toUpperCase().replace(/./g, char => String.fromCodePoint(char.charCodeAt(0) + 127397));
+            }
+        } catch (e) {}
+    }
+    if (countryName) {
+        const lowerName = countryName.toLowerCase();
+        for (const [k, v] of Object.entries(RAW_NP_COUNTRY_FLAGS)) {
+            if (lowerName.includes(k)) return v;
+        }
+    }
+    return "🌍";
+}
+
+function solveRawNpCaptcha(html) {
+    const match = html.match(/(\d+)\s*([\+\-\*\/])\s*(\d+)\s*=\s*\?/);
+    if (!match) return null;
+    const a = parseInt(match[1]), op = match[2], b = parseInt(match[3]);
+    
+    if (op === '+') return (a + b).toString();
+    if (op === '-') return (a - b).toString();
+    if (op === '*') return (a * b).toString();
+    if (op === '/' && b !== 0) return Math.floor(a / b).toString();
+    return null;
+}
+
+function extractRawOTP(msg) {
+    const patterns = [
+        /\b(\d{3}-\d{3})\b/i, /\b(\d{6})\b/i, /\b(\d{4})\b/i, 
+        /\b(\d{5})\b/i, /\b(\d{8})\b/i, /OTP[:\s]*(\d+)/i, 
+        /code[:\s]*(\d+)/i, /verification[:\s]*(\d+)/i, /pin[:\s]*(\d+)/i
+    ];
+    for (let pat of patterns) {
+        const match = msg.match(pat);
+        if (match && match[1]) return match[1];
+    }
+    return null;
+}
+
+function updateRawCookies(headers, currentCookies) {
+    if (headers['set-cookie']) {
+        headers['set-cookie'].forEach(cookieStr => {
+            const parts = cookieStr.split(';')[0].split('=');
+            currentCookies[parts[0]] = parts.slice(1).join('=');
+        });
+    }
+    return currentCookies;
+}
+
+function getRawCookieString(cookies) {
+    return Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+}
+
+// --- ENGINE STATE ---
+const rawNpSessions = {};
+
+// --- LOGIN ROUTINE (PURE AXIOS) ---
+async function loginRawNumPanel(username, password, force = false) {
+    if (rawNpSessions[username] && !force) return rawNpSessions[username];
+
+    const cookies = {};
+    const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Connection': 'keep-alive'
+    };
+
+    try {
+        let res1 = await axios.get(`${RAW_NP_BASE_URL}/login`, { headers, validateStatus: () => true });
+        updateRawCookies(res1.headers, cookies);
+        
+        const cap = solveRawNpCaptcha(res1.data);
+        if (!cap) throw new Error("Captcha solve failed.");
+
+        headers['Cookie'] = getRawCookieString(cookies);
+        headers['Content-Type'] = 'application/x-www-form-urlencoded';
+        headers['Origin'] = 'http://51.89.99.105';
+        headers['Referer'] = `${RAW_NP_BASE_URL}/login`;
+
+        const loginData = new URLSearchParams({ username, password, capt: cap }).toString();
+
+        let res2 = await axios.post(`${RAW_NP_BASE_URL}/signin`, loginData, { 
+            headers, 
+            maxRedirects: 0, 
+            validateStatus: status => status >= 200 && status < 400 
+        });
+
+        updateRawCookies(res2.headers, cookies);
+
+        if (res2.status !== 302) throw new Error(`Login failed with status ${res2.status}`);
+        if (!cookies['x12']) throw new Error("Login failed - x12 cookie not set.");
+
+        const loc = res2.headers.location || "agent/";
+        const role = loc.includes("client") ? "client" : "agent";
+
+        headers['Cookie'] = getRawCookieString(cookies);
+        let res3 = await axios.get(`${RAW_NP_BASE_URL}/${role}/SMSCDRStats`, { headers, validateStatus: () => true });
+        
+        const sessMatch = res3.data.match(/sesskey=([^&"\s']+)/);
+        const sesskey = sessMatch ? sessMatch[1] : null;
+
+        console.log(`[SYSTEM] Original NumberPanel Logged In: ${username} (role=${role})`);
+        
+        rawNpSessions[username] = { cookies, role, sesskey, headers };
+        return rawNpSessions[username];
+
+    } catch (err) {
+        console.error(`[ERROR] Original NumberPanel Login Error: ${err.message}`);
+        return null;
+    }
+}
+
+// --- DATA FETCHING ROUTINE ---
+async function fetchRawNumPanelSms(sessionData) {
+    if (!sessionData.cookies['x12']) return null;
+
+    const today = new Date();
+    const dateStr = today.toISOString().split('T')[0];
+
+    const params = new URLSearchParams({
+        "fdate1": `${dateStr} 00:00:00`,
+        "fdate2": `${dateStr} 23:59:59`,
+        "frange": "", "fnum": "", "fcli": "",
+        "fgdate": "", "fgmonth": "", "fgrange": "",
+        "fgnumber": "", "fgcli": "", "fg": "0",
+        "sEcho": "1", "iColumns": "7",
+        "sColumns": ",,,,,,",
+        "iDisplayStart": "0", "iDisplayLength": "100",
+        "mDataProp_0": "0", "sSearch_0": "", "bRegex_0": "false", "bSearchable_0": "true", "bSortable_0": "true",
+        "mDataProp_1": "1", "sSearch_1": "", "bRegex_1": "false", "bSearchable_1": "true", "bSortable_1": "true",
+        "mDataProp_2": "2", "sSearch_2": "", "bRegex_2": "false", "bSearchable_2": "true", "bSortable_2": "true",
+        "mDataProp_3": "3", "sSearch_3": "", "bRegex_3": "false", "bSearchable_3": "true", "bSortable_3": "true",
+        "mDataProp_4": "4", "sSearch_4": "", "bRegex_4": "false", "bSearchable_4": "true", "bSortable_4": "true",
+        "mDataProp_5": "5", "sSearch_5": "", "bRegex_5": "false", "bSearchable_5": "true", "bSortable_5": "true",
+        "mDataProp_6": "6", "sSearch_6": "", "bRegex_6": "false", "bSearchable_6": "true", "bSortable_6": "true",
+        "sSearch": "", "bRegex": "false",
+        "iSortCol_0": "0", "sSortDir_0": "desc", "iSortingCols": "1",
+        "_": Date.now().toString()
+    });
+
+    if (sessionData.sesskey) params.append("sesskey", sessionData.sesskey);
+
+    const headers = { ...sessionData.headers };
+    headers['Cookie'] = getRawCookieString(sessionData.cookies);
+    headers['X-Requested-With'] = 'XMLHttpRequest';
+    headers['Accept'] = 'application/json, text/javascript, */*; q=0.01';
+    headers['Referer'] = `${RAW_NP_BASE_URL}/${sessionData.role}/SMSCDRStats`;
+
+    try {
+        const response = await axios.get(`${RAW_NP_BASE_URL}/${sessionData.role}/res/data_smscdr.php?${params.toString()}`, {
+            headers, timeout: 20000, validateStatus: () => true, maxRedirects: 0 
+        });
+
+        if ([302, 303, 307, 401, 403].includes(response.status)) return null;
+        if (typeof response.data === 'string' && response.data.toLowerCase().includes('login')) return null;
+
+        const records = [];
+        const aaData = response.data.aaData || [];
+
+        for (let rec of aaData) {
+            if (!Array.isArray(rec) || rec.length < 6 || typeof rec[2] !== 'string') continue;
+
+            const num = String(rec[2]).trim();
+            const svc = String(rec[3]).trim();
+            const msg = rec[5] ? String(rec[5]).trim() : "";
+            const country = String(rec[1]).split("-")[0].trim(); 
+
+            if (!/^\d+$/.test(num) || num.length < 7) continue;
+
+            records.push({ num, svc, country, msg });
+        }
+        return records;
+
+    } catch (e) {
+        return [];
+    }
+}
+
+// --- TELEGRAM MESSAGE BUILDER ---
+async function sendRawNumPanelMessage(sms, name, topicId) {
+    const code = (extractRawOTP(sms.msg) || "FAILED").replace(/-/g, '');
+    const cleanNum = sms.num.replace(/[^0-9]/g, '');
+    let localNumber = cleanNum;
+    
+    const rawCountry = sms.country || "Unknown";
+    const flagEmoji = getRawNpFlag(sms.num, rawCountry);
+    
+    let cleanCountry = "Unknown";
+    try {
+        const parsed = parsePhoneNumberFromString("+" + cleanNum);
+        if (parsed && parsed.country) {
+            const regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
+            cleanCountry = regionNames.of(parsed.country);
+            
+            // SMART PREFIX STRIPPER (e.g. removes 58 from 58421234567)
+            if (parsed.countryCallingCode && localNumber.startsWith(parsed.countryCallingCode)) {
+                localNumber = localNumber.substring(parsed.countryCallingCode.length);
+            }
+        } else {
+            cleanCountry = rawCountry.split(' ')[0];
+        }
+    } catch (e) {
+        cleanCountry = rawCountry.split(' ')[0];
+    }
+
+    const maskedNumber = localNumber.substring(0, 4) + '•••' + localNumber.slice(-4);
+
+    let platform = sms.svc;
+    if (/^\d+$/.test(platform)) {
+        platform = 'WhatsApp';
+    }
+
+    const design = 
+        `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
+        `┃❃╭──────────────\n` +
+        `┃❃│ Platform : ${platform}\n` +
+        `┃❃│ Country  : ${cleanCountry} ${flagEmoji}\n` +
+        `┃❃│ Number   : ${maskedNumber}\n` +
+        `┃❃│ Code     : CODE_FIX\n` +
+        `┃❃╰───────────────\n` +
+        `╰═════════════════⊷`;
+
+    try {
+        const formattedText = design.replace('CODE_FIX', `\`${code}\``);
+        const options = {
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true,
+            reply_markup: { 
+                inline_keyboard: [
+                    [{ text: `Copy: ${code}`, copy_text: { text: code }, style: 'success' }], 
+                    [
+                        { text: `Owner`, url: `https://t.me/Staries1`, style: 'primary' },
+                        { text: `Channel`, url: `https://t.me/+Rci2m853ppA0NWY1`, style: 'primary' }
+                    ]
+                ] 
+            }
+        };
+
+        if (topicId) options.message_thread_id = topicId;
+
+        const tgMsg = await rawNpBot.sendMessage(RAW_NP_TARGET_CHAT_ID, formattedText, options);
+        console.log(`[RAW NP SYSTEM] Sent | ${platform} | ${maskedNumber} | OTP=${code}`);
+
+        const deleteDelay = 600000; 
+        setTimeout(async () => { 
+            try { await rawNpBot.deleteMessage(RAW_NP_TARGET_CHAT_ID, tgMsg.message_id); } catch (e) {} 
+        }, deleteDelay);
+
+        return true;
+
+    } catch (err) {
+        console.error(`[RAW NP SYSTEM] Send failed: ${err.message}`);
+        return false;
+    }
+}
+
+// --- THE BACKGROUND ENGINE ---
+async function pollRawNumPanel(acc) {
+    const { name, username, password, topic_id } = acc;
+
+    try {
+        const sess = await loginRawNumPanel(username, password);
+        if (!sess) {
+            setTimeout(() => pollRawNumPanel(acc), 30000); 
+            return;
+        }
+
+        const records = await fetchRawNumPanelSms(sess);
+        
+        if (records === null) {
+            await loginRawNumPanel(username, password, true); // Force re-login
+            setTimeout(() => pollRawNumPanel(acc), 5000);
+            return;
+        }
+
+        let newMsgCount = 0;
+
+        for (let sms of records) {
+            const key = `${sms.num}|${sms.msg.substring(0, 80)}`;
+            if (!(await isRawNpSeen(key))) {
+                if (await sendRawNumPanelMessage(sms, name, topic_id)) {
+                    await markRawNpSeen(key);
+                    newMsgCount++;
+                }
+                await new Promise(r => setTimeout(r, 300));
+            }
+        }
+
+        if (newMsgCount > 0) {
+            console.log(`[RAW NP SYSTEM] [${name}] ${records.length} fetched | ${newMsgCount} new`);
+        }
+
+    } catch (e) {
+        console.error(`[RAW NP SYSTEM] [${name}] Loop Error: ${e.message}`);
+    }
+
+    setTimeout(() => pollRawNumPanel(acc), RAW_NP_POLL_SEC);
+}
+
+// Ignite the Original Number Panel Engine
+RAW_NP_ACCOUNTS.forEach(acc => pollRawNumPanel(acc));
+
+
+
 
 
 async function performM4USignIn(chatId) {
