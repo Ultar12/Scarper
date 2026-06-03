@@ -1349,7 +1349,6 @@ async function sendNpMessage(sms, name, topicId) {
         `┃❃│ Platform : ${platform}\n` +
         `┃❃│ Country  : ${cleanCountry}\n` +
         `┃❃│ Number   : ${maskedNumber}\n` +
-        `┃❃│ Code     : CODE_FIX\n` +
         `┃❃╰───────────────\n` +
         `╰═════════════════⊷`;
 
