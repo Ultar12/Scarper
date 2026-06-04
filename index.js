@@ -1710,7 +1710,6 @@ async function sendRawNumPanelMessage(sms, name, topicId) {
         `┃❃│ Platform : ${platform}\n` +
         `┃❃│ Country  : ${cleanCountry} ${flagEmoji}\n` +
         `┃❃│ Number   : ${maskedNumber}\n` +
-        `┃❃│ Code     : CODE_FIX\n` +
         `┃❃╰───────────────\n` +
         `╰═════════════════⊷`;
 
