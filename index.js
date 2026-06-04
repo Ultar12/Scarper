@@ -1452,7 +1452,7 @@ const RAW_NP_TARGET_CHAT_ID = '-1003645249777';
 const rawNpBot = new TelegramBot(RAW_NP_BOT_TOKEN, { polling: false }); 
 
 const RAW_NP_ACCOUNTS = [
-    { name: "Eren", username: "your_username", password: "your_password", topic_id: null },
+    { name: "Eren", username: "sukuna", password: "sukuna", topic_id: null },
 ];
 
 const RAW_NP_COUNTRY_FLAGS = {
