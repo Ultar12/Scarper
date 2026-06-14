@@ -2207,6 +2207,7 @@ app.get('/api/download', async (req, res) => {
     const reqId = 'req_' + Date.now();
     global.waitingClients = global.waitingClients || new Map();
 
+    // Fire headers FIRST before anything else
     res.writeHead(200, {
         'Content-Type': 'video/mp4',
         'Transfer-Encoding': 'chunked',
@@ -2214,12 +2215,12 @@ app.get('/api/download', async (req, res) => {
         'X-Accel-Buffering': 'no'
     });
 
-    // TCP level keep-alive only — zero bytes written to body
-    const socket = res.socket;
-    if (socket) socket.setKeepAlive(true, 15000);
+    // TCP keep-alive at socket level only
+    if (res.socket) res.socket.setKeepAlive(true, 15000);
 
     global.waitingClients.set(reqId, { res, heartbeat: null });
 
+    // Tell Termux AFTER headers are already sent
     global.termuxSocket.send(JSON.stringify({
         action: 'download',
         url: url,
@@ -2228,7 +2229,6 @@ app.get('/api/download', async (req, res) => {
         msgId: reqId
     }));
 
-    // 10-minute fail-safe
     setTimeout(() => {
         if (global.waitingClients.has(reqId)) {
             global.waitingClients.delete(reqId);
