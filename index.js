@@ -2241,13 +2241,13 @@ app.get('/api/download', async (req, res) => {
             return; // Exit function so Node.js moves on while Termux works
         }
 
-        // --- 3. FALLBACK ENGINE (IG, Twitter, etc.) ---
+                // --- 3. FALLBACK ENGINE (IG, Twitter, Facebook, etc.) ---
         const videoPath = path.join(__dirname, `api_dl_${Date.now()}.mp4`);
 
+        // FORCE yt-dlp to grab a pre-merged, standard MP4 with a WhatsApp-compatible H.264 codec
         await youtubedl(url, {
             output: videoPath,
-            format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            mergeOutputFormat: 'mp4',
+            format: 'best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best', 
             noWarnings: true
         });
 
@@ -2265,6 +2265,7 @@ app.get('/api/download', async (req, res) => {
         }
     }
 });
+
 
 
 
