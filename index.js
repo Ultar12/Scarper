@@ -2199,7 +2199,7 @@ app.get('/api/download', async (req, res) => {
             }
         }
 
-                // --- 2. YOUTUBE / TERMUX ROUTING (HEAVY MEDIA) ---
+                        // --- 2. YOUTUBE / TERMUX ROUTING (HEAVY MEDIA) ---
         if (url.includes('youtube.com') || url.includes('youtu.be')) {
             if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
                 return res.status(503).json({ error: "Termux Worker is offline" });
@@ -2208,8 +2208,13 @@ app.get('/api/download', async (req, res) => {
             const reqId = 'req_' + Date.now();
             global.waitingClients = global.waitingClients || new Map();
 
-            // ⚠️ FIX: Removed the `res.write(' ')` heartbeat. 
-            // Writing text into a pending binary stream corrupts the MP4 headers (moov atom).
+            // 🔥 THE FIX: Instantly fire HTTP headers to satisfy Heroku's 30-second H12 timeout.
+            // This keeps the connection alive without injecting spaces into the binary video file.
+            res.writeHead(200, {
+                'Content-Type': 'video/mp4',
+                'Transfer-Encoding': 'chunked'
+            });
+
             global.waitingClients.set(reqId, { res, heartbeat: null });
 
             // Fire command to phone
@@ -2225,16 +2230,13 @@ app.get('/api/download', async (req, res) => {
             setTimeout(() => {
                 if (global.waitingClients.has(reqId)) {
                     global.waitingClients.delete(reqId);
-                    if (!res.headersSent) {
-                        res.status(504).json({ error: "Termux extraction timed out" });
-                    } else {
-                        res.end(); 
-                    }
+                    res.end(); // Safely close the stream if Termux vanishes
                 }
             }, 300000); 
 
             return; // Exit function so Node.js moves on while Termux works
         }
+
 
 
                 // --- 3. FALLBACK ENGINE (IG, Twitter, Facebook, etc.) ---
