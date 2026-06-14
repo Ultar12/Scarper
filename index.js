@@ -2199,7 +2199,7 @@ app.get('/api/download', async (req, res) => {
             }
         }
 
-        // --- 2. YOUTUBE / TERMUX ROUTING (HEAVY MEDIA) ---
+                // --- 2. YOUTUBE / TERMUX ROUTING (HEAVY MEDIA) ---
         if (url.includes('youtube.com') || url.includes('youtu.be')) {
             if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
                 return res.status(503).json({ error: "Termux Worker is offline" });
@@ -2208,27 +2208,22 @@ app.get('/api/download', async (req, res) => {
             const reqId = 'req_' + Date.now();
             global.waitingClients = global.waitingClients || new Map();
 
-            // Keep-alive heartbeat to prevent Heroku H15 Idle Connection Error
-            const heartbeat = setInterval(() => res.write(' '), 15000);
-
-            // STORE IN WAITING CLIENTS: Hand the res and heartbeat directly to the WS Receiver
-            global.waitingClients.set(reqId, { res, heartbeat });
+            // ⚠️ FIX: Removed the `res.write(' ')` heartbeat. 
+            // Writing text into a pending binary stream corrupts the MP4 headers (moov atom).
+            global.waitingClients.set(reqId, { res, heartbeat: null });
 
             // Fire command to phone
             global.termuxSocket.send(JSON.stringify({
                 action: 'download',
                 url: url,
                 isVideo: true,
-                chatId: 'API_USER', // Matches the WS receiver check perfectly
+                chatId: 'API_USER', 
                 msgId: reqId
             }));
 
-            // IMPORTANT: We do NOT close `res` or await a Promise here.
-            // The WebSocket receiver handles `res.write()` and `res.end()`.
-            // We only set a 5-minute safety timeout to clean up if Termux vanishes.
+            // 5-minute absolute fail-safe
             setTimeout(() => {
                 if (global.waitingClients.has(reqId)) {
-                    clearInterval(heartbeat);
                     global.waitingClients.delete(reqId);
                     if (!res.headersSent) {
                         res.status(504).json({ error: "Termux extraction timed out" });
@@ -2240,6 +2235,7 @@ app.get('/api/download', async (req, res) => {
 
             return; // Exit function so Node.js moves on while Termux works
         }
+
 
                 // --- 3. FALLBACK ENGINE (IG, Twitter, Facebook, etc.) ---
         const videoPath = path.join(__dirname, `api_dl_${Date.now()}.mp4`);
