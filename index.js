@@ -2207,34 +2207,18 @@ app.get('/api/download', async (req, res) => {
     const reqId = 'req_' + Date.now();
     global.waitingClients = global.waitingClients || new Map();
 
-    // DON'T write headers yet — just store a flag
-    let headersSent = false;
-    let keepAlive = null;
-
-    // Keep Heroku alive using a separate lightweight SSE-style ping
-    // This runs on a parallel endpoint so it doesn't touch the binary stream
-    const keepAliveRes = res;
-
-    // Send headers immediately (required to prevent H12)
-    keepAliveRes.writeHead(200, {
+    res.writeHead(200, {
         'Content-Type': 'video/mp4',
         'Transfer-Encoding': 'chunked',
         'Connection': 'keep-alive',
         'X-Accel-Buffering': 'no'
     });
-    headersSent = true;
 
-    // Keep-alive using TCP-level socket ping instead of writing to response body
+    // TCP level keep-alive only — zero bytes written to body
     const socket = res.socket;
-    keepAlive = setInterval(() => {
-        try {
-            if (socket && !socket.destroyed) {
-                socket.setKeepAlive(true, 10000); // TCP keep-alive, no bytes in body
-            }
-        } catch(e) {}
-    }, 15000);
+    if (socket) socket.setKeepAlive(true, 15000);
 
-    global.waitingClients.set(reqId, { res, heartbeat: keepAlive });
+    global.waitingClients.set(reqId, { res, heartbeat: null });
 
     global.termuxSocket.send(JSON.stringify({
         action: 'download',
@@ -2247,7 +2231,6 @@ app.get('/api/download', async (req, res) => {
     // 10-minute fail-safe
     setTimeout(() => {
         if (global.waitingClients.has(reqId)) {
-            clearInterval(keepAlive);
             global.waitingClients.delete(reqId);
             try { res.end(); } catch(e) {}
         }
