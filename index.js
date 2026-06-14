@@ -2199,43 +2199,48 @@ app.get('/api/download', async (req, res) => {
             }
         }
 
-                        // --- 2. YOUTUBE / TERMUX ROUTING (HEAVY MEDIA) ---
-        if (url.includes('youtube.com') || url.includes('youtu.be')) {
-            if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
-                return res.status(503).json({ error: "Termux Worker is offline" });
-            }
+       if (url.includes('youtube.com') || url.includes('youtu.be')) {
+    if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
+        return res.status(503).json({ error: "Termux Worker is offline" });
+    }
 
-            const reqId = 'req_' + Date.now();
-            global.waitingClients = global.waitingClients || new Map();
+    const reqId = 'req_' + Date.now();
+    global.waitingClients = global.waitingClients || new Map();
 
-            // 🔥 THE FIX: Instantly fire HTTP headers to satisfy Heroku's 30-second H12 timeout.
-            // This keeps the connection alive without injecting spaces into the binary video file.
-            res.writeHead(200, {
-                'Content-Type': 'video/mp4',
-                'Transfer-Encoding': 'chunked'
-            });
+    // Fire headers immediately to prevent H12
+    res.writeHead(200, {
+        'Content-Type': 'video/mp4',
+        'Transfer-Encoding': 'chunked',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no'  // Tells Heroku router: don't buffer, don't timeout
+    });
 
-            global.waitingClients.set(reqId, { res, heartbeat: null });
+    // Send periodic empty chunks to keep the TCP socket alive
+    const keepAlive = setInterval(() => {
+        try { res.write(Buffer.alloc(1, 0x20)); } catch(e) {}
+    }, 20000);
 
-            // Fire command to phone
-            global.termuxSocket.send(JSON.stringify({
-                action: 'download',
-                url: url,
-                isVideo: true,
-                chatId: 'API_USER', 
-                msgId: reqId
-            }));
+    global.waitingClients.set(reqId, { res, heartbeat: keepAlive });
 
-            // 5-minute absolute fail-safe
-            setTimeout(() => {
-                if (global.waitingClients.has(reqId)) {
-                    global.waitingClients.delete(reqId);
-                    res.end(); // Safely close the stream if Termux vanishes
-                }
-            }, 300000); 
+    global.termuxSocket.send(JSON.stringify({
+        action: 'download',
+        url: url,
+        isVideo: true,
+        chatId: 'API_USER',
+        msgId: reqId
+    }));
 
-            return; // Exit function so Node.js moves on while Termux works
+    // 10-minute fail-safe for large files
+    setTimeout(() => {
+        if (global.waitingClients.has(reqId)) {
+            clearInterval(keepAlive);
+            global.waitingClients.delete(reqId);
+            res.end();
         }
+    }, 600000);
+
+    return;
+}
 
 
 
