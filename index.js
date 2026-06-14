@@ -2207,18 +2207,32 @@ app.get('/api/download', async (req, res) => {
     const reqId = 'req_' + Date.now();
     global.waitingClients = global.waitingClients || new Map();
 
-    // Fire headers immediately to prevent H12
-    res.writeHead(200, {
+    // DON'T write headers yet — just store a flag
+    let headersSent = false;
+    let keepAlive = null;
+
+    // Keep Heroku alive using a separate lightweight SSE-style ping
+    // This runs on a parallel endpoint so it doesn't touch the binary stream
+    const keepAliveRes = res;
+
+    // Send headers immediately (required to prevent H12)
+    keepAliveRes.writeHead(200, {
         'Content-Type': 'video/mp4',
         'Transfer-Encoding': 'chunked',
         'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no'  // Tells Heroku router: don't buffer, don't timeout
+        'X-Accel-Buffering': 'no'
     });
+    headersSent = true;
 
-    // Send periodic empty chunks to keep the TCP socket alive
-    const keepAlive = setInterval(() => {
-        try { res.write(Buffer.alloc(1, 0x20)); } catch(e) {}
-    }, 20000);
+    // Keep-alive using TCP-level socket ping instead of writing to response body
+    const socket = res.socket;
+    keepAlive = setInterval(() => {
+        try {
+            if (socket && !socket.destroyed) {
+                socket.setKeepAlive(true, 10000); // TCP keep-alive, no bytes in body
+            }
+        } catch(e) {}
+    }, 15000);
 
     global.waitingClients.set(reqId, { res, heartbeat: keepAlive });
 
@@ -2230,19 +2244,17 @@ app.get('/api/download', async (req, res) => {
         msgId: reqId
     }));
 
-    // 10-minute fail-safe for large files
+    // 10-minute fail-safe
     setTimeout(() => {
         if (global.waitingClients.has(reqId)) {
             clearInterval(keepAlive);
             global.waitingClients.delete(reqId);
-            res.end();
+            try { res.end(); } catch(e) {}
         }
     }, 600000);
 
     return;
 }
-
-
 
                 // --- 3. FALLBACK ENGINE (IG, Twitter, Facebook, etc.) ---
         const videoPath = path.join(__dirname, `api_dl_${Date.now()}.mp4`);
