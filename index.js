@@ -2454,6 +2454,99 @@ bot.onText(/\/start/i, (msg) => {
 
 
 
+// --- AUDIO MANIPULATION: SLOW & REVERB ---
+// Usage: Reply to an audio with /slow 1, /slow 2, or /slow 3
+bot.onText(/^\/slow(?:\s+(\d+))?$/i, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
+
+    if (!msg.reply_to_message || (!msg.reply_to_message.audio && !msg.reply_to_message.voice)) {
+        return bot.sendMessage(chatId, '[ERROR] Please reply to an audio or voice message with /slow 1, /slow 2, or /slow 3');
+    }
+
+    // Define speed presets
+    const level = parseInt(match[1]) || 1;
+    let speed = 0.85; // Default Slow
+    if (level === 2) speed = 0.70; // Extreme Slow
+    if (level >= 3) speed = 0.55; // Extremely Slow
+
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Processing Audio Engine...\nApplying Level ${level} Slow + Reverb...`);
+
+    try {
+        const fileId = msg.reply_to_message.audio ? msg.reply_to_message.audio.file_id : msg.reply_to_message.voice.file_id;
+        const fileLink = await bot.getFileLink(fileId);
+
+        const inputPath = path.join(__dirname, `audio_in_${Date.now()}.mp3`);
+        const outputPath = path.join(__dirname, `audio_out_${Date.now()}.mp3`);
+
+        // 1. Download target audio to RAM
+        const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
+        fs.writeFileSync(inputPath, Buffer.from(response.data, 'binary'));
+
+        // 2. FFmpeg Engine: atempo (speed) + aecho (reverb)
+        // aecho format: in_gain:out_gain:delays:decays
+        const ffmpegCmd = `ffmpeg -i ${inputPath} -filter:a "atempo=${speed},aecho=0.8:0.88:60:0.4" -y ${outputPath}`;
+        await execPromise(ffmpegCmd);
+
+        // 3. Deliver Processed Audio
+        await bot.sendAudio(chatId, outputPath, {
+            caption: `[SUCCESS] Manipulated Audio\nSpeed: Level ${level} | Reverb: Active`
+        });
+
+        // 4. Memory Cleanup
+        fs.unlinkSync(inputPath);
+        fs.unlinkSync(outputPath);
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+
+    } catch (err) {
+        bot.editMessageText(`[ERROR] Audio processing failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+    }
+});
+
+// --- AUDIO MANIPULATION: INSTRUMENTAL EXTRACTION ---
+// Usage: Reply to an audio with /instrumental
+bot.onText(/^\/instrumental$/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
+
+    if (!msg.reply_to_message || (!msg.reply_to_message.audio && !msg.reply_to_message.voice)) {
+        return bot.sendMessage(chatId, '[ERROR] Please reply to an audio track with /instrumental');
+    }
+
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Initiating Phase Cancellation to extract instrumental...`);
+
+    try {
+        const fileId = msg.reply_to_message.audio ? msg.reply_to_message.audio.file_id : msg.reply_to_message.voice.file_id;
+        const fileLink = await bot.getFileLink(fileId);
+
+        const inputPath = path.join(__dirname, `inst_in_${Date.now()}.mp3`);
+        const outputPath = path.join(__dirname, `inst_out_${Date.now()}.mp3`);
+
+        const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
+        fs.writeFileSync(inputPath, Buffer.from(response.data, 'binary'));
+
+        // FFmpeg Engine: Phase cancellation (Karaoke Effect)
+        // This removes center-panned audio (usually the main lead vocals) while keeping the wide stereo track (instruments)
+        const ffmpegCmd = `ffmpeg -i ${inputPath} -af "pan=stereo|c0=c0-c1|c1=c1-c0" -y ${outputPath}`;
+        await execPromise(ffmpegCmd);
+
+        await bot.sendAudio(chatId, outputPath, {
+            caption: `[SUCCESS] Center-panned vocals removed (Instrumental generated).`
+        });
+
+        fs.unlinkSync(inputPath);
+        fs.unlinkSync(outputPath);
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+
+    } catch (err) {
+        bot.editMessageText(`[ERROR] Instrumental extraction failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+    }
+});
+
+
+
 
         
 bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
