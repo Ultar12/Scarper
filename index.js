@@ -15,6 +15,7 @@ const puppeteer = require('puppeteer-extra');
 const QRCode = require('qrcode');
 const { remote } = require('webdriverio');
 const axios = require('axios');
+const { Spotify } = require('spdl');
 const cheerio = require('cheerio');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
@@ -2552,83 +2553,81 @@ bot.onText(/^\/instrumental$/i, async (msg) => {
 
 
 
-// --- SPOTIFY AUDIO EXTRACTION ENGINE ---
-// Usage: /spotify https://open.spotify.com/track/... OR /spotify Song Name
+// --- SPOTIFY DIRECT PREMIUM EXTRACTION ENGINE ---
+// Usage: /spotify https://open.spotify.com/track/...
 bot.onText(/^\/spotify\s+(.+)/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     const adminId = process.env.ADMIN_ID || '7710721646';
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
 
-    const query = match[1].trim();
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Analyzing Spotify request...`);
+    let url = match[1].trim();
+
+    // Direct extraction strictly requires a track link
+    if (!url.includes('spotify.com/track')) {
+        return bot.sendMessage(chatId, '[ERROR] Direct Premium Extraction requires a valid Spotify track link.');
+    }
+
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Authenticating with Spotify Premium via sp_dc...`);
 
     try {
-        let searchTarget = query;
-        let trackName = query;
+        // --- 1. PREMIUM AUTHENTICATION ---
+        // Put your premium sp_dc cookie here
+        const SP_DC_COOKIE = 'AQC68XGBu6ZMD4RODpj5MkJnqMPjLifj0VeL43TjxHB24qqW0yBMP6gs5WTvZHvAqq8SoARv-Ha4VaTUym_xxSFsb-3z2FBheg1R8Nq1MVsRsIsbSIriOrU73P1VFR6MlYwRV_r4x56rO8wOWPFtjWy-neY6SyOB8r-OihVN0BmDOSkvMyafv6vO8d5qhyfYx9OxJNcmz2hM36M023g'; 
 
-        // 1. SMART URL PARSER (Extract metadata if it's a Spotify link)
-        if (query.includes('spotify.com/track')) {
-            await bot.editMessageText(`[SYSTEM] Spotify link detected. Extracting track metadata...`, { chat_id: chatId, message_id: statusMsg.message_id });
-            
-            try {
-                // Use Spotify's public oEmbed API (No API Key Required)
-                const oembedRes = await axios.get(`https://open.spotify.com/oembed?url=${encodeURIComponent(query)}`);
-                if (oembedRes.data && oembedRes.data.title) {
-                    trackName = `${oembedRes.data.title} - ${oembedRes.data.author_name}`;
-                    // Append "audio" to ensure we get the official audio, not a music video
-                    searchTarget = `${oembedRes.data.title} ${oembedRes.data.author_name} audio`; 
-                }
-            } catch (e) {
-                throw new Error("Failed to extract metadata. Ensure it's a valid public Spotify track link.");
-            }
-        } else {
-            searchTarget = `${query} audio`;
+        if (SP_DC_COOKIE === 'YOUR_SP_DC_COOKIE_HERE') {
+            throw new Error("You must insert your sp_dc cookie into the code first.");
         }
 
-        await bot.editMessageText(`[SYSTEM] Routing "${trackName}" to Audio Extraction Engine...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        const client = await Spotify.create({ cookie: `sp_dc=${SP_DC_COOKIE}` });
 
-        const outputPath = path.join(__dirname, `spotify_${Date.now()}.mp3`);
+        await bot.editMessageText(`[SYSTEM] Premium Authentication verified.\nExtracting raw high-fidelity audio from Spotify servers...`, { chat_id: chatId, message_id: statusMsg.message_id });
 
-      // 2. AUDIO DOWNLOAD & CONVERSION (via yt-dlp)
-        await youtubedl(`ytsearch1:${searchTarget}`, {
-            output: outputPath,
-            format: 'bestaudio/best', // <-- THIS FIXES THE FORMAT CRASH
-            extractAudio: true,
-            audioFormat: 'mp3',
-            audioQuality: 0, 
-            noPlaylist: true,
-            noWarnings: true,
-            cookies: cookiePath, 
-            jsRuntimes: 'nodejs' 
-        });
+        const oggPath = path.join(__dirname, `spotify_raw_${Date.now()}.ogg`);
+        const mp3Path = path.join(__dirname, `spotify_final_${Date.now()}.mp3`);
 
-
-
-        if (!fs.existsSync(outputPath)) {
-            throw new Error("Engine failed to locate or convert the audio track.");
-        }
-
-        // 3. DELIVERY
-        await bot.editMessageText(`[SYSTEM] Download complete. Uploading MP3 to Telegram...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        // --- 2. RAW AUDIO EXTRACTION ---
+        const stream = await Promise.resolve(client.download(url));
+        const writeStream = fs.createWriteStream(oggPath);
         
-        await bot.sendAudio(chatId, outputPath, {
-            caption: `[SUCCESS] Spotify Extraction\nTrack: ${trackName}`
+        stream.pipe(writeStream);
+
+        // Wait for the download to finish
+        await new Promise((resolve, reject) => {
+            writeStream.on('finish', resolve);
+            writeStream.on('error', reject);
         });
 
-        // 4. MEMORY CLEANUP
-        fs.unlinkSync(outputPath);
-        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+        await bot.editMessageText(`[SYSTEM] Raw OGG extraction complete.\nConverting to Telegram-compatible MP3...`, { chat_id: chatId, message_id: statusMsg.message_id });
+
+        // --- 3. CONVERSION (OGG -> MP3) ---
+        // Converts to a high-quality (VBR 2) MP3 using FFmpeg
+        const ffmpegCmd = `ffmpeg -i ${oggPath} -c:a libmp3lame -q:a 2 -y ${mp3Path}`;
+        await execPromise(ffmpegCmd);
+
+        // --- 4. DELIVERY ---
+        await bot.editMessageText(`[SYSTEM] Encoding complete. Uploading to Telegram...`, { chat_id: chatId, message_id: statusMsg.message_id });
+
+        await bot.sendAudio(chatId, mp3Path, {
+            caption: `[SUCCESS] Direct Spotify Premium Extraction`
+        });
+
+        // --- 5. MEMORY CLEANUP ---
+        fs.unlinkSync(oggPath);
+        fs.unlinkSync(mp3Path);
+        bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
 
     } catch (err) {
-        bot.editMessageText(`[ERROR] Spotify Engine failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+        bot.editMessageText(`[ERROR] Premium Spotify Engine failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
         
         // Failsafe cleanup in case of crash during conversion
-        const files = fs.readdirSync(__dirname);
-        for (const file of files) {
-            if (file.startsWith('spotify_') && file.endsWith('.mp3')) {
-                try { fs.unlinkSync(path.join(__dirname, file)); } catch(e){}
+        try {
+            const files = fs.readdirSync(__dirname);
+            for (const file of files) {
+                if (file.startsWith('spotify_') && (file.endsWith('.ogg') || file.endsWith('.mp3'))) {
+                    fs.unlinkSync(path.join(__dirname, file));
+                }
             }
-        }
+        } catch(e) {}
     }
 });
 
