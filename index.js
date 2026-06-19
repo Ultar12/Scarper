@@ -2485,10 +2485,11 @@ bot.onText(/^\/slow(?:\s+(\d+))?$/i, async (msg, match) => {
         fs.writeFileSync(inputPath, Buffer.from(response.data, 'binary'));
 
         // 2. FFmpeg Engine: atempo (speed) + aecho (reverb)
-        // aecho format: in_gain:out_gain:delays:decays
-        // Added -vn right after the input file
-        const ffmpegCmd = `ffmpeg -i ${inputPath} -vn -filter:a "atempo=${speed},aecho=0.8:0.88:60:0.4" -y ${outputPath}`;
 
+       // FFmpeg Engine: atempo (speed) + bass (g=gain, f=frequency) + aecho (reverb) + volume (anti-clip)
+        const ffmpegCmd = `ffmpeg -i ${inputPath} -vn -filter:a "atempo=${speed},bass=g=15:f=50,aecho=0.8:0.88:60:0.4,volume=0.8" -y ${outputPath}`;
+
+        
         await execPromise(ffmpegCmd);
 
         // 3. Deliver Processed Audio
@@ -2588,17 +2589,19 @@ bot.onText(/^\/spotify\s+(.+)/i, async (msg, match) => {
 
         const outputPath = path.join(__dirname, `spotify_${Date.now()}.mp3`);
 
-     // 2. AUDIO DOWNLOAD & CONVERSION (via yt-dlp)
+      // 2. AUDIO DOWNLOAD & CONVERSION (via yt-dlp)
         await youtubedl(`ytsearch1:${searchTarget}`, {
             output: outputPath,
+            format: 'bestaudio/best', // <-- THIS FIXES THE FORMAT CRASH
             extractAudio: true,
             audioFormat: 'mp3',
             audioQuality: 0, 
             noPlaylist: true,
             noWarnings: true,
-            cookies: cookiePath, // <-- THIS BYPASSES THE BOT CHECK
-            jsRuntimes: 'nodejs' // Matches your standard /dl setup
+            cookies: cookiePath, 
+            jsRuntimes: 'nodejs' 
         });
+
 
 
         if (!fs.existsSync(outputPath)) {
