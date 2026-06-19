@@ -19,6 +19,7 @@
     "puppeteer-core": "^25.0.4",
     "puppeteer-screen-recorder": "^3.0.3",
     "qrcode": "^1.5.3",
+    "spdl": "^1.1.0",
     "cheerio": "^1.0.0",
     "sharp": "^0.33.3",
     "libphonenumber-js": "^1.11.0",
