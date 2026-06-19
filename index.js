@@ -2486,8 +2486,8 @@ bot.onText(/^\/slow(?:\s+(\d+))?$/i, async (msg, match) => {
 
         // 2. FFmpeg Engine: atempo (speed) + aecho (reverb)
 
-       // FFmpeg Engine: atempo (speed) + bass (g=gain, f=frequency) + aecho (reverb) + volume (anti-clip)
-        const ffmpegCmd = `ffmpeg -i ${inputPath} -vn -filter:a "atempo=${speed},bass=g=15:f=50,aecho=0.8:0.88:60:0.4,volume=0.8" -y ${outputPath}`;
+     // FFmpeg Engine: atempo (speed) + bass (g=gain, f=frequency) + volume (anti-clip)
+        const ffmpegCmd = `ffmpeg -i ${inputPath} -vn -filter:a "atempo=${speed},bass=g=15:f=50,volume=0.8" -y ${outputPath}`;
 
         
         await execPromise(ffmpegCmd);
