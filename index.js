@@ -2486,7 +2486,9 @@ bot.onText(/^\/slow(?:\s+(\d+))?$/i, async (msg, match) => {
 
         // 2. FFmpeg Engine: atempo (speed) + aecho (reverb)
         // aecho format: in_gain:out_gain:delays:decays
-        const ffmpegCmd = `ffmpeg -i ${inputPath} -filter:a "atempo=${speed},aecho=0.8:0.88:60:0.4" -y ${outputPath}`;
+        // Added -vn right after the input file
+        const ffmpegCmd = `ffmpeg -i ${inputPath} -vn -filter:a "atempo=${speed},aecho=0.8:0.88:60:0.4" -y ${outputPath}`;
+
         await execPromise(ffmpegCmd);
 
         // 3. Deliver Processed Audio
@@ -2529,7 +2531,9 @@ bot.onText(/^\/instrumental$/i, async (msg) => {
 
         // FFmpeg Engine: Phase cancellation (Karaoke Effect)
         // This removes center-panned audio (usually the main lead vocals) while keeping the wide stereo track (instruments)
-        const ffmpegCmd = `ffmpeg -i ${inputPath} -af "pan=stereo|c0=c0-c1|c1=c1-c0" -y ${outputPath}`;
+        // Added -vn here as well to prevent the same crash
+       const ffmpegCmd = `ffmpeg -i ${inputPath} -vn -af "pan=stereo|c0=c0-c1|c1=c1-c0" -y ${outputPath}`;
+
         await execPromise(ffmpegCmd);
 
         await bot.sendAudio(chatId, outputPath, {
@@ -2584,15 +2588,18 @@ bot.onText(/^\/spotify\s+(.+)/i, async (msg, match) => {
 
         const outputPath = path.join(__dirname, `spotify_${Date.now()}.mp3`);
 
-        // 2. AUDIO DOWNLOAD & CONVERSION (via yt-dlp)
+     // 2. AUDIO DOWNLOAD & CONVERSION (via yt-dlp)
         await youtubedl(`ytsearch1:${searchTarget}`, {
             output: outputPath,
             extractAudio: true,
             audioFormat: 'mp3',
-            audioQuality: 0, // 0 is best quality
+            audioQuality: 0, 
             noPlaylist: true,
-            noWarnings: true
+            noWarnings: true,
+            cookies: cookiePath, // <-- THIS BYPASSES THE BOT CHECK
+            jsRuntimes: 'nodejs' // Matches your standard /dl setup
         });
+
 
         if (!fs.existsSync(outputPath)) {
             throw new Error("Engine failed to locate or convert the audio track.");
