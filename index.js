@@ -2547,6 +2547,84 @@ bot.onText(/^\/instrumental$/i, async (msg) => {
 
 
 
+// --- SPOTIFY AUDIO EXTRACTION ENGINE ---
+// Usage: /spotify https://open.spotify.com/track/... OR /spotify Song Name
+bot.onText(/^\/spotify\s+(.+)/i, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
+
+    const query = match[1].trim();
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Analyzing Spotify request...`);
+
+    try {
+        let searchTarget = query;
+        let trackName = query;
+
+        // 1. SMART URL PARSER (Extract metadata if it's a Spotify link)
+        if (query.includes('spotify.com/track')) {
+            await bot.editMessageText(`[SYSTEM] Spotify link detected. Extracting track metadata...`, { chat_id: chatId, message_id: statusMsg.message_id });
+            
+            try {
+                // Use Spotify's public oEmbed API (No API Key Required)
+                const oembedRes = await axios.get(`https://open.spotify.com/oembed?url=${encodeURIComponent(query)}`);
+                if (oembedRes.data && oembedRes.data.title) {
+                    trackName = `${oembedRes.data.title} - ${oembedRes.data.author_name}`;
+                    // Append "audio" to ensure we get the official audio, not a music video
+                    searchTarget = `${oembedRes.data.title} ${oembedRes.data.author_name} audio`; 
+                }
+            } catch (e) {
+                throw new Error("Failed to extract metadata. Ensure it's a valid public Spotify track link.");
+            }
+        } else {
+            searchTarget = `${query} audio`;
+        }
+
+        await bot.editMessageText(`[SYSTEM] Routing "${trackName}" to Audio Extraction Engine...`, { chat_id: chatId, message_id: statusMsg.message_id });
+
+        const outputPath = path.join(__dirname, `spotify_${Date.now()}.mp3`);
+
+        // 2. AUDIO DOWNLOAD & CONVERSION (via yt-dlp)
+        await youtubedl(`ytsearch1:${searchTarget}`, {
+            output: outputPath,
+            extractAudio: true,
+            audioFormat: 'mp3',
+            audioQuality: 0, // 0 is best quality
+            noPlaylist: true,
+            noWarnings: true
+        });
+
+        if (!fs.existsSync(outputPath)) {
+            throw new Error("Engine failed to locate or convert the audio track.");
+        }
+
+        // 3. DELIVERY
+        await bot.editMessageText(`[SYSTEM] Download complete. Uploading MP3 to Telegram...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        
+        await bot.sendAudio(chatId, outputPath, {
+            caption: `[SUCCESS] Spotify Extraction\nTrack: ${trackName}`
+        });
+
+        // 4. MEMORY CLEANUP
+        fs.unlinkSync(outputPath);
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+
+    } catch (err) {
+        bot.editMessageText(`[ERROR] Spotify Engine failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+        
+        // Failsafe cleanup in case of crash during conversion
+        const files = fs.readdirSync(__dirname);
+        for (const file of files) {
+            if (file.startsWith('spotify_') && file.endsWith('.mp3')) {
+                try { fs.unlinkSync(path.join(__dirname, file)); } catch(e){}
+            }
+        }
+    }
+});
+
+
+
+
 
         
 bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
