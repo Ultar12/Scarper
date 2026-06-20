@@ -15,7 +15,6 @@ const puppeteer = require('puppeteer-extra');
 const QRCode = require('qrcode');
 const { remote } = require('webdriverio');
 const axios = require('axios');
-const { Spotify } = require('spdl');
 const cheerio = require('cheerio');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
