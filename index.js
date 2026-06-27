@@ -1802,7 +1802,7 @@ async function pollRawNumPanel(acc) {
             await new Promise(r => setTimeout(r, 300));
         }
 
-        }
+        
 
         if (newMsgCount > 0) {
             console.log(`[RAW NP SYSTEM] [${name}] ${records.length} fetched | ${newMsgCount} new`);
