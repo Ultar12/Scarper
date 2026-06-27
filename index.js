@@ -1468,11 +1468,24 @@ const RAW_NP_COUNTRY_FLAGS = {
     "benin": "🇧🇯", "burkina faso": "🇧🇫", "niger": "🇳🇪", "chad": "🇹🇩"
 };
 
-// --- ISOLATED DATABASE INITIALIZATION ---
-// Uses a different table name so it doesn't mix with TimeSMS OTPs
+// --- ISOLATED DATABASE INITIALIZATION & RAM PRE-LOADER ---
+const rawNpMemCache = new Set(); // Ultra-fast RAM Cache
+
 pool.query(`CREATE TABLE IF NOT EXISTS raw_numberpanel_sent (id VARCHAR(255) PRIMARY KEY);`)
-    .then(() => console.log('[SYSTEM] Original NumberPanel DB Ready.'))
+    .then(async () => {
+        console.log('[SYSTEM] Original NumberPanel DB Ready.');
+        // PRE-LOADER: Fetch all previously sent OTPs from the DB into RAM immediately on boot.
+        // This completely prevents the bot from spamming old messages when Heroku restarts!
+        try {
+            const res = await pool.query('SELECT id FROM raw_numberpanel_sent');
+            res.rows.forEach(row => rawNpMemCache.add(row.id));
+            console.log(`[SYSTEM] Loaded ${rawNpMemCache.size} previous OTPs into RAM. Spam protection active.`);
+        } catch (err) {
+            console.error('[ERROR] Failed to load previous OTPs:', err.message);
+        }
+    })
     .catch(console.error);
+
 
 async function isRawNpSeen(key) {
     try {
@@ -1766,17 +1779,29 @@ async function pollRawNumPanel(acc) {
             return;
         }
 
-        let newMsgCount = 0;
+       let newMsgCount = 0;
 
         for (let sms of records) {
-            const key = `${sms.num}|${sms.msg.substring(0, 80)}`;
-            if (!(await isRawNpSeen(key))) {
-                if (await sendRawNumPanelMessage(sms, name, topic_id)) {
-                    await markRawNpSeen(key);
-                    newMsgCount++;
-                }
-                await new Promise(r => setTimeout(r, 300));
+            // 1. Extract the actual OTP code for a bulletproof key (ignores timestamps/spaces)
+            const code = extractRawOTP(sms.msg) || sms.msg.substring(0, 30);
+            const key = `${sms.num}_${code}`;
+
+            // 2. INSTANT CHECK: Is it in the RAM cache? (Survives restarts because of the pre-loader)
+            if (rawNpMemCache.has(key)) continue;
+
+            // 3. LOCK IT: Immediately add to RAM so the loop can't double-fire it
+            rawNpMemCache.add(key);
+
+            // 4. SEND IT
+            if (await sendRawNumPanelMessage(sms, name, topic_id)) {
+                // 5. PERSIST IT: Save to the Postgres database so it survives the next server restart
+                await markRawNpSeen(key);
+                newMsgCount++;
             }
+            
+            await new Promise(r => setTimeout(r, 300));
+        }
+
         }
 
         if (newMsgCount > 0) {
