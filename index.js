@@ -1699,10 +1699,6 @@ async function sendRawNumPanelMessage(sms, name, topicId) {
             const regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
             cleanCountry = regionNames.of(parsed.country);
             
-            // SMART PREFIX STRIPPER (e.g. removes 58 from 58421234567)
-            if (parsed.countryCallingCode && localNumber.startsWith(parsed.countryCallingCode)) {
-                localNumber = localNumber.substring(parsed.countryCallingCode.length);
-            }
         } else {
             cleanCountry = rawCountry.split(' ')[0];
         }
@@ -1710,8 +1706,8 @@ async function sendRawNumPanelMessage(sms, name, topicId) {
         cleanCountry = rawCountry.split(' ')[0];
     }
 
-    const maskedNumber = localNumber.substring(0, 4) + '•••' + localNumber.slice(-4);
-
+  const maskedNumber = localNumber.substring(0, 3) + '•••' + localNumber.slice(-4);
+    
     let platform = sms.svc;
     if (/^\d+$/.test(platform)) {
         platform = 'WhatsApp';
