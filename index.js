@@ -3242,13 +3242,13 @@ bot.on('callback_query', async (queryObj) => {
     await bot.editMessageText(`[SYSTEM] Searching YouTube for: "${searchQuery}"...`, { chat_id: chatId, message_id: msgId });
 
     try {
-        const ytsr = require('ytsr');
-        const ytdl = require('@distube/ytdl-core');
+        const yts = require('yt-search');
+        const play = require('play-dl');
 
-        // 1. Search YouTube
-        const searchResults = await ytsr(searchQuery, { limit: 1 });
-        const firstVideo = searchResults.items.find(i => i.type === 'video');
-        if (!firstVideo) throw new Error('No results found for that query.');
+        // 1. Search (yt-search works with current YouTube structure)
+        const searchResult = await yts(searchQuery);
+        const firstVideo = searchResult.videos[0];
+        if (!firstVideo) throw new Error('No results found.');
 
         const videoUrl = firstVideo.url;
         const title = firstVideo.title || 'download';
@@ -3257,21 +3257,23 @@ bot.on('callback_query', async (queryObj) => {
         await bot.editMessageText(`[SYSTEM] Found: "${title}"\nDownloading ${isVideo ? 'video' : 'audio'}...`, { chat_id: chatId, message_id: msgId });
 
         if (isVideo) {
-            // Video: download and send as MP4
             const outputPath = path.join(__dirname, `play_vid_${Date.now()}.mp4`);
-            const writeStream = fs.createWriteStream(outputPath);
+
+            // play-dl bypasses bot detection better than ytdl-core on server IPs
+            const stream = await play.stream(videoUrl, { quality: 2 });
 
             await new Promise((resolve, reject) => {
-                ytdl(videoUrl, { quality: 'highestvideo', filter: 'videoandaudio' })
-                    .pipe(writeStream)
-                    .on('finish', resolve)
-                    .on('error', reject);
+                const { spawn } = require('child_process');
+                const ff = spawn('ffmpeg', ['-i', 'pipe:0', '-c:v', 'copy', '-c:a', 'aac', '-y', outputPath]);
+                stream.stream.pipe(ff.stdin);
+                ff.on('close', (code) => code === 0 ? resolve() : reject(new Error(`ffmpeg exited with code ${code}`)));
+                ff.on('error', reject);
             });
 
             const stats = fs.statSync(outputPath);
             if (stats.size > 49 * 1024 * 1024) {
                 fs.unlinkSync(outputPath);
-                throw new Error(`File too large for Telegram (${(stats.size / 1024 / 1024).toFixed(1)}MB).`);
+                throw new Error(`File too large (${(stats.size / 1024 / 1024).toFixed(1)}MB).`);
             }
 
             await bot.deleteMessage(chatId, msgId).catch(() => {});
@@ -3279,27 +3281,24 @@ bot.on('callback_query', async (queryObj) => {
             fs.unlinkSync(outputPath);
 
         } else {
-            // Audio: download audio-only and send as MP3
-            const rawPath = path.join(__dirname, `play_raw_${Date.now()}.webm`);
+            const rawPath = path.join(__dirname, `play_raw_${Date.now()}.opus`);
             const mp3Path = path.join(__dirname, `play_audio_${Date.now()}.mp3`);
+
+            // quality: 0 = audio only stream
+            const stream = await play.stream(videoUrl, { quality: 0 });
             const writeStream = fs.createWriteStream(rawPath);
 
             await new Promise((resolve, reject) => {
-                ytdl(videoUrl, { quality: 'highestaudio', filter: 'audioonly' })
-                    .pipe(writeStream)
+                stream.stream.pipe(writeStream)
                     .on('finish', resolve)
                     .on('error', reject);
             });
 
-            // Convert to MP3 via ffmpeg
             await execPromise(`ffmpeg -i "${rawPath}" -vn -codec:a libmp3lame -q:a 2 -y "${mp3Path}"`);
             fs.unlinkSync(rawPath);
 
             await bot.deleteMessage(chatId, msgId).catch(() => {});
-            await bot.sendAudio(chatId, mp3Path, {
-                caption: `🎵 ${title}`,
-                title: safeTitle
-            });
+            await bot.sendAudio(chatId, mp3Path, { caption: `🎵 ${title}`, title: safeTitle });
             fs.unlinkSync(mp3Path);
         }
 
