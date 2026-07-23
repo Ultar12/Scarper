@@ -3424,35 +3424,82 @@ bot.on('callback_query', async (queryObj) => {
 
              
           if (data.startsWith('action_play_')) {
-        const searchQuery = playCache[chatId];
-        if (!searchQuery) {
-            return bot.editMessageText(`[ERROR] Search memory expired. Please run the /play command again.`, { chat_id: chatId, message_id: msgId });
-        }
-
-        const isVideo = data === 'action_play_video';
-
-        // Check if your Termux phone has actively opened the WebSocket pipe
-        if (global.termuxSocket && global.termuxSocket.readyState === 1) { 
-            await bot.editMessageText(`[SYSTEM] Direct pipe secure. Routing extraction order to Termux Hardware...`, { chat_id: chatId, message_id: msgId });
-            
-            // Send the request down the open websocket connection to Termux instantly
-            global.termuxSocket.send(JSON.stringify({
-                action: 'download',
-                url: `ytsearch1:${searchQuery}`,
-                isVideo: isVideo,
-                chatId: chatId,
-                msgId: msgId
-            }));
-        } else {
-            await bot.editMessageText(`[ERROR] Termux Node is offline. Please run "node index.js" on your phone.`, { chat_id: chatId, message_id: msgId });
-        }
-
-        playCache[chatId] = null;
+    const searchQuery = playCache[chatId];
+    if (!searchQuery) {
+        return bot.editMessageText(`[ERROR] Search memory expired. Run /play again.`, { chat_id: chatId, message_id: msgId });
     }
-        
- 
-                
-});
+
+    const isVideo = data === 'action_play_video';
+    await bot.editMessageText(`[SYSTEM] Searching YouTube for: "${searchQuery}"...`, { chat_id: chatId, message_id: msgId });
+
+    try {
+        const ytsr = require('ytsr');
+        const ytdl = require('@distube/ytdl-core');
+
+        // 1. Search YouTube
+        const searchResults = await ytsr(searchQuery, { limit: 1 });
+        const firstVideo = searchResults.items.find(i => i.type === 'video');
+        if (!firstVideo) throw new Error('No results found for that query.');
+
+        const videoUrl = firstVideo.url;
+        const title = firstVideo.title || 'download';
+        const safeTitle = title.replace(/[^a-zA-Z0-9 ]/g, '').substring(0, 40);
+
+        await bot.editMessageText(`[SYSTEM] Found: "${title}"\nDownloading ${isVideo ? 'video' : 'audio'}...`, { chat_id: chatId, message_id: msgId });
+
+        if (isVideo) {
+            // Video: download and send as MP4
+            const outputPath = path.join(__dirname, `play_vid_${Date.now()}.mp4`);
+            const writeStream = fs.createWriteStream(outputPath);
+
+            await new Promise((resolve, reject) => {
+                ytdl(videoUrl, { quality: 'highestvideo', filter: 'videoandaudio' })
+                    .pipe(writeStream)
+                    .on('finish', resolve)
+                    .on('error', reject);
+            });
+
+            const stats = fs.statSync(outputPath);
+            if (stats.size > 49 * 1024 * 1024) {
+                fs.unlinkSync(outputPath);
+                throw new Error(`File too large for Telegram (${(stats.size / 1024 / 1024).toFixed(1)}MB).`);
+            }
+
+            await bot.deleteMessage(chatId, msgId).catch(() => {});
+            await bot.sendVideo(chatId, outputPath, { caption: `🎬 ${title}` });
+            fs.unlinkSync(outputPath);
+
+        } else {
+            // Audio: download audio-only and send as MP3
+            const rawPath = path.join(__dirname, `play_raw_${Date.now()}.webm`);
+            const mp3Path = path.join(__dirname, `play_audio_${Date.now()}.mp3`);
+            const writeStream = fs.createWriteStream(rawPath);
+
+            await new Promise((resolve, reject) => {
+                ytdl(videoUrl, { quality: 'highestaudio', filter: 'audioonly' })
+                    .pipe(writeStream)
+                    .on('finish', resolve)
+                    .on('error', reject);
+            });
+
+            // Convert to MP3 via ffmpeg
+            await execPromise(`ffmpeg -i "${rawPath}" -vn -codec:a libmp3lame -q:a 2 -y "${mp3Path}"`);
+            fs.unlinkSync(rawPath);
+
+            await bot.deleteMessage(chatId, msgId).catch(() => {});
+            await bot.sendAudio(chatId, mp3Path, {
+                caption: `🎵 ${title}`,
+                title: safeTitle
+            });
+            fs.unlinkSync(mp3Path);
+        }
+
+    } catch (err) {
+        bot.editMessageText(`[ERROR] ${err.message}`, { chat_id: chatId, message_id: msgId }).catch(() => {});
+    }
+
+    playCache[chatId] = null;
+}
 
 
 
