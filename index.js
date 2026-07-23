@@ -3240,6 +3240,7 @@ bot.on('callback_query', async (queryObj) => {
 
 
 
+    
     if (data.startsWith('action_play_')) {
     const searchQuery = playCache[chatId];
     if (!searchQuery) {
@@ -3247,55 +3248,101 @@ bot.on('callback_query', async (queryObj) => {
     }
 
     const isVideo = data === 'action_play_video';
-    await bot.editMessageText(`[SYSTEM] Searching YouTube...`, { chat_id: chatId, message_id: msgId });
+    await bot.editMessageText(`[SYSTEM] Searching for: "${searchQuery}"...`, { chat_id: chatId, message_id: msgId });
 
     try {
-        const yts = require('yt-search');
+        if (!isVideo) {
+            // --- AUDIO: SoundCloud (no bot detection) ---
+            const scdl = require('soundcloud-downloader').default;
 
-        // 1. Search for video ID
-        const searchResult = await yts(searchQuery);
-        const firstVideo = searchResult.videos[0];
-        if (!firstVideo) throw new Error('No results found.');
-
-        const videoId = firstVideo.videoId;
-        const title = firstVideo.title || 'download';
-        const safeTitle = title.replace(/[^a-zA-Z0-9 ]/g, '').substring(0, 40);
-
-        await bot.editMessageText(`[SYSTEM] Found: "${title}"\nFetching via Invidious...`, { chat_id: chatId, message_id: msgId });
-
-        // 2. Try Invidious instances until one works
-        const INVIDIOUS_INSTANCES = [
-            'https://inv.nadeko.net',
-            'https://invidious.nerdvpn.de',
-            'https://invidious.io.lol',
-            'https://iv.melmac.space',
-            'https://invidious.privacyredirect.com',
-            'https://yt.artemislena.eu',
-            'https://invidious.floss.social'
-        ];
-
-        let streamUrl = null;
-        let audioUrl = null;
-
-        for (const instance of INVIDIOUS_INSTANCES) {
+            // Auto-fetch client ID
+            let clientId;
             try {
-                const apiRes = await axios.get(`${instance}/api/v1/videos/${videoId}`, {
-                    timeout: 12000,
-                    headers: { 'User-Agent': 'Mozilla/5.0' }
-                });
+                clientId = await scdl.getClientID();
+            } catch (e) {
+                throw new Error('Could not get SoundCloud client ID.');
+            }
 
-                const formatStreams = apiRes.data.formatStreams || [];
-                const adaptiveFormats = apiRes.data.adaptiveFormats || [];
+            // Search SoundCloud
+            const searchRes = await scdl.search({
+                query: searchQuery,
+                resourceType: 'tracks',
+                limit: 1,
+                client_id: clientId
+            });
 
-                if (isVideo) {
-                    // Try combined MP4 stream first (easiest)
+            const tracks = searchRes?.collection;
+            if (!tracks || tracks.length === 0) throw new Error('No SoundCloud results found.');
+
+            const track = tracks[0];
+            const title = track.title || searchQuery;
+            const safeTitle = title.replace(/[^a-zA-Z0-9 ]/g, '').substring(0, 40);
+            const trackUrl = track.permalink_url;
+
+            await bot.editMessageText(`[SYSTEM] Found: "${title}"\nDownloading audio...`, { chat_id: chatId, message_id: msgId });
+
+            const rawPath = path.join(__dirname, `sc_raw_${Date.now()}.mp3`);
+            const mp3Path = path.join(__dirname, `sc_audio_${Date.now()}.mp3`);
+
+            // Download stream
+            const stream = await scdl.download(trackUrl, clientId);
+            const writer = fs.createWriteStream(rawPath);
+
+            await new Promise((resolve, reject) => {
+                stream.pipe(writer)
+                    .on('finish', resolve)
+                    .on('error', reject);
+            });
+
+            // Convert to clean MP3
+            await execPromise(`ffmpeg -i "${rawPath}" -vn -codec:a libmp3lame -q:a 2 -y "${mp3Path}"`);
+            if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath);
+
+            await bot.deleteMessage(chatId, msgId).catch(() => {});
+            await bot.sendAudio(chatId, mp3Path, {
+                caption: `🎵 ${title}\n(via SoundCloud)`,
+                title: safeTitle
+            });
+            if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
+
+        } else {
+            // --- VIDEO: Invidious ---
+            const yts = require('yt-search');
+
+            const searchResult = await yts(searchQuery);
+            const firstVideo = searchResult.videos[0];
+            if (!firstVideo) throw new Error('No video results found.');
+
+            const videoId = firstVideo.videoId;
+            const title = firstVideo.title || searchQuery;
+
+            await bot.editMessageText(`[SYSTEM] Found: "${title}"\nFetching video stream...`, { chat_id: chatId, message_id: msgId });
+
+            const INVIDIOUS_INSTANCES = [
+                'https://inv.nadeko.net',
+                'https://invidious.nerdvpn.de',
+                'https://invidious.io.lol',
+                'https://iv.melmac.space',
+                'https://yt.artemislena.eu',
+                'https://invidious.floss.social'
+            ];
+
+            let streamUrl = null;
+            let audioUrl = null;
+
+            for (const instance of INVIDIOUS_INSTANCES) {
+                try {
+                    const apiRes = await axios.get(`${instance}/api/v1/videos/${videoId}`, {
+                        timeout: 12000,
+                        headers: { 'User-Agent': 'Mozilla/5.0' }
+                    });
+
+                    const formatStreams = apiRes.data.formatStreams || [];
+                    const adaptiveFormats = apiRes.data.adaptiveFormats || [];
+
                     const combined = formatStreams.find(f => f.container === 'mp4');
-                    if (combined && combined.url) {
-                        streamUrl = combined.url;
-                        break;
-                    }
+                    if (combined?.url) { streamUrl = combined.url; break; }
 
-                    // Fallback: best separate video + audio
                     const vidFmt = adaptiveFormats
                         .filter(f => f.type?.includes('video/mp4'))
                         .sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0))[0];
@@ -3308,82 +3355,36 @@ bot.on('callback_query', async (queryObj) => {
                         audioUrl = audFmt.url;
                         break;
                     }
-                } else {
-                    // Audio only
-                    const audFmt = adaptiveFormats
-                        .filter(f => f.type?.includes('audio/mp4') || f.type?.includes('audio/webm'))
-                        .sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0))[0];
-
-                    if (audFmt?.url) {
-                        streamUrl = audFmt.url;
-                        break;
-                    }
+                } catch (e) {
+                    console.log(`[INVIDIOUS] ${instance} failed: ${e.message}`);
                 }
-            } catch (e) {
-                console.log(`[INVIDIOUS] ${instance} failed: ${e.message}`);
-                continue;
             }
-        }
 
-        if (!streamUrl) throw new Error('All Invidious instances failed. Try again later.');
+            if (!streamUrl) throw new Error('Could not fetch video stream. All sources failed.');
 
-        await bot.editMessageText(`[SYSTEM] Stream secured. Downloading...`, { chat_id: chatId, message_id: msgId });
+            await bot.editMessageText(`[SYSTEM] Downloading video...`, { chat_id: chatId, message_id: msgId });
 
-        if (isVideo) {
             const outputPath = path.join(__dirname, `play_vid_${Date.now()}.mp4`);
 
             if (audioUrl) {
-                // Merge separate video + audio with ffmpeg
                 await execPromise(`ffmpeg -i "${streamUrl}" -i "${audioUrl}" -c:v copy -c:a aac -shortest -y "${outputPath}"`);
             } else {
-                // Download combined stream directly
-                const videoRes = await axios({
-                    method: 'GET',
-                    url: streamUrl,
-                    responseType: 'stream',
-                    timeout: 180000
-                });
+                const videoRes = await axios({ method: 'GET', url: streamUrl, responseType: 'stream', timeout: 180000 });
                 const writer = fs.createWriteStream(outputPath);
                 await new Promise((resolve, reject) => {
-                    videoRes.data.pipe(writer)
-                        .on('finish', resolve)
-                        .on('error', reject);
+                    videoRes.data.pipe(writer).on('finish', resolve).on('error', reject);
                 });
             }
 
             const stats = fs.statSync(outputPath);
             if (stats.size > 49 * 1024 * 1024) {
                 fs.unlinkSync(outputPath);
-                throw new Error(`File too large (${(stats.size / 1024 / 1024).toFixed(1)}MB) for Telegram.`);
+                throw new Error(`File too large (${(stats.size / 1024 / 1024).toFixed(1)}MB).`);
             }
 
             await bot.deleteMessage(chatId, msgId).catch(() => {});
             await bot.sendVideo(chatId, outputPath, { caption: `🎬 ${title}` });
-            fs.unlinkSync(outputPath);
-
-        } else {
-            const rawPath = path.join(__dirname, `play_raw_${Date.now()}.webm`);
-            const mp3Path = path.join(__dirname, `play_audio_${Date.now()}.mp3`);
-
-            const audioRes = await axios({
-                method: 'GET',
-                url: streamUrl,
-                responseType: 'stream',
-                timeout: 180000
-            });
-            const writer = fs.createWriteStream(rawPath);
-            await new Promise((resolve, reject) => {
-                audioRes.data.pipe(writer)
-                    .on('finish', resolve)
-                    .on('error', reject);
-            });
-
-            await execPromise(`ffmpeg -i "${rawPath}" -vn -codec:a libmp3lame -q:a 2 -y "${mp3Path}"`);
-            if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath);
-
-            await bot.deleteMessage(chatId, msgId).catch(() => {});
-            await bot.sendAudio(chatId, mp3Path, { caption: `🎵 ${title}`, title: safeTitle });
-            if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
+            if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
         }
 
     } catch (err) {
