@@ -3232,48 +3232,89 @@ bot.on('callback_query', async (queryObj) => {
 
 
              
-          if (data.startsWith('action_play_')) {
+          iif (data.startsWith('action_play_')) {
     const searchQuery = playCache[chatId];
     if (!searchQuery) {
         return bot.editMessageText(`[ERROR] Search memory expired. Run /play again.`, { chat_id: chatId, message_id: msgId });
     }
 
     const isVideo = data === 'action_play_video';
-    await bot.editMessageText(`[SYSTEM] Searching YouTube for: "${searchQuery}"...`, { chat_id: chatId, message_id: msgId });
+    await bot.editMessageText(`[SYSTEM] Searching YouTube...`, { chat_id: chatId, message_id: msgId });
 
     try {
         const yts = require('yt-search');
-        const play = require('play-dl');
 
-        // 1. Search (yt-search works with current YouTube structure)
+        // 1. Search for video ID
         const searchResult = await yts(searchQuery);
         const firstVideo = searchResult.videos[0];
         if (!firstVideo) throw new Error('No results found.');
 
-        const videoUrl = firstVideo.url;
+        const videoId = firstVideo.videoId;
         const title = firstVideo.title || 'download';
         const safeTitle = title.replace(/[^a-zA-Z0-9 ]/g, '').substring(0, 40);
 
-        await bot.editMessageText(`[SYSTEM] Found: "${title}"\nDownloading ${isVideo ? 'video' : 'audio'}...`, { chat_id: chatId, message_id: msgId });
+        await bot.editMessageText(`[SYSTEM] Found: "${title}"\nFetching stream via Invidious...`, { chat_id: chatId, message_id: msgId });
+
+        // 2. Invidious instances (rotate if one fails)
+        const INVIDIOUS_INSTANCES = [
+            'https://inv.nadeko.net',
+            'https://invidious.nerdvpn.de',
+            'https://invidious.io.lol',
+            'https://iv.melmac.space',
+            'https://invidious.privacyredirect.com'
+        ];
+
+        let streamUrl = null;
+        let audioUrl = null;
+
+        for (const instance of INVIDIOUS_INSTANCES) {
+            try {
+                const apiRes = await axios.get(`${instance}/api/v1/videos/${videoId}`, { timeout: 12000 });
+                const formats = apiRes.data.adaptiveFormats || [];
+
+                if (isVideo) {
+                    // Best MP4 video with audio combined
+                    const combined = (apiRes.data.formatStreams || []).find(f => f.container === 'mp4');
+                    if (combined) { streamUrl = combined.url; break; }
+
+                    // Fallback: best separate video + audio
+                    const vidFmt = formats.filter(f => f.type?.includes('video/mp4')).sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0))[0];
+                    const audFmt = formats.filter(f => f.type?.includes('audio')).sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0))[0];
+                    if (vidFmt && audFmt) { streamUrl = vidFmt.url; audioUrl = audFmt.url; break; }
+                } else {
+                    const audFmt = formats.filter(f => f.type?.includes('audio/mp4') || f.type?.includes('audio/webm'))
+                        .sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0))[0];
+                    if (audFmt) { streamUrl = audFmt.url; break; }
+                }
+            } catch (e) {
+                console.log(`[INVIDIOUS] ${instance} failed: ${e.message}`);
+                continue;
+            }
+        }
+
+        if (!streamUrl) throw new Error('All Invidious instances failed. Try again later.');
+
+        await bot.editMessageText(`[SYSTEM] Stream secured. Downloading...`, { chat_id: chatId, message_id: msgId });
 
         if (isVideo) {
             const outputPath = path.join(__dirname, `play_vid_${Date.now()}.mp4`);
 
-            // play-dl bypasses bot detection better than ytdl-core on server IPs
-            const stream = await play.stream(videoUrl, { quality: 2 });
-
-            await new Promise((resolve, reject) => {
-                const { spawn } = require('child_process');
-                const ff = spawn('ffmpeg', ['-i', 'pipe:0', '-c:v', 'copy', '-c:a', 'aac', '-y', outputPath]);
-                stream.stream.pipe(ff.stdin);
-                ff.on('close', (code) => code === 0 ? resolve() : reject(new Error(`ffmpeg exited with code ${code}`)));
-                ff.on('error', reject);
-            });
+            if (audioUrl) {
+                // Merge separate video + audio tracks with ffmpeg
+                await execPromise(`ffmpeg -i "${streamUrl}" -i "${audioUrl}" -c:v copy -c:a aac -shortest -y "${outputPath}"`);
+            } else {
+                // Already combined stream, just download directly
+                const videoRes = await axios({ method: 'GET', url: streamUrl, responseType: 'stream', timeout: 120000 });
+                const writer = fs.createWriteStream(outputPath);
+                await new Promise((resolve, reject) => {
+                    videoRes.data.pipe(writer).on('finish', resolve).on('error', reject);
+                });
+            }
 
             const stats = fs.statSync(outputPath);
             if (stats.size > 49 * 1024 * 1024) {
                 fs.unlinkSync(outputPath);
-                throw new Error(`File too large (${(stats.size / 1024 / 1024).toFixed(1)}MB).`);
+                throw new Error(`File too large (${(stats.size / 1024 / 1024).toFixed(1)}MB) for Telegram.`);
             }
 
             await bot.deleteMessage(chatId, msgId).catch(() => {});
@@ -3281,17 +3322,13 @@ bot.on('callback_query', async (queryObj) => {
             fs.unlinkSync(outputPath);
 
         } else {
-            const rawPath = path.join(__dirname, `play_raw_${Date.now()}.opus`);
+            const rawPath = path.join(__dirname, `play_raw_${Date.now()}.webm`);
             const mp3Path = path.join(__dirname, `play_audio_${Date.now()}.mp3`);
 
-            // quality: 0 = audio only stream
-            const stream = await play.stream(videoUrl, { quality: 0 });
-            const writeStream = fs.createWriteStream(rawPath);
-
+            const audioRes = await axios({ method: 'GET', url: streamUrl, responseType: 'stream', timeout: 120000 });
+            const writer = fs.createWriteStream(rawPath);
             await new Promise((resolve, reject) => {
-                stream.stream.pipe(writeStream)
-                    .on('finish', resolve)
-                    .on('error', reject);
+                audioRes.data.pipe(writer).on('finish', resolve).on('error', reject);
             });
 
             await execPromise(`ffmpeg -i "${rawPath}" -vn -codec:a libmp3lame -q:a 2 -y "${mp3Path}"`);
