@@ -3240,6 +3240,8 @@ bot.on('callback_query', async (queryObj) => {
     
 
 
+
+
 if (data.startsWith('action_play_')) {
     const searchQuery = playCache[chatId];
     if (!searchQuery) {
@@ -3252,7 +3254,7 @@ if (data.startsWith('action_play_')) {
     try {
         if (!isVideo) {
             // =============================================
-            // AUDIO: SoundCloud (zero bot detection)
+            // AUDIO: SoundCloud via direct stream URL
             // =============================================
             const scdl = require('soundcloud-downloader').default;
 
@@ -3265,6 +3267,7 @@ if (data.startsWith('action_play_')) {
                 throw new Error('Could not connect to SoundCloud. Try again later.');
             }
 
+            // Search
             const searchRes = await scdl.search({
                 query: searchQuery,
                 resourceType: 'tracks',
@@ -3282,25 +3285,62 @@ if (data.startsWith('action_play_')) {
             const trackUrl = track.permalink_url;
             const duration = track.duration ? Math.round(track.duration / 1000) : 0;
 
-            await bot.editMessageText(`[SYSTEM] Found: "${title}" by ${artist}\nDownloading...`, { chat_id: chatId, message_id: msgId });
+            await bot.editMessageText(`[SYSTEM] Found: "${title}" by ${artist}\nFetching stream...`, { chat_id: chatId, message_id: msgId });
+
+            // Get full track info with transcodings
+            const trackInfo = await scdl.getInfo(trackUrl, clientId);
+            const transcodings = trackInfo.media?.transcodings || [];
+
+            if (transcodings.length === 0) throw new Error('No audio streams available for this track.');
 
             const mp3Path = path.join(__dirname, `sc_audio_${Date.now()}.mp3`);
 
-            // SoundCloud streams are already MP3 — pipe directly, no ffmpeg needed
-            const stream = await scdl.download(trackUrl, clientId);
-            const writer = fs.createWriteStream(mp3Path);
+            // --- STRATEGY 1: Progressive MP3 (direct download, best quality) ---
+            const progressiveMp3 = transcodings.find(t =>
+                t.format.protocol === 'progressive' &&
+                t.format.mime_type === 'audio/mpeg'
+            );
 
-            await new Promise((resolve, reject) => {
-                stream.pipe(writer)
-                    .on('finish', resolve)
-                    .on('error', reject);
-            });
+            if (progressiveMp3) {
+                await bot.editMessageText(`[SYSTEM] Progressive MP3 found. Downloading directly...`, { chat_id: chatId, message_id: msgId });
 
-            // Verify file before sending
+                const streamRes = await axios.get(`${progressiveMp3.url}?client_id=${clientId}`, { timeout: 15000 });
+                const directUrl = streamRes.data.url;
+
+                const audioRes = await axios({
+                    method: 'GET',
+                    url: directUrl,
+                    responseType: 'stream',
+                    timeout: 120000
+                });
+
+                const writer = fs.createWriteStream(mp3Path);
+                await new Promise((resolve, reject) => {
+                    audioRes.data.pipe(writer)
+                        .on('finish', resolve)
+                        .on('error', reject);
+                });
+
+            } else {
+                // --- STRATEGY 2: HLS via ffmpeg (handles m3u8 natively) ---
+                const hlsTranscoding = transcodings.find(t => t.format.protocol === 'hls');
+                if (!hlsTranscoding) throw new Error('No compatible audio stream found for this track.');
+
+                await bot.editMessageText(`[SYSTEM] HLS stream found. Converting to MP3...`, { chat_id: chatId, message_id: msgId });
+
+                // Get the actual m3u8 URL
+                const streamRes = await axios.get(`${hlsTranscoding.url}?client_id=${clientId}`, { timeout: 15000 });
+                const m3u8Url = streamRes.data.url;
+
+                // ffmpeg handles m3u8 natively — no piping needed
+                await execPromise(`ffmpeg -y -i "${m3u8Url}" -vn -codec:a libmp3lame -q:a 2 "${mp3Path}"`);
+            }
+
+            // Verify file
             const stats = fs.statSync(mp3Path);
-            if (stats.size < 1000) {
+            if (stats.size < 5000) {
                 if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
-                throw new Error('Downloaded file is empty or corrupt. Try again.');
+                throw new Error('Download failed — file is empty or corrupt.');
             }
 
             await bot.deleteMessage(chatId, msgId).catch(() => {});
@@ -3314,7 +3354,7 @@ if (data.startsWith('action_play_')) {
 
         } else {
             // =============================================
-            // VIDEO: Invidious (YouTube proxy, no auth)
+            // VIDEO: Invidious (YouTube proxy)
             // =============================================
             const yts = require('yt-search');
 
@@ -3353,7 +3393,7 @@ if (data.startsWith('action_play_')) {
                     const formatStreams = apiRes.data.formatStreams || [];
                     const adaptiveFormats = apiRes.data.adaptiveFormats || [];
 
-                    // Try combined MP4 stream first (best quality, single file)
+                    // Try combined MP4 first
                     const combined = formatStreams.find(f => f.container === 'mp4');
                     if (combined?.url) {
                         streamUrl = combined.url;
@@ -3361,11 +3401,10 @@ if (data.startsWith('action_play_')) {
                         break;
                     }
 
-                    // Fallback: best separate video + audio tracks
+                    // Separate video + audio
                     const vidFmt = adaptiveFormats
                         .filter(f => f.type?.includes('video/mp4'))
                         .sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0))[0];
-
                     const audFmt = adaptiveFormats
                         .filter(f => f.type?.includes('audio'))
                         .sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0))[0];
@@ -3385,15 +3424,15 @@ if (data.startsWith('action_play_')) {
 
             if (!streamUrl) throw new Error('All video sources failed. Try again later.');
 
-            await bot.editMessageText(`[SYSTEM] Stream secured from ${usedInstance?.replace('https://', '')}.\nDownloading video...`, { chat_id: chatId, message_id: msgId });
+            await bot.editMessageText(`[SYSTEM] Stream from ${usedInstance?.replace('https://', '')}.\nDownloading video...`, { chat_id: chatId, message_id: msgId });
 
             const outputPath = path.join(__dirname, `play_vid_${Date.now()}.mp4`);
 
             if (audioUrl) {
-                // Merge separate video + audio with ffmpeg
-                await execPromise(`ffmpeg -i "${streamUrl}" -i "${audioUrl}" -c:v copy -c:a aac -shortest -y "${outputPath}"`);
+                // Merge video + audio
+                await execPromise(`ffmpeg -y -i "${streamUrl}" -i "${audioUrl}" -c:v copy -c:a aac -shortest "${outputPath}"`);
             } else {
-                // Download combined stream directly
+                // Combined stream — download directly
                 const videoRes = await axios({
                     method: 'GET',
                     url: streamUrl,
@@ -3431,6 +3470,7 @@ if (data.startsWith('action_play_')) {
 
     playCache[chatId] = null;
 }
+
 
     
 });
