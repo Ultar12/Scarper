@@ -3310,7 +3310,7 @@ bot.on('callback_query', async (queryObj) => {
     playCache[chatId] = null;
 }
 
-}
+});
 
 
 
