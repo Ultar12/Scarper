@@ -1734,45 +1734,191 @@ app.post('/api/raganork-hook', async (req, res) => {
 
 global.waitingClients = new Map();
 
-app.post('/api/play-hook', (req, res) => {
+app.post('/api/play-hook', async (req, res) => {
     const { query, isVideo } = req.body;
-    const msgId = Date.now().toString();
 
-    if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
-        return res.status(503).json({ error: "Termux disconnected." });
+    if (!query) {
+        return res.status(400).json({ error: "Missing query." });
     }
 
-    // Tell Termux to start the work
-    global.termuxSocket.send(JSON.stringify({
-        action: 'download',
-        url: `ytsearch1:${query}`,
-        isVideo: isVideo,
-        chatId: 'API_USER',
-        msgId: msgId
-    }));
+    if (isVideo) {
+        const msgId = Date.now().toString();
 
-    // Start the invisible heartbeat
-    res.setHeader('Content-Type', isVideo ? 'video/mp4' : 'audio/mpeg');
-    res.setHeader('Transfer-Encoding', 'chunked');
-
-    const heartbeat = setInterval(() => {
-        // This keeps the Heroku connection active without corrupting binary data
-        res.write(' '); 
-    }, 15000);
-
-    global.waitingClients.set(msgId, { res, heartbeat });
-
-    // 2-minute absolute fail-safe
-    setTimeout(() => {
-        if (global.waitingClients.has(msgId)) {
-            clearInterval(heartbeat);
-            const client = global.waitingClients.get(msgId);
-            client.res.end();
-            global.waitingClients.delete(msgId);
+        if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
+            return res.status(503).json({ error: "Termux disconnected." });
         }
-    }, 120000); 
-});
 
+        global.termuxSocket.send(JSON.stringify({
+            action: 'download',
+            url: `ytsearch1:${query}`,
+            isVideo: true,
+            chatId: 'API_USER',
+            msgId: msgId
+        }));
+
+        res.setHeader('Content-Type', 'video/mp4');
+        res.setHeader('Transfer-Encoding', 'chunked');
+
+        const heartbeat = setInterval(() => {
+            res.write(' ');
+        }, 15000);
+
+        global.waitingClients.set(msgId, { res, heartbeat });
+
+        setTimeout(() => {
+            if (global.waitingClients.has(msgId)) {
+                clearInterval(heartbeat);
+                const client = global.waitingClients.get(msgId);
+                client.res.end();
+                global.waitingClients.delete(msgId);
+            }
+        }, 120000);
+
+        return;
+    }
+
+    // =============================================
+    // AUDIO ONLY: SoundCloud with fallback loop
+    // =============================================
+    try {
+        const scdl = require('soundcloud-downloader').default;
+
+        let clientId;
+        try {
+            clientId = await scdl.getClientID();
+        } catch (e) {
+            return res.status(503).json({ error: 'Could not connect to SoundCloud.' });
+        }
+
+        const searchRes = await scdl.search({
+            query: query,
+            resourceType: 'tracks',
+            limit: 5,
+            client_id: clientId
+        });
+
+        const tracks = searchRes?.collection;
+        if (!tracks || tracks.length === 0) {
+            return res.status(404).json({ error: 'No results found on SoundCloud.' });
+        }
+
+        let lastError = null;
+
+        for (const track of tracks) {
+            try {
+                const trackUrl = track.permalink_url;
+
+                // Fresh client ID right before each stream attempt
+                const freshClientId = await scdl.getClientID();
+                const trackInfo = await scdl.getInfo(trackUrl, freshClientId);
+                const transcodings = trackInfo.media?.transcodings || [];
+
+                if (transcodings.length === 0) {
+                    lastError = 'No audio streams available.';
+                    continue;
+                }
+
+                const mp3Path = path.join(__dirname, `api_audio_${Date.now()}.mp3`);
+
+                const progressiveMp3 = transcodings.find(t =>
+                    t.format.protocol === 'progressive' &&
+                    t.format.mime_type === 'audio/mpeg'
+                );
+
+                if (progressiveMp3) {
+                    const streamRes = await axios.get(
+                        `${progressiveMp3.url}?client_id=${freshClientId}`,
+                        { timeout: 15000, validateStatus: s => s < 500 }
+                    );
+
+                    if (streamRes.status === 404 || !streamRes.data?.url) {
+                        lastError = 'Stream URL expired (404).';
+                        continue;
+                    }
+
+                    const audioRes = await axios({
+                        method: 'GET',
+                        url: streamRes.data.url,
+                        responseType: 'stream',
+                        timeout: 120000
+                    });
+
+                    const writer = fs.createWriteStream(mp3Path);
+                    await new Promise((resolve, reject) => {
+                        audioRes.data.pipe(writer)
+                            .on('finish', resolve)
+                            .on('error', reject);
+                    });
+
+                } else {
+                    const hlsTranscoding = transcodings.find(t => t.format.protocol === 'hls');
+                    if (!hlsTranscoding) {
+                        lastError = 'No compatible stream found.';
+                        continue;
+                    }
+
+                    const streamRes = await axios.get(
+                        `${hlsTranscoding.url}?client_id=${freshClientId}`,
+                        { timeout: 15000, validateStatus: s => s < 500 }
+                    );
+
+                    if (streamRes.status === 404 || !streamRes.data?.url) {
+                        lastError = 'HLS URL expired (404).';
+                        continue;
+                    }
+
+                    await execPromise(
+                        `ffmpeg -y -i "${streamRes.data.url}" -vn -codec:a libmp3lame -q:a 2 "${mp3Path}"`
+                    );
+                }
+
+                // Verify file isn't empty
+                const stats = fs.statSync(mp3Path);
+                if (stats.size < 5000) {
+                    if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
+                    lastError = 'Downloaded file was empty.';
+                    continue;
+                }
+
+                // Stream back to caller
+                res.setHeader('Content-Type', 'audio/mpeg');
+                res.setHeader('Content-Disposition', 'attachment; filename="audio.mp3"');
+                res.setHeader('Content-Length', stats.size);
+
+                const readStream = fs.createReadStream(mp3Path);
+                readStream.pipe(res);
+
+                readStream.on('end', () => {
+                    if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
+                });
+
+                readStream.on('error', (err) => {
+                    console.error('[API AUDIO STREAM ERROR]', err.message);
+                    if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
+                    if (!res.headersSent) res.status(500).json({ error: err.message });
+                    else res.end();
+                });
+
+                return; // Success — exit loop
+
+            } catch (trackErr) {
+                lastError = trackErr.message;
+                continue; // Try next track
+            }
+        }
+
+        // All 5 tracks failed
+        if (!res.headersSent) {
+            res.status(500).json({ error: `All tracks failed. Last error: ${lastError}` });
+        }
+
+    } catch (err) {
+        console.error('[API PLAY AUDIO ERROR]', err.message);
+        if (!res.headersSent) {
+            res.status(500).json({ error: err.message });
+        }
+    }
+});
 
 
 // --- EXTERNAL LYRICS API ENDPOINT ---
