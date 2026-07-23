@@ -1734,52 +1734,14 @@ app.post('/api/raganork-hook', async (req, res) => {
 
 global.waitingClients = new Map();
 
-app.post('/api/play-hook', async (req, res) => {
-    const { query, isVideo } = req.body;
+
+      app.post('/api/play-hook', async (req, res) => {
+    const { query } = req.body;
 
     if (!query) {
         return res.status(400).json({ error: "Missing query." });
     }
 
-    if (isVideo) {
-        const msgId = Date.now().toString();
-
-        if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
-            return res.status(503).json({ error: "Termux disconnected." });
-        }
-
-        global.termuxSocket.send(JSON.stringify({
-            action: 'download',
-            url: `ytsearch1:${query}`,
-            isVideo: true,
-            chatId: 'API_USER',
-            msgId: msgId
-        }));
-
-        res.setHeader('Content-Type', 'video/mp4');
-        res.setHeader('Transfer-Encoding', 'chunked');
-
-        const heartbeat = setInterval(() => {
-            res.write(' ');
-        }, 15000);
-
-        global.waitingClients.set(msgId, { res, heartbeat });
-
-        setTimeout(() => {
-            if (global.waitingClients.has(msgId)) {
-                clearInterval(heartbeat);
-                const client = global.waitingClients.get(msgId);
-                client.res.end();
-                global.waitingClients.delete(msgId);
-            }
-        }, 120000);
-
-        return;
-    }
-
-    // =============================================
-    // AUDIO ONLY: SoundCloud with fallback loop
-    // =============================================
     try {
         const scdl = require('soundcloud-downloader').default;
 
@@ -1807,8 +1769,6 @@ app.post('/api/play-hook', async (req, res) => {
         for (const track of tracks) {
             try {
                 const trackUrl = track.permalink_url;
-
-                // Fresh client ID right before each stream attempt
                 const freshClientId = await scdl.getClientID();
                 const trackInfo = await scdl.getInfo(trackUrl, freshClientId);
                 const transcodings = trackInfo.media?.transcodings || [];
@@ -1872,7 +1832,6 @@ app.post('/api/play-hook', async (req, res) => {
                     );
                 }
 
-                // Verify file isn't empty
                 const stats = fs.statSync(mp3Path);
                 if (stats.size < 5000) {
                     if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
@@ -1880,7 +1839,6 @@ app.post('/api/play-hook', async (req, res) => {
                     continue;
                 }
 
-                // Stream back to caller
                 res.setHeader('Content-Type', 'audio/mpeg');
                 res.setHeader('Content-Disposition', 'attachment; filename="audio.mp3"');
                 res.setHeader('Content-Length', stats.size);
@@ -1899,15 +1857,14 @@ app.post('/api/play-hook', async (req, res) => {
                     else res.end();
                 });
 
-                return; // Success — exit loop
+                return;
 
             } catch (trackErr) {
                 lastError = trackErr.message;
-                continue; // Try next track
+                continue;
             }
         }
 
-        // All 5 tracks failed
         if (!res.headersSent) {
             res.status(500).json({ error: `All tracks failed. Last error: ${lastError}` });
         }
@@ -2329,130 +2286,6 @@ bot.onText(/^\/slow(?:\s+(\d+))?$/i, async (msg, match) => {
         bot.editMessageText(`[ERROR] Audio processing failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
     }
 });
-
-// --- AUDIO MANIPULATION: INSTRUMENTAL EXTRACTION ---
-// Usage: Reply to an audio with /instrumental
-bot.onText(/^\/instrumental$/i, async (msg) => {
-    const chatId = msg.chat.id.toString();
-    const adminId = process.env.ADMIN_ID || '7710721646';
-    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
-
-    if (!msg.reply_to_message || (!msg.reply_to_message.audio && !msg.reply_to_message.voice)) {
-        return bot.sendMessage(chatId, '[ERROR] Please reply to an audio track with /instrumental');
-    }
-
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Initiating Phase Cancellation to extract instrumental...`);
-
-    try {
-        const fileId = msg.reply_to_message.audio ? msg.reply_to_message.audio.file_id : msg.reply_to_message.voice.file_id;
-        const fileLink = await bot.getFileLink(fileId);
-
-        const inputPath = path.join(__dirname, `inst_in_${Date.now()}.mp3`);
-        const outputPath = path.join(__dirname, `inst_out_${Date.now()}.mp3`);
-
-        const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
-        fs.writeFileSync(inputPath, Buffer.from(response.data, 'binary'));
-
-        // FFmpeg Engine: Phase cancellation (Karaoke Effect)
-        // This removes center-panned audio (usually the main lead vocals) while keeping the wide stereo track (instruments)
-        // Added -vn here as well to prevent the same crash
-       const ffmpegCmd = `ffmpeg -i ${inputPath} -vn -af "pan=stereo|c0=c0-c1|c1=c1-c0" -y ${outputPath}`;
-
-        await execPromise(ffmpegCmd);
-
-        await bot.sendAudio(chatId, outputPath, {
-            caption: `[SUCCESS] Center-panned vocals removed (Instrumental generated).`
-        });
-
-        fs.unlinkSync(inputPath);
-        fs.unlinkSync(outputPath);
-        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-
-    } catch (err) {
-        bot.editMessageText(`[ERROR] Instrumental extraction failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
-    }
-});
-
-
-
-// --- SPOTIFY DIRECT PREMIUM EXTRACTION ENGINE ---
-// Usage: /spotify https://open.spotify.com/track/...
-bot.onText(/^\/spotify\s+(.+)/i, async (msg, match) => {
-    const chatId = msg.chat.id.toString();
-    const adminId = process.env.ADMIN_ID || '7710721646';
-    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
-
-    let url = match[1].trim();
-
-    // Direct extraction strictly requires a track link
-    if (!url.includes('spotify.com/track')) {
-        return bot.sendMessage(chatId, '[ERROR] Direct Premium Extraction requires a valid Spotify track link.');
-    }
-
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Authenticating with Spotify Premium via sp_dc...`);
-
-    try {
-        // --- 1. PREMIUM AUTHENTICATION ---
-        // Put your premium sp_dc cookie here
-        const SP_DC_COOKIE = 'AQC68XGBu6ZMD4RODpj5MkJnqMPjLifj0VeL43TjxHB24qqW0yBMP6gs5WTvZHvAqq8SoARv-Ha4VaTUym_xxSFsb-3z2FBheg1R8Nq1MVsRsIsbSIriOrU73P1VFR6MlYwRV_r4x56rO8wOWPFtjWy-neY6SyOB8r-OihVN0BmDOSkvMyafv6vO8d5qhyfYx9OxJNcmz2hM36M023g'; 
-
-        if (SP_DC_COOKIE === 'YOUR_SP_DC_COOKIE_HERE') {
-            throw new Error("You must insert your sp_dc cookie into the code first.");
-        }
-
-        const client = await Spotify.create({ cookie: `sp_dc=${SP_DC_COOKIE}` });
-
-        await bot.editMessageText(`[SYSTEM] Premium Authentication verified.\nExtracting raw high-fidelity audio from Spotify servers...`, { chat_id: chatId, message_id: statusMsg.message_id });
-
-        const oggPath = path.join(__dirname, `spotify_raw_${Date.now()}.ogg`);
-        const mp3Path = path.join(__dirname, `spotify_final_${Date.now()}.mp3`);
-
-        // --- 2. RAW AUDIO EXTRACTION ---
-        const stream = await Promise.resolve(client.download(url));
-        const writeStream = fs.createWriteStream(oggPath);
-        
-        stream.pipe(writeStream);
-
-        // Wait for the download to finish
-        await new Promise((resolve, reject) => {
-            writeStream.on('finish', resolve);
-            writeStream.on('error', reject);
-        });
-
-        await bot.editMessageText(`[SYSTEM] Raw OGG extraction complete.\nConverting to Telegram-compatible MP3...`, { chat_id: chatId, message_id: statusMsg.message_id });
-
-        // --- 3. CONVERSION (OGG -> MP3) ---
-        // Converts to a high-quality (VBR 2) MP3 using FFmpeg
-        const ffmpegCmd = `ffmpeg -i ${oggPath} -c:a libmp3lame -q:a 2 -y ${mp3Path}`;
-        await execPromise(ffmpegCmd);
-
-        // --- 4. DELIVERY ---
-        await bot.editMessageText(`[SYSTEM] Encoding complete. Uploading to Telegram...`, { chat_id: chatId, message_id: statusMsg.message_id });
-
-        await bot.sendAudio(chatId, mp3Path, {
-            caption: `[SUCCESS] Direct Spotify Premium Extraction`
-        });
-
-        // --- 5. MEMORY CLEANUP ---
-        fs.unlinkSync(oggPath);
-        fs.unlinkSync(mp3Path);
-        bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-
-    } catch (err) {
-        bot.editMessageText(`[ERROR] Premium Spotify Engine failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
-        
-        // Failsafe cleanup in case of crash during conversion
-        try {
-            const files = fs.readdirSync(__dirname);
-            for (const file of files) {
-                if (file.startsWith('spotify_') && (file.endsWith('.ogg') || file.endsWith('.mp3'))) {
-                    fs.unlinkSync(path.join(__dirname, file));
-                }
-            }
-        } catch(e) {}
-    }
-});
-
 
 
 
