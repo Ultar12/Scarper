@@ -3238,10 +3238,6 @@ bot.on('callback_query', async (queryObj) => {
 
 
     
-
-
-
-
 if (data.startsWith('action_play_')) {
     const searchQuery = playCache[chatId];
     if (!searchQuery) {
@@ -3254,7 +3250,7 @@ if (data.startsWith('action_play_')) {
     try {
         if (!isVideo) {
             // =============================================
-            // AUDIO: SoundCloud via direct stream URL
+            // AUDIO: SoundCloud with fallback loop
             // =============================================
             const scdl = require('soundcloud-downloader').default;
 
@@ -3267,90 +3263,136 @@ if (data.startsWith('action_play_')) {
                 throw new Error('Could not connect to SoundCloud. Try again later.');
             }
 
-            // Search
             const searchRes = await scdl.search({
                 query: searchQuery,
                 resourceType: 'tracks',
-                limit: 1,
+                limit: 5,
                 client_id: clientId
             });
 
             const tracks = searchRes?.collection;
             if (!tracks || tracks.length === 0) throw new Error('No results found on SoundCloud.');
 
-            const track = tracks[0];
-            const title = track.title || searchQuery;
-            const artist = track.user?.username || 'Unknown Artist';
-            const safeTitle = title.replace(/[^a-zA-Z0-9 ]/g, '').substring(0, 40);
-            const trackUrl = track.permalink_url;
-            const duration = track.duration ? Math.round(track.duration / 1000) : 0;
+            let lastError = null;
+            let sent = false;
 
-            await bot.editMessageText(`[SYSTEM] Found: "${title}" by ${artist}\nFetching stream...`, { chat_id: chatId, message_id: msgId });
+            for (const track of tracks) {
+                if (sent) break;
+                try {
+                    const title = track.title || searchQuery;
+                    const artist = track.user?.username || 'Unknown Artist';
+                    const safeTitle = title.replace(/[^a-zA-Z0-9 ]/g, '').substring(0, 40);
+                    const trackUrl = track.permalink_url;
+                    const duration = track.duration ? Math.round(track.duration / 1000) : 0;
 
-            // Get full track info with transcodings
-            const trackInfo = await scdl.getInfo(trackUrl, clientId);
-            const transcodings = trackInfo.media?.transcodings || [];
+                    await bot.editMessageText(
+                        `[SYSTEM] Found: "${title}" by ${artist}\nFetching stream...`,
+                        { chat_id: chatId, message_id: msgId }
+                    ).catch(() => {});
 
-            if (transcodings.length === 0) throw new Error('No audio streams available for this track.');
+                    // Re-fetch client ID fresh right before streaming
+                    const freshClientId = await scdl.getClientID();
 
-            const mp3Path = path.join(__dirname, `sc_audio_${Date.now()}.mp3`);
+                    const trackInfo = await scdl.getInfo(trackUrl, freshClientId);
+                    const transcodings = trackInfo.media?.transcodings || [];
 
-            // --- STRATEGY 1: Progressive MP3 (direct download, best quality) ---
-            const progressiveMp3 = transcodings.find(t =>
-                t.format.protocol === 'progressive' &&
-                t.format.mime_type === 'audio/mpeg'
-            );
+                    if (transcodings.length === 0) {
+                        lastError = 'No audio streams available for this track.';
+                        continue;
+                    }
 
-            if (progressiveMp3) {
-                await bot.editMessageText(`[SYSTEM] Progressive MP3 found. Downloading directly...`, { chat_id: chatId, message_id: msgId });
+                    const mp3Path = path.join(__dirname, `sc_audio_${Date.now()}.mp3`);
 
-                const streamRes = await axios.get(`${progressiveMp3.url}?client_id=${clientId}`, { timeout: 15000 });
-                const directUrl = streamRes.data.url;
+                    const progressiveMp3 = transcodings.find(t =>
+                        t.format.protocol === 'progressive' &&
+                        t.format.mime_type === 'audio/mpeg'
+                    );
 
-                const audioRes = await axios({
-                    method: 'GET',
-                    url: directUrl,
-                    responseType: 'stream',
-                    timeout: 120000
-                });
+                    if (progressiveMp3) {
+                        await bot.editMessageText(
+                            `[SYSTEM] Progressive MP3 found. Downloading...`,
+                            { chat_id: chatId, message_id: msgId }
+                        ).catch(() => {});
 
-                const writer = fs.createWriteStream(mp3Path);
-                await new Promise((resolve, reject) => {
-                    audioRes.data.pipe(writer)
-                        .on('finish', resolve)
-                        .on('error', reject);
-                });
+                        const streamRes = await axios.get(
+                            `${progressiveMp3.url}?client_id=${freshClientId}`,
+                            { timeout: 15000, validateStatus: s => s < 500 }
+                        );
 
-            } else {
-                // --- STRATEGY 2: HLS via ffmpeg (handles m3u8 natively) ---
-                const hlsTranscoding = transcodings.find(t => t.format.protocol === 'hls');
-                if (!hlsTranscoding) throw new Error('No compatible audio stream found for this track.');
+                        if (streamRes.status === 404 || !streamRes.data?.url) {
+                            lastError = 'Stream URL expired (404). Trying next result...';
+                            continue;
+                        }
 
-                await bot.editMessageText(`[SYSTEM] HLS stream found. Converting to MP3...`, { chat_id: chatId, message_id: msgId });
+                        const audioRes = await axios({
+                            method: 'GET',
+                            url: streamRes.data.url,
+                            responseType: 'stream',
+                            timeout: 120000
+                        });
 
-                // Get the actual m3u8 URL
-                const streamRes = await axios.get(`${hlsTranscoding.url}?client_id=${clientId}`, { timeout: 15000 });
-                const m3u8Url = streamRes.data.url;
+                        const writer = fs.createWriteStream(mp3Path);
+                        await new Promise((resolve, reject) => {
+                            audioRes.data.pipe(writer)
+                                .on('finish', resolve)
+                                .on('error', reject);
+                        });
 
-                // ffmpeg handles m3u8 natively — no piping needed
-                await execPromise(`ffmpeg -y -i "${m3u8Url}" -vn -codec:a libmp3lame -q:a 2 "${mp3Path}"`);
+                    } else {
+                        // Fallback: HLS via ffmpeg
+                        const hlsTranscoding = transcodings.find(t => t.format.protocol === 'hls');
+                        if (!hlsTranscoding) {
+                            lastError = 'No compatible audio stream found for this track.';
+                            continue;
+                        }
+
+                        await bot.editMessageText(
+                            `[SYSTEM] HLS stream found. Converting to MP3...`,
+                            { chat_id: chatId, message_id: msgId }
+                        ).catch(() => {});
+
+                        const streamRes = await axios.get(
+                            `${hlsTranscoding.url}?client_id=${freshClientId}`,
+                            { timeout: 15000, validateStatus: s => s < 500 }
+                        );
+
+                        if (streamRes.status === 404 || !streamRes.data?.url) {
+                            lastError = 'HLS stream URL expired (404). Trying next result...';
+                            continue;
+                        }
+
+                        await execPromise(
+                            `ffmpeg -y -i "${streamRes.data.url}" -vn -codec:a libmp3lame -q:a 2 "${mp3Path}"`
+                        );
+                    }
+
+                    // Verify file isn't empty/corrupt
+                    const stats = fs.statSync(mp3Path);
+                    if (stats.size < 5000) {
+                        if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
+                        lastError = 'Downloaded file was empty or corrupt.';
+                        continue;
+                    }
+
+                    await bot.deleteMessage(chatId, msgId).catch(() => {});
+                    await bot.sendAudio(chatId, mp3Path, {
+                        caption: `🎵 ${title}\n👤 ${artist}\n(via SoundCloud)`,
+                        title: safeTitle,
+                        performer: artist,
+                        duration: duration
+                    });
+                    if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
+                    sent = true;
+
+                } catch (trackErr) {
+                    lastError = trackErr.message;
+                    continue; // Try next track
+                }
             }
 
-            // Verify file
-            const stats = fs.statSync(mp3Path);
-            if (stats.size < 5000) {
-                if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
-                throw new Error('Download failed — file is empty or corrupt.');
+            if (!sent) {
+                throw new Error(`All tracks failed. Last error: ${lastError}`);
             }
-
-            await bot.deleteMessage(chatId, msgId).catch(() => {});
-            await bot.sendAudio(chatId, mp3Path, {
-                caption: `🎵 ${title}\n👤 ${artist}\n(via SoundCloud)`,
-                title: safeTitle,
-                performer: artist,
-                duration: duration
-            });
-            if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
 
         } else {
             // =============================================
@@ -3365,7 +3407,10 @@ if (data.startsWith('action_play_')) {
             const videoId = firstVideo.videoId;
             const title = firstVideo.title || searchQuery;
 
-            await bot.editMessageText(`[SYSTEM] Found: "${title}"\nFetching video stream...`, { chat_id: chatId, message_id: msgId });
+            await bot.editMessageText(
+                `[SYSTEM] Found: "${title}"\nFetching video stream...`,
+                { chat_id: chatId, message_id: msgId }
+            );
 
             const INVIDIOUS_INSTANCES = [
                 'https://inv.nadeko.net',
@@ -3383,12 +3428,21 @@ if (data.startsWith('action_play_')) {
 
             for (const instance of INVIDIOUS_INSTANCES) {
                 try {
-                    await bot.editMessageText(`[SYSTEM] Trying ${instance.replace('https://', '')}...`, { chat_id: chatId, message_id: msgId }).catch(() => {});
+                    await bot.editMessageText(
+                        `[SYSTEM] Trying ${instance.replace('https://', '')}...`,
+                        { chat_id: chatId, message_id: msgId }
+                    ).catch(() => {});
 
-                    const apiRes = await axios.get(`${instance}/api/v1/videos/${videoId}`, {
-                        timeout: 15000,
-                        headers: { 'User-Agent': 'Mozilla/5.0' }
-                    });
+                    const apiRes = await axios.get(
+                        `${instance}/api/v1/videos/${videoId}`,
+                        {
+                            timeout: 15000,
+                            headers: { 'User-Agent': 'Mozilla/5.0' },
+                            validateStatus: s => s < 500
+                        }
+                    );
+
+                    if (apiRes.status === 404) continue;
 
                     const formatStreams = apiRes.data.formatStreams || [];
                     const adaptiveFormats = apiRes.data.adaptiveFormats || [];
@@ -3424,13 +3478,18 @@ if (data.startsWith('action_play_')) {
 
             if (!streamUrl) throw new Error('All video sources failed. Try again later.');
 
-            await bot.editMessageText(`[SYSTEM] Stream from ${usedInstance?.replace('https://', '')}.\nDownloading video...`, { chat_id: chatId, message_id: msgId });
+            await bot.editMessageText(
+                `[SYSTEM] Stream secured from ${usedInstance?.replace('https://', '')}.\nDownloading...`,
+                { chat_id: chatId, message_id: msgId }
+            );
 
             const outputPath = path.join(__dirname, `play_vid_${Date.now()}.mp4`);
 
             if (audioUrl) {
-                // Merge video + audio
-                await execPromise(`ffmpeg -y -i "${streamUrl}" -i "${audioUrl}" -c:v copy -c:a aac -shortest "${outputPath}"`);
+                // Merge separate video + audio tracks
+                await execPromise(
+                    `ffmpeg -y -i "${streamUrl}" -i "${audioUrl}" -c:v copy -c:a aac -shortest "${outputPath}"`
+                );
             } else {
                 // Combined stream — download directly
                 const videoRes = await axios({
@@ -3470,7 +3529,6 @@ if (data.startsWith('action_play_')) {
 
     playCache[chatId] = null;
 }
-
 
     
 });
