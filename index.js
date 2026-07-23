@@ -3231,8 +3231,7 @@ bot.on('callback_query', async (queryObj) => {
 
 
 
-             
-          iif (data.startsWith('action_play_')) {
+    if (data.startsWith('action_play_')) {
     const searchQuery = playCache[chatId];
     if (!searchQuery) {
         return bot.editMessageText(`[ERROR] Search memory expired. Run /play again.`, { chat_id: chatId, message_id: msgId });
@@ -3243,78 +3242,66 @@ bot.on('callback_query', async (queryObj) => {
 
     try {
         const yts = require('yt-search');
+        const ytdl = require('@distube/ytdl-core');
 
-        // 1. Search for video ID
+        // 1. Parse cookies.txt (Netscape format) into cookie header string
+        const parseCookies = () => {
+            try {
+                if (!fs.existsSync(cookiePath)) return '';
+                const lines = fs.readFileSync(cookiePath, 'utf8').split('\n');
+                return lines
+                    .filter(l => l && !l.startsWith('#') && l.split('\t').length >= 7)
+                    .map(l => {
+                        const parts = l.split('\t');
+                        return `${parts[5]}=${parts[6].trim()}`;
+                    })
+                    .join('; ');
+            } catch (e) {
+                console.log('[COOKIES] Failed to parse cookies.txt:', e.message);
+                return '';
+            }
+        };
+
+        const cookieHeader = parseCookies();
+        const ytdlOptions = {
+            requestOptions: {
+                headers: {
+                    cookie: cookieHeader,
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                }
+            }
+        };
+
+        // 2. Search
         const searchResult = await yts(searchQuery);
         const firstVideo = searchResult.videos[0];
         if (!firstVideo) throw new Error('No results found.');
 
-        const videoId = firstVideo.videoId;
+        const videoUrl = firstVideo.url;
         const title = firstVideo.title || 'download';
         const safeTitle = title.replace(/[^a-zA-Z0-9 ]/g, '').substring(0, 40);
 
-        await bot.editMessageText(`[SYSTEM] Found: "${title}"\nFetching stream via Invidious...`, { chat_id: chatId, message_id: msgId });
-
-        // 2. Invidious instances (rotate if one fails)
-        const INVIDIOUS_INSTANCES = [
-            'https://inv.nadeko.net',
-            'https://invidious.nerdvpn.de',
-            'https://invidious.io.lol',
-            'https://iv.melmac.space',
-            'https://invidious.privacyredirect.com'
-        ];
-
-        let streamUrl = null;
-        let audioUrl = null;
-
-        for (const instance of INVIDIOUS_INSTANCES) {
-            try {
-                const apiRes = await axios.get(`${instance}/api/v1/videos/${videoId}`, { timeout: 12000 });
-                const formats = apiRes.data.adaptiveFormats || [];
-
-                if (isVideo) {
-                    // Best MP4 video with audio combined
-                    const combined = (apiRes.data.formatStreams || []).find(f => f.container === 'mp4');
-                    if (combined) { streamUrl = combined.url; break; }
-
-                    // Fallback: best separate video + audio
-                    const vidFmt = formats.filter(f => f.type?.includes('video/mp4')).sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0))[0];
-                    const audFmt = formats.filter(f => f.type?.includes('audio')).sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0))[0];
-                    if (vidFmt && audFmt) { streamUrl = vidFmt.url; audioUrl = audFmt.url; break; }
-                } else {
-                    const audFmt = formats.filter(f => f.type?.includes('audio/mp4') || f.type?.includes('audio/webm'))
-                        .sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0))[0];
-                    if (audFmt) { streamUrl = audFmt.url; break; }
-                }
-            } catch (e) {
-                console.log(`[INVIDIOUS] ${instance} failed: ${e.message}`);
-                continue;
-            }
-        }
-
-        if (!streamUrl) throw new Error('All Invidious instances failed. Try again later.');
-
-        await bot.editMessageText(`[SYSTEM] Stream secured. Downloading...`, { chat_id: chatId, message_id: msgId });
+        await bot.editMessageText(`[SYSTEM] Found: "${title}"\nDownloading ${isVideo ? 'video' : 'audio'}...`, { chat_id: chatId, message_id: msgId });
 
         if (isVideo) {
             const outputPath = path.join(__dirname, `play_vid_${Date.now()}.mp4`);
+            const writeStream = fs.createWriteStream(outputPath);
 
-            if (audioUrl) {
-                // Merge separate video + audio tracks with ffmpeg
-                await execPromise(`ffmpeg -i "${streamUrl}" -i "${audioUrl}" -c:v copy -c:a aac -shortest -y "${outputPath}"`);
-            } else {
-                // Already combined stream, just download directly
-                const videoRes = await axios({ method: 'GET', url: streamUrl, responseType: 'stream', timeout: 120000 });
-                const writer = fs.createWriteStream(outputPath);
-                await new Promise((resolve, reject) => {
-                    videoRes.data.pipe(writer).on('finish', resolve).on('error', reject);
-                });
-            }
+            await new Promise((resolve, reject) => {
+                ytdl(videoUrl, { 
+                    quality: 'highestvideo', 
+                    filter: 'videoandaudio',
+                    ...ytdlOptions
+                })
+                .pipe(writeStream)
+                .on('finish', resolve)
+                .on('error', reject);
+            });
 
             const stats = fs.statSync(outputPath);
             if (stats.size > 49 * 1024 * 1024) {
                 fs.unlinkSync(outputPath);
-                throw new Error(`File too large (${(stats.size / 1024 / 1024).toFixed(1)}MB) for Telegram.`);
+                throw new Error(`File too large (${(stats.size / 1024 / 1024).toFixed(1)}MB).`);
             }
 
             await bot.deleteMessage(chatId, msgId).catch(() => {});
@@ -3324,11 +3311,17 @@ bot.on('callback_query', async (queryObj) => {
         } else {
             const rawPath = path.join(__dirname, `play_raw_${Date.now()}.webm`);
             const mp3Path = path.join(__dirname, `play_audio_${Date.now()}.mp3`);
+            const writeStream = fs.createWriteStream(rawPath);
 
-            const audioRes = await axios({ method: 'GET', url: streamUrl, responseType: 'stream', timeout: 120000 });
-            const writer = fs.createWriteStream(rawPath);
             await new Promise((resolve, reject) => {
-                audioRes.data.pipe(writer).on('finish', resolve).on('error', reject);
+                ytdl(videoUrl, { 
+                    quality: 'highestaudio', 
+                    filter: 'audioonly',
+                    ...ytdlOptions
+                })
+                .pipe(writeStream)
+                .on('finish', resolve)
+                .on('error', reject);
             });
 
             await execPromise(`ffmpeg -i "${rawPath}" -vn -codec:a libmp3lame -q:a 2 -y "${mp3Path}"`);
