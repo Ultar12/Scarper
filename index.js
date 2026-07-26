@@ -2749,13 +2749,13 @@ bot.onText(/\/yt\s+(.+)/, async (msg, match) => {
         await bot.editMessageText(`[SYSTEM] Downloading via yt-dlp${hasCookies ? ' (cookies loaded)' : ''}...`, { chat_id: chatId, message_id: statusMsg.message_id });
 
         await ytdlp.downloadAsync(url, {
-            format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            output: videoPath,
-            rawArgs: [
-                '--merge-output-format', 'mp4',
-                ...(hasCookies ? ['--cookies', cookiePath] : [])
-            ]
-        });
+    format: 'bv*+ba/b',
+    output: videoPath,
+    rawArgs: [
+        '--merge-output-format', 'mp4',
+        ...(hasCookies ? ['--cookies', cookiePath] : [])
+    ]
+});
 
         const stats = fs.statSync(videoPath);
         const fileSizeMB = stats.size / (1024 * 1024);
