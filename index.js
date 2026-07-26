@@ -35,6 +35,14 @@ const playCache = {};
 // --- YOUTUBE AUTHENTICATION COMPILER ---
 const cookiePath = path.join(__dirname, 'cookies.txt');
 
+const BGUTIL_SERVER_HOME = path.join(__dirname, 'bgutil-ytdlp-pot-provider', 'server');
+const BGUTIL_PLUGIN_DIR = path.join(__dirname, 'yt-dlp-plugins');
+
+const POT_ARGS = fs.existsSync(BGUTIL_SERVER_HOME) ? [
+    '--plugin-dirs', BGUTIL_PLUGIN_DIR,
+    '--extractor-args', `youtubepot-bgutilscript:server_home=${BGUTIL_SERVER_HOME}`
+] : [];
+
 
 // Prevent unhandled stream errors from crashing the app
 process.on('uncaughtException', (err) => {
@@ -2752,9 +2760,10 @@ bot.onText(/\/yt\s+(.+)/, async (msg, match) => {
     format: 'bv*+ba/b',
     output: videoPath,
     rawArgs: [
-        '--merge-output-format', 'mp4',
-        ...(hasCookies ? ['--cookies', cookiePath] : [])
-    ]
+    '--merge-output-format', 'mp4',
+    ...(hasCookies ? ['--cookies', cookiePath] : []),
+    ...POT_ARGS
+]
 });
 
         const stats = fs.statSync(videoPath);
