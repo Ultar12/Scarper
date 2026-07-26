@@ -2729,7 +2729,53 @@ bot.onText(/\/play\s+(.+)/, async (msg, match) => {
 });
 
 
+const { YtDlp } = require('ytdlp-nodejs');
+const ytdlp = new YtDlp();
 
+bot.onText(/\/yt\s+(.+)/, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    const url = match[1].trim();
+    if (!url.includes('youtube.com') && !url.includes('youtu.be')) {
+        return bot.sendMessage(chatId, '[ERROR] That is not a YouTube link.');
+    }
+
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Fetching video info...');
+    const videoPath = path.join(__dirname, `yt_${Date.now()}.mp4`);
+    const hasCookies = fs.existsSync(cookiePath);
+
+    try {
+        await bot.editMessageText(`[SYSTEM] Downloading via yt-dlp${hasCookies ? ' (cookies loaded)' : ''}...`, { chat_id: chatId, message_id: statusMsg.message_id });
+
+        await ytdlp.downloadAsync(url, {
+            format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            output: videoPath,
+            rawArgs: [
+                '--merge-output-format', 'mp4',
+                ...(hasCookies ? ['--cookies', cookiePath] : [])
+            ]
+        });
+
+        const stats = fs.statSync(videoPath);
+        const fileSizeMB = stats.size / (1024 * 1024);
+
+        if (fileSizeMB > 49.5) {
+            await bot.editMessageText(`[ERROR] File is too large (${fileSizeMB.toFixed(1)}MB). Telegram bots can only send up to 50MB.`, { chat_id: chatId, message_id: statusMsg.message_id });
+        } else {
+            await bot.editMessageText('[SYSTEM] Uploading...', { chat_id: chatId, message_id: statusMsg.message_id });
+            await bot.sendVideo(chatId, videoPath, {
+                caption: `[SUCCESS] Downloaded via yt-dlp\nSize: ${fileSizeMB.toFixed(2)}MB`
+            });
+            await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+        }
+
+    } catch (err) {
+        await bot.editMessageText(`[ERROR] yt-dlp download failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+    } finally {
+        if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
+    }
+});
 
 
 
