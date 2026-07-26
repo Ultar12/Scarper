@@ -30,6 +30,7 @@
     "webdriverio": "^8.32.0",
     "whatsapp-web.js": "^1.23.0",
     "youtube-dl-exec": "^3.0.0",
+    "ytdlp-nodejs": "3.4.4",
     "wwebjs-postgres": "^1.0.0"
   },
   "engines": {
