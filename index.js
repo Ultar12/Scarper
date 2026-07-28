@@ -1942,9 +1942,6 @@ app.get('/api/lyrics', async (req, res) => {
 
 
 
-
-
-
 // --- EXTERNAL DOWNLOAD API SERVICE ---
 app.get('/api/download', async (req, res) => {
     const url = req.query.url;
@@ -2006,12 +2003,10 @@ app.get('/api/download', async (req, res) => {
                 'X-Accel-Buffering': 'no'
             });
 
-            // TCP keep-alive at socket level only
             if (res.socket) res.socket.setKeepAlive(true, 15000);
 
             global.waitingClients.set(reqId, { res, heartbeat: null });
 
-            // Tell Termux AFTER headers are already sent
             global.termuxSocket.send(JSON.stringify({
                 action: 'download',
                 url: url,
@@ -2030,12 +2025,12 @@ app.get('/api/download', async (req, res) => {
             return;
         }
 
-        // --- 3. FALLBACK ENGINE (TRY yt-dlp FIRST) ---
+        // --- 3. THE FRONTLINE: YT-DLP ---
         const videoPath = path.join(__dirname, `api_dl_${Date.now()}.mp4`);
         let ytdlpSuccess = false;
 
         try {
-            // FORCE yt-dlp to grab a pre-merged, standard MP4 with a WhatsApp-compatible H.264 codec
+            // FORCE yt-dlp to grab a pre-merged, standard MP4
             await youtubedl(url, {
                 output: videoPath,
                 format: 'best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best', 
@@ -2045,64 +2040,96 @@ app.get('/api/download', async (req, res) => {
 
         } catch (ytErr) {
             
-            // --- 4. HEADLESS BROWSER RESCUE (IF yt-dlp CRASHES) ---
-            if (url.includes('facebook.com')) {
-                console.log("[SYSTEM] yt-dlp failed on Facebook link. Engaging Puppeteer rescue sequence...");
+            // --- 4. UNIVERSAL HEADLESS RESCUE ENGINE (API VERSION) ---
+            console.log(`[SYSTEM] yt-dlp failed on ${url}. Engaging API Rescue Engine...`);
+            
+            let rescueBrowser = null;
+            try {
+                rescueBrowser = await puppeteer.launch({
+                    headless: true,
+                    executablePath: getChromePath(),
+                    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+                });
                 
-                let fbBrowser = null;
-                try {
-                    fbBrowser = await puppeteer.launch({
-                        headless: true,
-                        executablePath: getChromePath(),
-                        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-                    });
-                    
-                    const fbPage = await fbBrowser.newPage();
-                    await fbPage.setViewport({ width: 1280, height: 800 });
-                    
-                    // Go to Facebook URL
-                    await fbPage.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-                    
-                    // Scroll slightly to trigger lazy-loaded grid images
-                    await fbPage.evaluate(() => window.scrollBy(0, 500));
-                    await fbPage.waitForTimeout(1500);
+                const rescuePage = await rescueBrowser.newPage();
+                await rescuePage.setViewport({ width: 1280, height: 800 });
+                
+                // Navigate (Automatically resolves shortlinks like pin.it)
+                await rescuePage.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+                
+                // Scroll to force lazy-loaded images/videos to render
+                await rescuePage.evaluate(() => window.scrollBy(0, 500));
+                await rescuePage.waitForTimeout(2000);
 
-                    // Extract & filter
-                    const imageUrls = await fbPage.evaluate(() => {
-                        const allImages = Array.from(document.querySelectorAll('img'));
-                        return allImages
-                            // Must be hosted on FB CDN
-                            .filter(img => img.src && img.src.includes('scontent'))
-                            // Magic Trick: Ignore UI icons and profile avatars by dimension
-                            .filter(img => img.naturalWidth > 100 && img.naturalHeight > 100)
-                            .map(img => img.src);
-                    });
-
-                    // Remove duplicates
-                    const uniqueImages = [...new Set(imageUrls)];
-
-                    if (uniqueImages.length > 0) {
-                        return res.status(200).json({
-                            type: "images",
-                            urls: uniqueImages
-                        });
-                    } else {
-                        throw new Error("Puppeteer loaded the page but found no high-res images.");
+                // Execute the Universal DOM Hunter
+                const mediaData = await rescuePage.evaluate(() => {
+                    // Hunt 1: Video tag
+                    const video = document.querySelector('video');
+                    if (video) {
+                        const videoSrc = video.src || video.querySelector('source')?.src;
+                        if (videoSrc && videoSrc.startsWith('http')) return { type: 'video', url: videoSrc };
+                    }
+                    
+                    // Hunt 2: Pinterest High-Res Override
+                    if (window.location.hostname.includes('pinterest')) {
+                        const imgs = Array.from(document.querySelectorAll('img'));
+                        const mainImg = imgs.find(img => img.src && img.src.includes('i.pinimg.com') && (img.src.includes('736x') || img.src.includes('originals')));
+                        if (mainImg) {
+                            return { type: 'images', urls: [mainImg.src.replace(/736x/, 'originals')] };
+                        }
                     }
 
-                } catch (fbErr) {
-                    // Both yt-dlp and Puppeteer failed
-                    throw new Error(`yt-dlp failed AND Puppeteer rescue failed: ${fbErr.message}`);
-                } finally {
-                    if (fbBrowser) await fbBrowser.close().catch(() => {});
+                    // Hunt 3: General Image Grid / Albums
+                    const allImages = Array.from(document.querySelectorAll('img'));
+                    const highResImages = allImages
+                        .filter(img => img.src && img.src.startsWith('http'))
+                        .filter(img => img.naturalWidth > 120 && img.naturalHeight > 120) 
+                        .map(img => img.src);
+                    
+                    const uniqueImages = [...new Set(highResImages)];
+                    
+                    if (uniqueImages.length > 0) {
+                        return { type: 'images', urls: uniqueImages };
+                    }
+
+                    return null;
+                });
+
+                if (!mediaData) {
+                    throw new Error("API Rescue Engine crawled the page but found zero valid videos or high-resolution images.");
                 }
-            } else {
-                // If it crashed but wasn't a Facebook link, just throw the normal yt-dlp error
-                throw ytErr;
+
+                // --- RESPOND VIA API ---
+                if (mediaData.type === 'images') {
+                    // Return JSON Array for Photos/Albums
+                    return res.status(200).json({
+                        type: "images",
+                        urls: mediaData.urls
+                    });
+                } else if (mediaData.type === 'video') {
+                    // Stream Raw MP4 for Videos
+                    const videoStream = await axios({
+                        method: 'GET',
+                        url: mediaData.url,
+                        responseType: 'stream',
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+                        }
+                    });
+                    
+                    res.setHeader('Content-Type', 'video/mp4');
+                    return videoStream.data.pipe(res);
+                }
+
+            } catch (rescueErr) {
+                throw new Error(`yt-dlp failed AND Rescue Engine failed: ${rescueErr.message}`);
+            } finally {
+                if (rescueBrowser) await rescueBrowser.close().catch(() => {});
             }
         }
 
-        // If yt-dlp succeeded without throwing an error, send the video
+        // --- 5. YT-DLP DELIVERY ---
+        // If yt-dlp successfully grabbed the file, send it via the API
         if (ytdlpSuccess) {
             res.download(videoPath, 'downloaded_video.mp4', (err) => {
                 if (fs.existsSync(videoPath)) {
@@ -2120,6 +2147,7 @@ app.get('/api/download', async (req, res) => {
         }
     }
 });
+
 
 
 
@@ -3886,7 +3914,7 @@ bot.onText(/\/record/i, async (msg) => {
 
 
 
-// Usage: /dl https://www.tiktok.com/@user/video/123456789 or YouTube
+// Usage: /dl https://www.tiktok.com/@user/video/123456789 or YouTube or ANY Link
 bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -3895,54 +3923,45 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
     let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Analyzing link and bypassing security...');
 
     try {
-        // --- TIKTOK SPECIFIC LOGIC (VIDEOS & IMAGES) ---
+        // --- 1. TIKTOK SPECIFIC LOGIC (VIDEOS & IMAGES) ---
         if (url.includes('tiktok.com')) {
             await bot.editMessageText('[SYSTEM] TikTok link detected. Fetching unwatermarked HD source...', { chat_id: chatId, message_id: statusMsg.message_id });
             
-            // Hit the TikWM API (Gets raw unwatermarked HD files directly from TikTok servers)
             const response = await axios.get(`https://www.tikwm.com/api/?url=${url}&hd=1`);
             const data = response.data.data;
 
-            if (!data) throw new Error("Could not extract TikTok data. Link might be private or invalid.");
+            if (!data) throw new Error("Could not extract TikTok data.");
 
-            // 1. IS IT AN IMAGE SLIDESHOW?
             if (data.images && data.images.length > 0) {
                 await bot.editMessageText(`[SYSTEM] TikTok Image Carousel detected (${data.images.length} images). Sending raw HD photos...`, { chat_id: chatId, message_id: statusMsg.message_id });
                 
-                // Telegram requires media groups for multiple images
                 let mediaGroup = [];
                 for (let i = 0; i < data.images.length; i++) {
                     mediaGroup.push({
                         type: 'photo',
-                        media: data.images[i], // We can pass the raw URL directly to Telegram!
+                        media: data.images[i],
                         caption: i === 0 ? `[SUCCESS] HD TikTok Images Extracted` : '' 
                     });
                     
-                    // Telegram allows max 10 media items per group. Send in chunks if necessary.
                     if (mediaGroup.length === 10 || i === data.images.length - 1) {
                         await bot.sendMediaGroup(chatId, mediaGroup);
-                        mediaGroup = []; // Reset for next batch
+                        mediaGroup = []; 
                     }
                 }
                 
                 await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
-                return; // Stop execution here for images
+                return; 
             }
 
-            // 2. IT IS A VIDEO
-            const videoUrl = data.hdplay || data.play; // Try HD first, fallback to standard if HD isn't available
-            
+            const videoUrl = data.hdplay || data.play;
             await bot.editMessageText('[SYSTEM] Found raw TikTok video file. Streaming to Telegram...', { chat_id: chatId, message_id: statusMsg.message_id });
             
-            await bot.sendVideo(chatId, videoUrl, {
-                caption: `[SUCCESS] Max Native Quality (No Watermark)`
-            });
-            
+            await bot.sendVideo(chatId, videoUrl, { caption: `[SUCCESS] Max Native Quality (No Watermark)` });
             await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
             return;
         }
 
-        // --- YOUTUBE TERMINAL ROUTING ---
+        // --- 2. YOUTUBE TERMINAL ROUTING ---
         if (url.includes('youtube.com') || url.includes('youtu.be')) {
             if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
                 return bot.editMessageText('[ERROR] Termux Node is offline. Start the worker script on your phone.', { chat_id: chatId, message_id: statusMsg.message_id });
@@ -3950,55 +3969,159 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
 
             await bot.editMessageText('[SYSTEM] YouTube link detected. Routing extraction order to Termux Hardware...', { chat_id: chatId, message_id: statusMsg.message_id });
 
-            // Send the exact command down the WebSocket pipe
             global.termuxSocket.send(JSON.stringify({
                 action: 'download',
                 url: url,
-                isVideo: true, // Standard /dl implies video
+                isVideo: true,
                 chatId: chatId,
                 msgId: statusMsg.message_id.toString() 
             }));
-            
-            return; // Termux and your existing WS handler will finish the job
+            return;
         }
 
-        // --- FALLBACK FOR IG / TWITTER (yt-dlp) ---
-        await bot.editMessageText('[SYSTEM] Standard link detected. Engaging yt-dlp to find maximum native quality...', { chat_id: chatId, message_id: statusMsg.message_id });
+        // --- 3. THE FRONTLINE: YT-DLP ---
+        await bot.editMessageText('[SYSTEM] Standard link detected. Engaging yt-dlp for maximum native quality...', { chat_id: chatId, message_id: statusMsg.message_id });
         
         const videoPath = path.join(__dirname, `dl_${Date.now()}.mp4`);
+        let ytdlpSuccess = false;
 
-        // Grab the absolute best video and audio track the server actually holds
-        await youtubedl(url, {
-            output: videoPath,
-            format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            mergeOutputFormat: 'mp4',
-            cookies: cookiePath,
-            jsRuntimes: 'nodejs', 
-            noWarnings: true
-        });
-
-        // Safety check for Telegram's hard limit
-        const stats = fs.statSync(videoPath);
-        const fileSizeMB = stats.size / (1024 * 1024);
-
-        if (fileSizeMB > 49.5) {
-            await bot.editMessageText(`[ERROR] File is too large (${fileSizeMB.toFixed(1)}MB). Telegram bots can only send up to 50MB.`, { chat_id: chatId, message_id: statusMsg.message_id });
-        } else {
-            await bot.editMessageText('[SYSTEM] Extraction complete. Uploading...', { chat_id: chatId, message_id: statusMsg.message_id });
-            await bot.sendVideo(chatId, videoPath, { 
-                caption: `[SUCCESS] Max Native Quality Downloaded\nSize: ${fileSizeMB.toFixed(2)}MB` 
+        try {
+            await youtubedl(url, {
+                output: videoPath,
+                format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                mergeOutputFormat: 'mp4',
+                cookies: cookiePath,
+                jsRuntimes: 'nodejs', 
+                noWarnings: true
             });
-            await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+            
+            ytdlpSuccess = true;
+
+        } catch (ytErr) {
+            
+            // --- 4. THE UNIVERSAL HEADLESS RESCUE ENGINE ---
+            await bot.editMessageText(`[SYSTEM] yt-dlp failed or rejected the link. Engaging Universal Headless Rescue Engine...`, { chat_id: chatId, message_id: statusMsg.message_id });
+            
+            let rescueBrowser = null;
+            try {
+                rescueBrowser = await puppeteer.launch({
+                    headless: true,
+                    executablePath: getChromePath(),
+                    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+                });
+                
+                const rescuePage = await rescueBrowser.newPage();
+                await rescuePage.setViewport({ width: 1280, height: 800 });
+                
+                // Navigate (Automatically resolves shortlinks like pin.it)
+                await rescuePage.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+                
+                // Scroll to force lazy-loaded images/videos to render
+                await rescuePage.evaluate(() => window.scrollBy(0, 500));
+                await rescuePage.waitForTimeout(2000); 
+
+                // Execute the Universal DOM Hunter
+                const mediaData = await rescuePage.evaluate(() => {
+                    // Hunt 1: Is there a raw video on the page?
+                    const video = document.querySelector('video');
+                    if (video) {
+                        const videoSrc = video.src || video.querySelector('source')?.src;
+                        if (videoSrc && videoSrc.startsWith('http')) return { type: 'video', url: videoSrc };
+                    }
+                    
+                    // Hunt 2: Pinterest High-Res Override
+                    if (window.location.hostname.includes('pinterest')) {
+                        const imgs = Array.from(document.querySelectorAll('img'));
+                        const mainImg = imgs.find(img => img.src && img.src.includes('i.pinimg.com') && (img.src.includes('736x') || img.src.includes('originals')));
+                        if (mainImg) {
+                            return { type: 'image', url: mainImg.src.replace(/736x/, 'originals') };
+                        }
+                    }
+
+                    // Hunt 3: General Image Grid / Albums (Filters out icons & avatars)
+                    const allImages = Array.from(document.querySelectorAll('img'));
+                    const highResImages = allImages
+                        .filter(img => img.src && img.src.startsWith('http'))
+                        .filter(img => img.naturalWidth > 120 && img.naturalHeight > 120) 
+                        .map(img => img.src);
+                    
+                    const uniqueImages = [...new Set(highResImages)];
+                    
+                    if (uniqueImages.length > 0) {
+                        return { type: 'images', urls: uniqueImages };
+                    }
+
+                    return null;
+                });
+
+                if (!mediaData) {
+                    throw new Error("Rescue Engine crawled the page but found zero valid videos or high-resolution images.");
+                }
+
+                await bot.editMessageText('[SYSTEM] Media successfully acquired via Rescue Engine. Uploading...', { chat_id: chatId, message_id: statusMsg.message_id });
+
+                // Deliver what the Rescue Engine found
+                if (mediaData.type === 'video') {
+                    await bot.sendVideo(chatId, mediaData.url, { caption: '[SUCCESS] Video Extracted via Rescue Engine' });
+                } else if (mediaData.type === 'image') {
+                    await bot.sendPhoto(chatId, mediaData.url, { caption: '[SUCCESS] Image Extracted via Rescue Engine' });
+                } else if (mediaData.type === 'images') {
+                    // Handle albums/multiple images
+                    let mediaGroup = [];
+                    for (let i = 0; i < mediaData.urls.length; i++) {
+                        mediaGroup.push({
+                            type: 'photo',
+                            media: mediaData.urls[i],
+                            caption: i === 0 ? '[SUCCESS] Media Array Extracted via Rescue Engine' : ''
+                        });
+                        
+                        if (mediaGroup.length === 10 || i === mediaData.urls.length - 1) {
+                            await bot.sendMediaGroup(chatId, mediaGroup);
+                            mediaGroup = [];
+                        }
+                    }
+                }
+
+                await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+                return; // Stop execution, the Rescue Engine saved the day
+
+            } catch (rescueErr) {
+                // If BOTH yt-dlp and Puppeteer fail
+                throw new Error(`yt-dlp failed AND Rescue Engine failed: ${rescueErr.message}`);
+            } finally {
+                if (rescueBrowser) await rescueBrowser.close().catch(() => {});
+            }
         }
 
-        if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
+        // --- 5. YT-DLP DELIVERY ---
+        // If yt-dlp successfully grabs the file, execution drops here to deliver it
+        if (ytdlpSuccess) {
+            const stats = fs.statSync(videoPath);
+            const fileSizeMB = stats.size / (1024 * 1024);
+
+            if (fileSizeMB > 49.5) {
+                await bot.editMessageText(`[ERROR] File is too large (${fileSizeMB.toFixed(1)}MB). Telegram bots can only send up to 50MB.`, { chat_id: chatId, message_id: statusMsg.message_id });
+            } else {
+                await bot.editMessageText('[SYSTEM] yt-dlp Extraction complete. Uploading...', { chat_id: chatId, message_id: statusMsg.message_id });
+                await bot.sendVideo(chatId, videoPath, { 
+                    caption: `[SUCCESS] Max Native Quality Downloaded\nSize: ${fileSizeMB.toFixed(2)}MB` 
+                });
+                await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+            }
+        }
 
     } catch (err) {
-        bot.editMessageText(`[ERROR] Download failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+        bot.editMessageText(`[ERROR] Final Engine Failure: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+    } finally {
+        const tempPath = path.join(__dirname, `dl_${Date.now()}.mp4`);
+        // We use regex to clean up any leftover video files matching the pattern
+        fs.readdirSync(__dirname).forEach(file => {
+            if (file.startsWith('dl_') && file.endsWith('.mp4')) {
+                try { fs.unlinkSync(path.join(__dirname, file)); } catch (e) {}
+            }
+        });
     }
 });
-
-
 
 
 
