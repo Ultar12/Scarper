@@ -1943,6 +1943,8 @@ app.get('/api/lyrics', async (req, res) => {
 
 
 
+
+
 // --- EXTERNAL DOWNLOAD API SERVICE ---
 app.get('/api/download', async (req, res) => {
     const url = req.query.url;
@@ -1987,63 +1989,130 @@ app.get('/api/download', async (req, res) => {
             }
         }
 
-       if (url.includes('youtube.com') || url.includes('youtu.be')) {
-    if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
-        return res.status(503).json({ error: "Termux Worker is offline" });
-    }
-
-    const reqId = 'req_' + Date.now();
-    global.waitingClients = global.waitingClients || new Map();
-
-    // Fire headers FIRST before anything else
-    res.writeHead(200, {
-        'Content-Type': 'video/mp4',
-        'Transfer-Encoding': 'chunked',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no'
-    });
-
-    // TCP keep-alive at socket level only
-    if (res.socket) res.socket.setKeepAlive(true, 15000);
-
-    global.waitingClients.set(reqId, { res, heartbeat: null });
-
-    // Tell Termux AFTER headers are already sent
-    global.termuxSocket.send(JSON.stringify({
-        action: 'download',
-        url: url,
-        isVideo: true,
-        chatId: 'API_USER',
-        msgId: reqId
-    }));
-
-    setTimeout(() => {
-        if (global.waitingClients.has(reqId)) {
-            global.waitingClients.delete(reqId);
-            try { res.end(); } catch(e) {}
-        }
-    }, 600000);
-
-    return;
-}
-
-                // --- 3. FALLBACK ENGINE (IG, Twitter, Facebook, etc.) ---
-        const videoPath = path.join(__dirname, `api_dl_${Date.now()}.mp4`);
-
-        // FORCE yt-dlp to grab a pre-merged, standard MP4 with a WhatsApp-compatible H.264 codec
-        await youtubedl(url, {
-            output: videoPath,
-            format: 'best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best', 
-            noWarnings: true
-        });
-
-        res.download(videoPath, 'downloaded_video.mp4', (err) => {
-            if (fs.existsSync(videoPath)) {
-                fs.unlinkSync(videoPath);
+        // --- 2. YOUTUBE TERMUX WORKER LOGIC ---
+        if (url.includes('youtube.com') || url.includes('youtu.be')) {
+            if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
+                return res.status(503).json({ error: "Termux Worker is offline" });
             }
-        });
+
+            const reqId = 'req_' + Date.now();
+            global.waitingClients = global.waitingClients || new Map();
+
+            // Fire headers FIRST before anything else
+            res.writeHead(200, {
+                'Content-Type': 'video/mp4',
+                'Transfer-Encoding': 'chunked',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no'
+            });
+
+            // TCP keep-alive at socket level only
+            if (res.socket) res.socket.setKeepAlive(true, 15000);
+
+            global.waitingClients.set(reqId, { res, heartbeat: null });
+
+            // Tell Termux AFTER headers are already sent
+            global.termuxSocket.send(JSON.stringify({
+                action: 'download',
+                url: url,
+                isVideo: true,
+                chatId: 'API_USER',
+                msgId: reqId
+            }));
+
+            setTimeout(() => {
+                if (global.waitingClients.has(reqId)) {
+                    global.waitingClients.delete(reqId);
+                    try { res.end(); } catch(e) {}
+                }
+            }, 600000);
+
+            return;
+        }
+
+        // --- 3. FALLBACK ENGINE (TRY yt-dlp FIRST) ---
+        const videoPath = path.join(__dirname, `api_dl_${Date.now()}.mp4`);
+        let ytdlpSuccess = false;
+
+        try {
+            // FORCE yt-dlp to grab a pre-merged, standard MP4 with a WhatsApp-compatible H.264 codec
+            await youtubedl(url, {
+                output: videoPath,
+                format: 'best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best', 
+                noWarnings: true
+            });
+            ytdlpSuccess = true; 
+
+        } catch (ytErr) {
+            
+            // --- 4. HEADLESS BROWSER RESCUE (IF yt-dlp CRASHES) ---
+            if (url.includes('facebook.com')) {
+                console.log("[SYSTEM] yt-dlp failed on Facebook link. Engaging Puppeteer rescue sequence...");
+                
+                let fbBrowser = null;
+                try {
+                    fbBrowser = await puppeteer.launch({
+                        headless: true,
+                        executablePath: getChromePath(),
+                        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+                    });
+                    
+                    const fbPage = await fbBrowser.newPage();
+                    await fbPage.setViewport({ width: 1280, height: 800 });
+                    
+                    // Go to Facebook URL
+                    await fbPage.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+                    
+                    // Scroll slightly to trigger lazy-loaded grid images
+                    await fbPage.evaluate(() => window.scrollBy(0, 500));
+                    await fbPage.waitForTimeout(1500);
+
+                    // Extract & filter
+                    const imageUrls = await fbPage.evaluate(() => {
+                        const allImages = Array.from(document.querySelectorAll('img'));
+                        return allImages
+                            // Must be hosted on FB CDN
+                            .filter(img => img.src && img.src.includes('scontent'))
+                            // Magic Trick: Ignore UI icons and profile avatars by dimension
+                            .filter(img => img.naturalWidth > 100 && img.naturalHeight > 100)
+                            .map(img => img.src);
+                    });
+
+                    // Remove duplicates
+                    const uniqueImages = [...new Set(imageUrls)];
+
+                    if (uniqueImages.length > 0) {
+                        return res.status(200).json({
+                            type: "images",
+                            urls: uniqueImages
+                        });
+                    } else {
+                        throw new Error("Puppeteer loaded the page but found no high-res images.");
+                    }
+
+                } catch (fbErr) {
+                    // Both yt-dlp and Puppeteer failed
+                    throw new Error(`yt-dlp failed AND Puppeteer rescue failed: ${fbErr.message}`);
+                } finally {
+                    if (fbBrowser) await fbBrowser.close().catch(() => {});
+                }
+            } else {
+                // If it crashed but wasn't a Facebook link, just throw the normal yt-dlp error
+                throw ytErr;
+            }
+        }
+
+        // If yt-dlp succeeded without throwing an error, send the video
+        if (ytdlpSuccess) {
+            res.download(videoPath, 'downloaded_video.mp4', (err) => {
+                if (fs.existsSync(videoPath)) {
+                    fs.unlinkSync(videoPath);
+                }
+            });
+        }
 
     } catch (err) {
+        // Global Error Handler for the API Route
         if (!res.headersSent) {
             res.status(500).json({ error: `Engine extraction failed: ${err.message}` });
         } else {
@@ -2051,8 +2120,6 @@ app.get('/api/download', async (req, res) => {
         }
     }
 });
-
-
 
 
 
