@@ -2307,62 +2307,90 @@ bot.onText(/\/start/i, (msg) => {
     });
 });
 
-
-
-// --- AUDIO MANIPULATION: SLOW & REVERB ---
-// Usage: Reply to an audio with /slow 1, /slow 2, or /slow 3
-bot.onText(/^\/slow(?:\s+(\d+))?$/i, async (msg, match) => {
+// --- DYNAMIC WATERMARK ENGINE (PHOTOS & VIDEOS VIA URL LOGO) ---
+// Usage: Reply to a photo or video with /watermark
+bot.onText(/^\/watermark$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
+    
+    // Authorization Check
     const adminId = process.env.ADMIN_ID || '7710721646';
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
 
-    if (!msg.reply_to_message || (!msg.reply_to_message.audio && !msg.reply_to_message.voice)) {
-        return bot.sendMessage(chatId, '[ERROR] Please reply to an audio or voice message with /slow 1, /slow 2, or /slow 3');
+    if (!msg.reply_to_message || (!msg.reply_to_message.photo && !msg.reply_to_message.video)) {
+        return bot.sendMessage(chatId, '[ERROR] Please reply to a photo or video with /watermark');
     }
 
-    // Define speed presets
-    const level = parseInt(match[1]) || 1;
-    let speed = 0.85; // Default Slow
-    if (level === 2) speed = 0.70; // Extreme Slow
-    if (level >= 3) speed = 0.55; // Extremely Slow
-
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Processing Audio Engine...\nApplying Level ${level} Slow + Reverb...`);
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Initiating Chroma-Key Watermark Engine...');
+    
+    const isVideo = !!msg.reply_to_message.video;
+    // Telegram stores photos in an array of sizes; grab the last one (highest resolution)
+    const fileId = isVideo ? msg.reply_to_message.video.file_id : msg.reply_to_message.photo[msg.reply_to_message.photo.length - 1].file_id;
+    
+    let inputPath = null;
+    let outputPath = null;
+    let logoPath = null;
 
     try {
-        const fileId = msg.reply_to_message.audio ? msg.reply_to_message.audio.file_id : msg.reply_to_message.voice.file_id;
         const fileLink = await bot.getFileLink(fileId);
+        const timestamp = Date.now();
+        
+        inputPath = path.join(__dirname, `wm_in_${timestamp}.${isVideo ? 'mp4' : 'jpg'}`);
+        outputPath = path.join(__dirname, `wm_out_${timestamp}.${isVideo ? 'mp4' : 'jpg'}`);
+        logoPath = path.join(__dirname, `wm_logo_${timestamp}.jpg`);
+        
+        // 1. Download target media to RAM/Disk
+        await bot.editMessageText('[SYSTEM] Downloading target media...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+        const mediaResponse = await axios.get(fileLink, { responseType: 'arraybuffer' });
+        fs.writeFileSync(inputPath, Buffer.from(mediaResponse.data, 'binary'));
 
-        const inputPath = path.join(__dirname, `audio_in_${Date.now()}.mp3`);
-        const outputPath = path.join(__dirname, `audio_out_${Date.now()}.mp3`);
+        // 2. Download the Sync Kennel logo dynamically from the provided link
+        await bot.editMessageText('[SYSTEM] Fetching Sync Kennel logo from cloud...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+        const logoUrl = 'https://i.ibb.co/YBwDJ2F5/temp.jpg';
+        const logoResponse = await axios.get(logoUrl, { responseType: 'arraybuffer' });
+        fs.writeFileSync(logoPath, Buffer.from(logoResponse.data, 'binary'));
 
-        // 1. Download target audio to RAM
-        const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
-        fs.writeFileSync(inputPath, Buffer.from(response.data, 'binary'));
+        // 3. Process with FFmpeg
+        await bot.editMessageText(`[SYSTEM] Processing ${isVideo ? 'Video' : 'Image'} with White Background Removal...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+        
+        // --- THE FFMPEG CHROMA-KEY FILTER ---
+        // 1. colorkey=white:0.05:0.1 -> Erases the white background
+        // 2. colorchannelmixer=aa=0.8 -> Drops opacity to 80% 
+        // 3. scale2ref -> Scales the logo to 20% of the main media's width
+        // 4. overlay=W-w-20:H-h-20 -> Places it in the bottom right corner
+        const filterComplex = `[1:v]format=rgba,colorkey=white:0.05:0.1,colorchannelmixer=aa=0.8[keyed_logo];[keyed_logo][0:v]scale2ref=w=iw*0.2:h=ow/mdar[scaled_logo][main_media];[main_media][scaled_logo]overlay=W-w-20:H-h-20`;
 
-        // 2. FFmpeg Engine: atempo (speed) + aecho (reverb)
-
-     // FFmpeg Engine: atempo (speed) + bass (g=gain, f=frequency) + volume (anti-clip)
-        const ffmpegCmd = `ffmpeg -i ${inputPath} -vn -filter:a "atempo=${speed},bass=g=15:f=50,volume=0.8" -y ${outputPath}`;
-
+        let ffmpegCmd = '';
+        if (isVideo) {
+            // Video command: preserve audio via -codec:a copy
+            ffmpegCmd = `ffmpeg -i ${inputPath} -i ${logoPath} -filter_complex "${filterComplex}" -codec:a copy -y ${outputPath}`;
+        } else {
+            // Image command: process as a single frame
+            ffmpegCmd = `ffmpeg -i ${inputPath} -i ${logoPath} -filter_complex "${filterComplex}" -y ${outputPath}`;
+        }
         
         await execPromise(ffmpegCmd);
+        
+        // 4. Upload to Telegram
+        await bot.editMessageText('[SYSTEM] Uploading branded media...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+        
+        if (isVideo) {
+            await bot.sendVideo(chatId, outputPath, { caption: '[SUCCESS] Sync Kennel Watermark Applied' });
+        } else {
+            await bot.sendPhoto(chatId, outputPath, { caption: '[SUCCESS] Sync Kennel Watermark Applied' });
+        }
 
-        // 3. Deliver Processed Audio
-        await bot.sendAudio(chatId, outputPath, {
-            caption: `[SUCCESS] Manipulated Audio\nSpeed: Level ${level} | Reverb: Active`
-        });
-
-        // 4. Memory Cleanup
-        fs.unlinkSync(inputPath);
-        fs.unlinkSync(outputPath);
+        // Cleanup Status Message
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
 
     } catch (err) {
-        bot.editMessageText(`[ERROR] Audio processing failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+        bot.editMessageText(`[ERROR] Watermark Engine: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+    } finally {
+        // Guarantee file cleanup to prevent Heroku storage limits
+        if (inputPath && fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+        if (outputPath && fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+        if (logoPath && fs.existsSync(logoPath)) fs.unlinkSync(logoPath);
     }
 });
-
-
 
 
         
