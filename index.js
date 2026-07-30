@@ -1951,20 +1951,26 @@ app.get('/api/download', async (req, res) => {
     }
 
     try {
-        // --- 1. PRIMARY TIKTOK LOGIC ---
+                // --- 1. PRIMARY TIKTOK LOGIC ---
         if (url.includes('tiktok.com')) {
             try {
                 const response = await axios.get(`https://www.tikwm.com/api/?url=${url}&hd=1`);
                 const data = response.data.data;
 
                 if (data) {
+                    // Extract the full caption with hashtags
+                    const originalCaption = data.title || "";
+
+                    // --- IMAGE CAROUSEL HANDLING ---
                     if (data.images && data.images.length > 0) {
                         return res.status(200).json({
                             type: "images",
-                            urls: data.images
+                            urls: data.images,
+                            caption: originalCaption // Added caption to the JSON output!
                         });
                     }
 
+                    // --- VIDEO HANDLING ---
                     const videoUrl = data.hdplay || data.play;
                     if (videoUrl) {
                         const videoStream = await axios({
@@ -1977,7 +1983,11 @@ app.get('/api/download', async (req, res) => {
                             }
                         });
                         
+                        // Inject the caption into the HTTP Headers safely
+                        // We use encodeURIComponent so emojis/hashtags don't break the header rules
+                        res.setHeader('X-Media-Caption', encodeURIComponent(originalCaption));
                         res.setHeader('Content-Type', 'video/mp4');
+                        
                         return videoStream.data.pipe(res);
                     }
                 }
@@ -1985,6 +1995,7 @@ app.get('/api/download', async (req, res) => {
                 console.log("[API ERROR] TikWM failed. Falling back to yt-dlp...");
             }
         }
+
 
         // --- 2. YOUTUBE TERMUX WORKER LOGIC ---
         if (url.includes('youtube.com') || url.includes('youtu.be')) {
