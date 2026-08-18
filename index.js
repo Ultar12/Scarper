@@ -1912,6 +1912,45 @@ global.waitingClients = new Map();
 });
 
 
+app.post('/api/uai', async (req, res) => {
+    const { prompt } = req.body;
+    
+    if (!prompt) {
+        return res.status(400).json({ success: false, error: "Missing prompt." });
+    }
+
+    if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
+        return res.status(503).json({ success: false, error: "Termux Worker is offline." });
+    }
+
+    const reqId = 'wa_ai_' + Date.now();
+
+    // 5-Minute timeout for heavy tasks
+    const timeout = setTimeout(() => {
+        if (global.waitingAiClients.has(reqId)) {
+            global.waitingAiClients.delete(reqId);
+            if (!res.headersSent) res.status(504).json({ success: false, error: "Termux took too long to respond." });
+        }
+    }, 300000);
+
+    // Register this request as an API call instead of a Telegram chat
+    global.waitingAiClients.set(reqId, {
+        isApiCall: true,
+        res: res,
+        timeout: timeout
+    });
+
+    global.termuxSocket.send(JSON.stringify({
+        action: 'ai_prompt',
+        reqId: reqId,
+        prompt: prompt,
+        apiKey: process.env.ANTHROPIC_AUTH_TOKEN || 'sk-Qp8AowqMCBYTcaP8bJLV1noIu4GTNSagCcjFG28SveZlngsg',
+        model: process.env.ANTHROPIC_MODEL || 'claude-opus-4-8'
+    }));
+});
+
+
+
 // --- EXTERNAL LYRICS API ENDPOINT ---
 app.get('/api/lyrics', async (req, res) => {
     const rawQuery = req.query.q;
