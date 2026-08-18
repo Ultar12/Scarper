@@ -2347,6 +2347,78 @@ bot.onText(/\/start/i, (msg) => {
 });
 
 
+// --- AI ASSISTANT COMMAND (AgentRouter / Anthropic) ---
+// Usage: /ai <your prompt>
+bot.onText(/^\/ai\s+([\s\S]+)/i, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    const prompt = match[1].trim();
+
+    // Authorization Check (Matches your existing admin logic)
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
+
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] 🧠 AI is thinking...');
+
+    try {
+        const token = process.env.ANTHROPIC_AUTH_TOKEN;
+        if (!token) {
+            throw new Error("ANTHROPIC_AUTH_TOKEN is missing in your Heroku Config Vars / .env file.");
+        }
+
+        // Pull configuration with fallback defaults per the documentation
+        const baseUrl = (process.env.ANTHROPIC_BASE_URL || 'https://agentrouter.org').replace(/\/$/, '');
+        const model = process.env.ANTHROPIC_MODEL || 'claude-opus-4-6';
+
+        // Hit the Anthropic-compatible /v1/messages endpoint
+        const response = await axios.post(`${baseUrl}/v1/messages`, {
+            model: model,
+            max_tokens: 4096,
+            messages: [
+                { role: "user", content: prompt }
+            ]
+        }, {
+            headers: {
+                // AgentRouter supports standard Anthropic API Key and Bearer Auth
+                'x-api-key': token, 
+                'Authorization': `Bearer ${token}`,
+                'anthropic-version': '2023-06-01',
+                'Content-Type': 'application/json'
+            },
+            timeout: 60000 // Give the AI up to 60 seconds to reply
+        });
+
+        const replyText = response.data.content[0].text;
+
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+
+        // Telegram limits single messages to 4096 characters, so we split it safely if it's too long
+        if (replyText.length > 4000) {
+            const chunks = replyText.match(/[\s\S]{1,4000}/g);
+            for (let chunk of chunks) {
+                await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' });
+                await new Promise(r => setTimeout(r, 500)); // Prevent Telegram spam limits
+            }
+        } else {
+            await bot.sendMessage(chatId, replyText, { parse_mode: 'Markdown' });
+        }
+
+    } catch (err) {
+        let errorDetails = err.message;
+        
+        // Extract the exact API error if AgentRouter rejects the request
+        if (err.response && err.response.data && err.response.data.error) {
+            errorDetails = err.response.data.error.message || JSON.stringify(err.response.data.error);
+        }
+        
+        await bot.editMessageText(`[ERROR] AI Request Failed: ${errorDetails}`, {
+            chat_id: chatId,
+            message_id: statusMsg.message_id
+        }).catch(() => {});
+    }
+});
+
+
+
 // --- FREE PROXY SCRAPER COMMAND ---
 // Usage: /proxy (Fetches 5) OR /proxy 10 (Fetches 10)
 bot.onText(/^\/proxy(?:\s+(\d+))?$/i, async (msg, match) => {
