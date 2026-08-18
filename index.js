@@ -2397,11 +2397,16 @@ bot.onText(/\/tiktok\s+(.+)/i, async (msg, match) => {
         });
 
         await browser.close();
-        browser = null;
-
         if (!videoLinks || videoLinks.length === 0) {
-            return bot.editMessageText(`[FAILED] No results found for "${searchQuery}".`, { chat_id: chatId, message_id: statusMsg.message_id });
+            const debugSnap = await page.screenshot({ type: 'png' });
+            await browser.close();
+            browser = null;
+            await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+            return bot.sendPhoto(chatId, debugSnap, { caption: `[FAILED] No results found for "${searchQuery}". Screenshot attached for debugging.` });
         }
+
+        await browser.close();
+        browser = null;
 
         const targets = videoLinks.slice(0, count);
         await bot.editMessageText(`[SYSTEM] Found ${videoLinks.length} results. Fetching ${targets.length} video(s)...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
@@ -2436,7 +2441,6 @@ bot.onText(/\/tiktok\s+(.+)/i, async (msg, match) => {
         if (browser) await browser.close().catch(() => {});
     }
 });
-
 
 
 
