@@ -384,26 +384,52 @@ global.fileStorage = new Map();
             if (msg.action === 'file_delivery') {
                 fileMeta = msg; 
             } 
-            // --- CATCH TERMUX ERRORS (e.g., 50MB limit hits or yt-dlp crashes) ---
+                        // --- CATCH TERMUX ERRORS ---
             else if (msg.action === 'error') {
                 if (msg.chatId === 'API_USER') {
                     const clientData = global.waitingClients.get(msg.msgId);
                     if (clientData && clientData.res) {
                         if (clientData.heartbeat) clearInterval(clientData.heartbeat);
-                        
-                        if (!clientData.res.headersSent) {
-                            clientData.res.status(500).json({ error: msg.message });
-                        } else {
-                            clientData.res.end(); // Close stream gracefully if headers already fired
-                        }
+                        if (!clientData.res.headersSent) clientData.res.status(500).json({ error: msg.message });
+                        else clientData.res.end();
                         global.waitingClients.delete(msg.msgId);
                     }
                 } else {
-                    // Route error to Telegram
                     await bot.editMessageText(`[ERROR] Termux: ${msg.message}`, { chat_id: msg.chatId, message_id: msg.msgId }).catch(()=>{});
                 }
             }
-        } else {
+            // ==========================================
+            // NEW: HANDLE AI RESPONSES FROM TERMUX
+            // ==========================================
+            else if (msg.action === 'ai_response') {
+                const client = global.waitingAiClients.get(msg.reqId);
+                if (client) {
+                    clearTimeout(client.timeout);
+                    global.waitingAiClients.delete(msg.reqId);
+
+                    if (msg.success) {
+                        await bot.deleteMessage(client.chatId, client.msgId).catch(() => {});
+                        
+                        const replyText = msg.text;
+                        // Split massive code chunks for Telegram
+                        if (replyText.length > 4000) {
+                            const chunks = replyText.match(/[\s\S]{1,4000}/g);
+                            for (let chunk of chunks) {
+                                await bot.sendMessage(client.chatId, chunk, { parse_mode: 'Markdown' });
+                                await new Promise(r => setTimeout(r, 500));
+                            }
+                        } else {
+                            await bot.sendMessage(client.chatId, replyText, { parse_mode: 'Markdown' });
+                        }
+                    } else {
+                        await bot.editMessageText(`[ERROR] AI Failed: ${msg.error}`, {
+                            chat_id: client.chatId,
+                            message_id: client.msgId
+                        }).catch(() => {});
+                    }
+                }
+            }
+ else {
             if (!fileMeta) return;
             const { chatId, msgId, ext } = fileMeta;
 
@@ -2347,97 +2373,111 @@ bot.onText(/\/start/i, (msg) => {
 });
 
 
-// --- AI ASSISTANT COMMAND (AgentRouter / VS Code Deep Spoof) ---
-// Usage: /ai <your prompt>
-bot.onText(/^\/ai\s+([\s\S]+)/i, async (msg, match) => {
+// Global Map for pending AI requests
+global.waitingAiClients = new Map();
+
+// --- AI ASSISTANT COMMAND (VISION + FILE READING + HEAVY DEBUGGING) ---
+// Usage: /ai <prompt> OR Reply to an Image/File with /ai <prompt>
+bot.onText(/^\/ai(?:\s+([\s\S]+))?/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
-    const prompt = match[1].trim();
+    let promptText = match[1] ? match[1].trim() : '';
 
     // Authorization Check 
     const adminId = process.env.ADMIN_ID || '7710721646';
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
 
-    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] 🧠 AI is thinking...');
+    const reply = msg.reply_to_message;
+    if (!promptText && !reply) {
+        return bot.sendMessage(chatId, '[SYSTEM] Please provide a prompt or reply to an image/code file with /ai.');
+    }
+
+    if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
+        return bot.sendMessage(chatId, '[ERROR] Termux Node is offline. Start the worker script on your phone to handle WAF bypass.');
+    }
+
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] 🧠 Processing payload and routing to Termux Worker...');
 
     try {
-        // HARDCODED API KEY: Bypasses Heroku Config Vars completely
-        const token = process.env.ANTHROPIC_AUTH_TOKEN || 'sk-Qp8AowqMCBYTcaP8bJLV1noIu4GTNSagCcjFG28SveZlngsg';
-        
-        const baseUrl = (process.env.ANTHROPIC_BASE_URL || 'https://agentrouter.org').replace(/\/$/, '');
-        const model = process.env.ANTHROPIC_MODEL || 'claude-opus-4-8';
+        let aiContent = []; // Array used for Anthropic Vision/Multi-modal payloads
 
-        // Hit the API with ULTIMATE VS CODE SPOOF HEADERS
-        const response = await axios.post(`${baseUrl}/v1/messages`, {
-            model: model,
-            max_tokens: 4096,
-            messages: [
-                { role: "user", content: prompt }
-            ]
-        }, {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'x-api-key': token, 
-                'anthropic-version': '2023-06-01',
-                // Mimic the exact VS Code plugin wire image
-                'User-Agent': 'claude-cli/2.1.158 (external, sdk-cli)',
-                'anthropic-beta': 'claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24,redact-thinking-2026-02-12',
-                'anthropic-dangerous-direct-browser-access': 'true',
-                'x-app': 'cli',
-                'X-Stainless-Lang': 'node',
-                'X-Stainless-Package-Version': '0.32.1',
-                'X-Stainless-OS': 'MacOS',
-                'X-Stainless-Arch': 'arm64',
-                'X-Stainless-Runtime': 'Node.js',
-                'X-Stainless-Runtime-Version': 'v18.19.0',
-                'Content-Type': 'application/json'
-            },
-            timeout: 60000 
+        // 1. HANDLE IMAGE ATTACHMENTS (Vision AI)
+        if (reply && reply.photo) {
+            await bot.editMessageText('[SYSTEM] 🧠 Downloading Image for Vision Analysis...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+            const photo = reply.photo[reply.photo.length - 1]; // Get highest quality
+            const fileLink = await bot.getFileLink(photo.file_id);
+            const picRes = await axios.get(fileLink, { responseType: 'arraybuffer' });
+            
+            // Convert to Base64 for Anthropic API
+            const base64Img = Buffer.from(picRes.data).toString('base64');
+            
+            aiContent.push({
+                type: "image",
+                source: {
+                    type: "base64",
+                    media_type: 'image/jpeg',
+                    data: base64Img
+                }
+            });
+        }
+
+        // 2. HANDLE FILE ATTACHMENTS (Code Debugging / Document Reading)
+        if (reply && reply.document) {
+            await bot.editMessageText('[SYSTEM] 🧠 Reading Source Code / Document...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+            const doc = reply.document;
+            const ext = doc.file_name.split('.').pop().toLowerCase();
+            
+            // List of readable text/code files
+            const readableExts = ['js', 'py', 'txt', 'html', 'css', 'json', 'csv', 'md', 'sh', 'env', 'ts', 'php'];
+            
+            if (readableExts.includes(ext) || doc.mime_type.includes('text') || doc.mime_type.includes('application/json')) {
+                const fileLink = await bot.getFileLink(doc.file_id);
+                const docRes = await axios.get(fileLink, { responseType: 'text' });
+                const fileText = docRes.data;
+                
+                // Inject file contents directly into the prompt text
+                promptText = `Here is the contents of the file '${doc.file_name}':\n\n\`\`\`${ext}\n${fileText}\n\`\`\`\n\n${promptText}`;
+            } else {
+                await bot.sendMessage(chatId, `⚠️ Cannot read non-text file type: ${doc.file_name}. Continuing with standard text prompt.`);
+            }
+        }
+
+        // 3. COMPILE FINAL PAYLOAD
+        if (promptText) {
+            aiContent.push({ type: "text", text: promptText });
+        } else if (aiContent.length > 0) {
+            // Default prompt if user replied to an image but didn't type any words
+            aiContent.push({ type: "text", text: "Please analyze this and tell me what you see or how to fix it." });
+        }
+
+        const reqId = 'ai_' + Date.now();
+
+        // 4. SET THE 5-MINUTE TIMEOUT TRACKER IN MEMORY
+        global.waitingAiClients.set(reqId, {
+            chatId: chatId,
+            msgId: statusMsg.message_id,
+            timeout: setTimeout(() => {
+                if (global.waitingAiClients.has(reqId)) {
+                    global.waitingAiClients.delete(reqId);
+                    bot.editMessageText('[TIMEOUT] AI debugging took longer than 5 minutes. Aborted.', { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+                }
+            }, 300000) // 5 minutes (300,000 ms)
         });
 
-        // Smart Schema Detector
-        let replyText = "";
+        // 5. FIRE OVER WEBSOCKET TO TERMUX
+        await bot.editMessageText('[SYSTEM] 🧠 Payload routed to Termux. Executing Deep Spoof (Up to 5 minutes)...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
         
-        if (response.data.content && response.data.content[0]) {
-            replyText = response.data.content[0].text;
-        } else if (response.data.choices && response.data.choices[0].message) {
-            replyText = response.data.choices[0].message.content;
-        } else {
-            throw new Error("Unexpected API format: " + JSON.stringify(response.data).substring(0, 200));
-        }
-
-        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-
-        // Safe Telegram Delivery (Splits messages > 4000 characters)
-        if (replyText.length > 4000) {
-            const chunks = replyText.match(/[\s\S]{1,4000}/g);
-            for (let chunk of chunks) {
-                await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' });
-                await new Promise(r => setTimeout(r, 500)); 
-            }
-        } else {
-            await bot.sendMessage(chatId, replyText, { parse_mode: 'Markdown' });
-        }
+        global.termuxSocket.send(JSON.stringify({
+            action: 'ai_prompt',
+            reqId: reqId,
+            prompt: aiContent, // We send the formatted array to Termux!
+            apiKey: process.env.ANTHROPIC_AUTH_TOKEN || 'sk-Qp8AowqMCBYTcaP8bJLV1noIu4GTNSagCcjFG28SveZlngsg',
+            model: process.env.ANTHROPIC_MODEL || 'claude-opus-4-8'
+        }));
 
     } catch (err) {
-        let errorDetails = err.message;
-        
-        if (err.response && err.response.data) {
-            if (typeof err.response.data === 'string' && err.response.data.includes('aliyun_waf')) {
-                errorDetails = "Alibaba Firewall (WAF) blocked the request.";
-            } else if (err.response.data.error && err.response.data.error.message) {
-                errorDetails = err.response.data.error.message;
-            } else {
-                errorDetails = JSON.stringify(err.response.data).substring(0, 200);
-            }
-        }
-        
-        await bot.editMessageText(`[ERROR] AI Request Failed: ${errorDetails}`, {
-            chat_id: chatId,
-            message_id: statusMsg.message_id
-        }).catch(() => {});
+        bot.editMessageText(`[ERROR] Failed to process payload: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
     }
 });
-
 
 
 
