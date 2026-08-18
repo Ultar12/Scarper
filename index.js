@@ -2346,6 +2346,7 @@ bot.onText(/\/start/i, (msg) => {
     });
 });
 
+
 // Usage: /tiktok <query>  -> downloads 3 videos by default
 //        /tiktok <number> <query> -> downloads that many videos (max 10)
 bot.onText(/\/tiktok\s+(.+)/i, async (msg, match) => {
@@ -2374,19 +2375,31 @@ bot.onText(/\/tiktok\s+(.+)/i, async (msg, match) => {
         browser = await puppeteer.launch({
             headless: true,
             executablePath: getChromePath(),
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+            args: [
+                '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu',
+                '--single-process', '--no-zygote'
+            ]
         });
 
         const page = await browser.newPage();
         await page.setViewport({ width: 412, height: 915 });
         await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
 
+        await page.setRequestInterception(true);
+        page.on('request', (req) => {
+            if (['image', 'media', 'font', 'stylesheet'].includes(req.resourceType())) {
+                req.abort();
+            } else {
+                req.continue();
+            }
+        });
+
         const searchUrl = `https://www.tiktok.com/search/video?q=${encodeURIComponent(searchQuery)}`;
-        await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         await new Promise(r => setTimeout(r, 3000));
 
         for (let i = 0; i < 3; i++) {
-            await page.evaluate(() => window.scrollBy(0, 1000));
+            await page.evaluate(() => window.scrollBy(0, 1000)).catch(() => {});
             await new Promise(r => setTimeout(r, 1500));
         }
 
@@ -2396,13 +2409,17 @@ bot.onText(/\/tiktok\s+(.+)/i, async (msg, match) => {
             return [...new Set(hrefs)];
         });
 
-        await browser.close();
         if (!videoLinks || videoLinks.length === 0) {
-            const debugSnap = await page.screenshot({ type: 'png' });
-            await browser.close();
+            let debugSnap = null;
+            try { debugSnap = await page.screenshot({ type: 'png' }); } catch (snapErr) {}
+            await browser.close().catch(() => {});
             browser = null;
             await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-            return bot.sendPhoto(chatId, debugSnap, { caption: `[FAILED] No results found for "${searchQuery}". Screenshot attached for debugging.` });
+            if (debugSnap) {
+                return bot.sendPhoto(chatId, debugSnap, { caption: `[FAILED] No results found for "${searchQuery}". Screenshot attached for debugging.` });
+            } else {
+                return bot.sendMessage(chatId, `[FAILED] No results found for "${searchQuery}". (Browser crashed before a screenshot could be taken — likely an out-of-memory kill, check "heroku logs --tail" for R14 errors.)`);
+            }
         }
 
         await browser.close();
@@ -2441,8 +2458,6 @@ bot.onText(/\/tiktok\s+(.+)/i, async (msg, match) => {
         if (browser) await browser.close().catch(() => {});
     }
 });
-
-
 
         
 bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
