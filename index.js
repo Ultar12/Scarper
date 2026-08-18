@@ -28,6 +28,9 @@ const util = require('util');
 const execPromise = util.promisify(exec);
 
 
+const multer = require('multer');
+const upload = multer({ limits: { fileSize: 25 * 1024 * 1024 } }); // 25MB limit
+
 
 const { PuppeteerScreenRecorder } = require('puppeteer-screen-recorder');
 const playCache = {};
@@ -1924,20 +1927,43 @@ global.waitingClients = new Map();
 });
 
 
-app.post('/api/uai', async (req, res) => {
-    const { prompt } = req.body;
+
+
+app.post('/api/uai', upload.single('file'), async (req, res) => {
+    let { prompt } = req.body;
+    const file = req.file;
     
-    if (!prompt) {
-        return res.status(400).json({ success: false, error: "Missing prompt." });
+    if (!prompt && !file) {
+        return res.status(400).json({ success: false, error: "Missing prompt or file." });
     }
 
     if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
         return res.status(503).json({ success: false, error: "Termux Worker is offline." });
     }
 
-    const reqId = 'wa_ai_' + Date.now();
+    let aiContent = [];
 
-    // 5-Minute timeout for heavy tasks
+    // If a file or image was attached from WhatsApp
+    if (file) {
+        const base64Data = file.buffer.toString('base64');
+        
+        if (file.mimetype.startsWith('image/')) {
+            aiContent.push({
+                type: "image",
+                source: { type: "base64", media_type: file.mimetype, data: base64Data }
+            });
+        } else {
+            // Read code/document text files
+            const textContent = file.buffer.toString('utf8');
+            prompt = `Here is the content of the attached file '${file.originalname}':\n\n\`\`\`\n${textContent}\n\`\`\`\n\n${prompt || 'Please review this file.'}`;
+        }
+    }
+
+    if (prompt) {
+        aiContent.push({ type: "text", text: prompt });
+    }
+
+    const reqId = 'wa_ai_' + Date.now();
     const timeout = setTimeout(() => {
         if (global.waitingAiClients.has(reqId)) {
             global.waitingAiClients.delete(reqId);
@@ -1945,7 +1971,6 @@ app.post('/api/uai', async (req, res) => {
         }
     }, 300000);
 
-    // Register this request as an API call instead of a Telegram chat
     global.waitingAiClients.set(reqId, {
         isApiCall: true,
         res: res,
@@ -1955,11 +1980,12 @@ app.post('/api/uai', async (req, res) => {
     global.termuxSocket.send(JSON.stringify({
         action: 'ai_prompt',
         reqId: reqId,
-        prompt: prompt,
+        prompt: aiContent,
         apiKey: process.env.ANTHROPIC_AUTH_TOKEN || 'sk-Qp8AowqMCBYTcaP8bJLV1noIu4GTNSagCcjFG28SveZlngsg',
         model: process.env.ANTHROPIC_MODEL || 'claude-opus-4-8'
     }));
 });
+
 
 
 
