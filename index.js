@@ -479,7 +479,7 @@ server.listen(PORT, () => console.log(`Web server & WebSocket Hub listening on p
 
 
 // --- 3. TELEGRAM BOT SETUP ---
-const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || '7806461656:AAFJLm-gOKgKrvPY06b0QTE1fKlVR9waOsQ';
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || '8721362064:AAHYyf93BIe6SLg2BiuV0URlkHpkKstQRX8';
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
 let waClient = null;
