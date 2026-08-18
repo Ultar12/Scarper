@@ -2353,7 +2353,7 @@ bot.onText(/^\/ai\s+([\s\S]+)/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     const prompt = match[1].trim();
 
-    // Authorization Check (Matches your existing admin logic)
+    // Authorization Check 
     const adminId = process.env.ADMIN_ID || '7710721646';
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
 
@@ -2365,11 +2365,10 @@ bot.onText(/^\/ai\s+([\s\S]+)/i, async (msg, match) => {
             throw new Error("ANTHROPIC_AUTH_TOKEN is missing in your Heroku Config Vars / .env file.");
         }
 
-        // Pull configuration with fallback defaults per the documentation
         const baseUrl = (process.env.ANTHROPIC_BASE_URL || 'https://agentrouter.org').replace(/\/$/, '');
         const model = process.env.ANTHROPIC_MODEL || 'claude-opus-4-6';
 
-        // Hit the Anthropic-compatible /v1/messages endpoint
+        // Hit the API
         const response = await axios.post(`${baseUrl}/v1/messages`, {
             model: model,
             max_tokens: 4096,
@@ -2378,25 +2377,36 @@ bot.onText(/^\/ai\s+([\s\S]+)/i, async (msg, match) => {
             ]
         }, {
             headers: {
-                // AgentRouter supports standard Anthropic API Key and Bearer Auth
                 'x-api-key': token, 
                 'Authorization': `Bearer ${token}`,
                 'anthropic-version': '2023-06-01',
                 'Content-Type': 'application/json'
             },
-            timeout: 60000 // Give the AI up to 60 seconds to reply
+            timeout: 60000 
         });
 
-        const replyText = response.data.content[0].text;
+        // --- THE FIX: SMART SCHEMA DETECTOR ---
+        let replyText = "";
+        
+        if (response.data.content && response.data.content[0]) {
+            // Native Anthropic Format
+            replyText = response.data.content[0].text;
+        } else if (response.data.choices && response.data.choices[0].message) {
+            // OpenAI Format (Often used by API proxies)
+            replyText = response.data.choices[0].message.content;
+        } else {
+            // Unknown Format Fallback (Dumps the raw response so we can see what it is)
+            throw new Error("Unexpected API format: " + JSON.stringify(response.data).substring(0, 200));
+        }
 
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
 
-        // Telegram limits single messages to 4096 characters, so we split it safely if it's too long
+        // Telegram limits single messages to 4096 characters, so we split it safely
         if (replyText.length > 4000) {
             const chunks = replyText.match(/[\s\S]{1,4000}/g);
             for (let chunk of chunks) {
                 await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' });
-                await new Promise(r => setTimeout(r, 500)); // Prevent Telegram spam limits
+                await new Promise(r => setTimeout(r, 500)); 
             }
         } else {
             await bot.sendMessage(chatId, replyText, { parse_mode: 'Markdown' });
@@ -2405,9 +2415,13 @@ bot.onText(/^\/ai\s+([\s\S]+)/i, async (msg, match) => {
     } catch (err) {
         let errorDetails = err.message;
         
-        // Extract the exact API error if AgentRouter rejects the request
-        if (err.response && err.response.data && err.response.data.error) {
-            errorDetails = err.response.data.error.message || JSON.stringify(err.response.data.error);
+        if (err.response && err.response.data) {
+            // Extract the exact API error if it was rejected
+            if (err.response.data.error && err.response.data.error.message) {
+                errorDetails = err.response.data.error.message;
+            } else {
+                errorDetails = JSON.stringify(err.response.data).substring(0, 200);
+            }
         }
         
         await bot.editMessageText(`[ERROR] AI Request Failed: ${errorDetails}`, {
@@ -2416,6 +2430,7 @@ bot.onText(/^\/ai\s+([\s\S]+)/i, async (msg, match) => {
         }).catch(() => {});
     }
 });
+
 
 
 
