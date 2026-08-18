@@ -2347,117 +2347,61 @@ bot.onText(/\/start/i, (msg) => {
 });
 
 
-// Usage: /tiktok <query>  -> downloads 3 videos by default
-//        /tiktok <number> <query> -> downloads that many videos (max 10)
-bot.onText(/\/tiktok\s+(.+)/i, async (msg, match) => {
+// --- FREE PROXY SCRAPER COMMAND ---
+// Usage: /proxy (Fetches 5) OR /proxy 10 (Fetches 10)
+bot.onText(/^\/proxy(?:\s+(\d+))?$/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
+    
+    // Authorization Check (Matches your existing admin logic)
     const adminId = process.env.ADMIN_ID || '7710721646';
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
 
-    const input = match[1].trim();
-    let count = 3;
-    let searchQuery = input;
-
-    const numberMatch = input.match(/^(\d+)\s+(.+)$/);
-    if (numberMatch) {
-        count = parseInt(numberMatch[1]);
-        searchQuery = numberMatch[2];
+    // Default to 5 proxies if no number is provided
+    const count = match[1] ? parseInt(match[1]) : 5;
+    
+    if (count > 50) {
+        return bot.sendMessage(chatId, '⚠️ [ERROR] Maximum 50 proxies per request to avoid text limits.');
     }
 
-    if (count < 1 || count > 10) {
-        return bot.sendMessage(chatId, '[ERROR] Number of videos must be between 1 and 10.');
-    }
-
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Searching TikTok for "${searchQuery}"...`);
-    let browser = null;
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Scraping ${count} free elite proxies...`);
 
     try {
-        browser = await puppeteer.launch({
-            headless: true,
-            executablePath: getChromePath(),
-            args: [
-                '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu',
-                '--single-process', '--no-zygote'
-            ]
+        // Fetch fresh free HTTP/HTTPS proxies from ProxyScrape API
+        const response = await axios.get('https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=elite');
+        
+        // Split the raw text response into an array and clean it up
+        let proxies = response.data.split('\n').map(p => p.trim()).filter(p => p.length > 8);
+
+        if (proxies.length === 0) {
+            throw new Error("Public proxy database is currently empty.");
+        }
+
+        // Shuffle the array so you get random/different proxies every time you run the command
+        proxies = proxies.sort(() => 0.5 - Math.random());
+        
+        // Grab the requested amount
+        const selectedProxies = proxies.slice(0, count);
+
+        let proxyMessage = `🌍 *Free Elite Proxies (${selectedProxies.length})*\n\n`;
+        
+        selectedProxies.forEach(proxy => {
+            // Format as click-to-copy URL format
+            proxyMessage += `\`http://${proxy}\`\n\n`;
         });
 
-        const page = await browser.newPage();
-        await page.setViewport({ width: 412, height: 915 });
-        await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+        proxyMessage += `_Tap any proxy to copy it._\n_Note: Free public proxies die fast. Generate new ones if these timeout._`;
 
-        await page.setRequestInterception(true);
-        page.on('request', (req) => {
-            if (['image', 'media', 'font', 'stylesheet'].includes(req.resourceType())) {
-                req.abort();
-            } else {
-                req.continue();
-            }
-        });
-
-        const searchUrl = `https://www.tiktok.com/search/video?q=${encodeURIComponent(searchQuery)}`;
-        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await new Promise(r => setTimeout(r, 3000));
-
-        for (let i = 0; i < 3; i++) {
-            await page.evaluate(() => window.scrollBy(0, 1000)).catch(() => {});
-            await new Promise(r => setTimeout(r, 1500));
-        }
-
-        const videoLinks = await page.evaluate(() => {
-            const anchors = Array.from(document.querySelectorAll('a[href*="/video/"]'));
-            const hrefs = anchors.map(a => a.href).filter(h => h.includes('/video/'));
-            return [...new Set(hrefs)];
-        });
-
-        if (!videoLinks || videoLinks.length === 0) {
-            let debugSnap = null;
-            try { debugSnap = await page.screenshot({ type: 'png' }); } catch (snapErr) {}
-            await browser.close().catch(() => {});
-            browser = null;
-            await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-            if (debugSnap) {
-                return bot.sendPhoto(chatId, debugSnap, { caption: `[FAILED] No results found for "${searchQuery}". Screenshot attached for debugging.` });
-            } else {
-                return bot.sendMessage(chatId, `[FAILED] No results found for "${searchQuery}". (Browser crashed before a screenshot could be taken — likely an out-of-memory kill, check "heroku logs --tail" for R14 errors.)`);
-            }
-        }
-
-        await browser.close();
-        browser = null;
-
-        const targets = videoLinks.slice(0, count);
-        await bot.editMessageText(`[SYSTEM] Found ${videoLinks.length} results. Fetching ${targets.length} video(s)...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
-
-        let sentCount = 0;
-        for (const link of targets) {
-            try {
-                const response = await axios.get(`https://www.tikwm.com/api/?url=${encodeURIComponent(link)}&hd=1`, { timeout: 20000 });
-                const data = response.data && response.data.data;
-                if (!data) continue;
-
-                const videoUrl = data.hdplay || data.play;
-                if (!videoUrl) continue;
-
-                const caption = `${data.title || 'TikTok Video'}\nby @${data.author ? data.author.unique_id : 'unknown'}`;
-                await bot.sendVideo(chatId, videoUrl, { caption });
-                sentCount++;
-            } catch (innerErr) {
-                console.log(`[TIKTOK] Failed to process ${link}: ${innerErr.message}`);
-            }
-        }
-
-        if (sentCount === 0) {
-            await bot.editMessageText(`[FAILED] Found results but could not extract any playable videos.`, { chat_id: chatId, message_id: statusMsg.message_id });
-        } else {
-            await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-        }
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+        bot.sendMessage(chatId, proxyMessage, { parse_mode: 'Markdown' });
 
     } catch (err) {
-        await bot.editMessageText(`[ERROR] TikTok search failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
-    } finally {
-        if (browser) await browser.close().catch(() => {});
+        await bot.editMessageText(`[ERROR] Failed to fetch free proxies: ${err.message}`, { 
+            chat_id: chatId, 
+            message_id: statusMsg.message_id 
+        }).catch(() => {});
     }
 });
+
 
         
 bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
