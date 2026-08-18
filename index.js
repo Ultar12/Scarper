@@ -375,8 +375,9 @@ global.fileStorage = new Map();
 
 
 
-  ws.on('message', async (data, isBinary) => {
+    ws.on('message', async (data, isBinary) => {
     try {
+        // --- 1. HANDLE TEXT/JSON MESSAGES ---
         if (!isBinary) {
             const msg = JSON.parse(data.toString());
             if (msg.action === 'ping') return;
@@ -384,7 +385,7 @@ global.fileStorage = new Map();
             if (msg.action === 'file_delivery') {
                 fileMeta = msg; 
             } 
-                        // --- CATCH TERMUX ERRORS ---
+            // --- CATCH TERMUX ERRORS ---
             else if (msg.action === 'error') {
                 if (msg.chatId === 'API_USER') {
                     const clientData = global.waitingClients.get(msg.msgId);
@@ -429,29 +430,29 @@ global.fileStorage = new Map();
                     }
                 }
             }
- else {
+        } 
+        // --- 2. HANDLE BINARY STREAMING (VIDEOS/AUDIO) ---
+        else {
             if (!fileMeta) return;
             const { chatId, msgId, ext } = fileMeta;
 
+            // Handle API Webhook Downloads
             if (chatId === 'API_USER') {
                 const clientData = global.waitingClients.get(msgId);
                 
                 if (clientData && clientData.res) {
                     const res = clientData.res;
 
-                    // 1. KILL THE HEARTBEAT IMMEDIATELY
                     if (clientData.heartbeat) {
                         clearInterval(clientData.heartbeat);
                     }
                     
-                    // 2. CHECK: Only set headers if they haven't been sent yet
                     if (!res.headersSent) {
                         res.setHeader('Content-Type', ext === 'mp4' ? 'video/mp4' : 'audio/mpeg');
                     }
                     
-                    // 3. SEND THE BINARY DATA
                     res.write(data);
-                    res.end(); // Finally close the stream
+                    res.end(); 
                     
                     global.waitingClients.delete(msgId);
                 }
@@ -460,11 +461,9 @@ global.fileStorage = new Map();
                 return;
             }
             
-
-            // --- TELEGRAM LOGIC ---
+            // Handle Telegram Downloads
             await bot.editMessageText(`[SYSTEM] Streaming binary to Telegram...`, { chat_id: chatId, message_id: msgId }).catch(()=>{});
             
-            // FIX: Added filename and contentType to destroy the DeprecationWarning
             if (ext === 'mp4') {
                 await bot.sendVideo(
                     chatId, 
@@ -490,6 +489,7 @@ global.fileStorage = new Map();
         console.error('[WS SERVER ERROR]', err);
     }
 });
+
 
 
 
