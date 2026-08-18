@@ -2346,90 +2346,67 @@ bot.onText(/\/start/i, (msg) => {
     });
 });
 
-// --- DYNAMIC WATERMARK ENGINE (PHOTOS & VIDEOS VIA URL LOGO) ---
-// Usage: Reply to a photo or video with /watermark
-bot.onText(/^\/watermark$/i, async (msg) => {
+// Usage: /tiktok <query>  -> downloads 3 videos by default
+//        /tiktok <number> <query> -> downloads that many videos (max 10)
+bot.onText(/\/tiktok\s+(.+)/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
-    
-    // Authorization Check
     const adminId = process.env.ADMIN_ID || '7710721646';
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
 
-    if (!msg.reply_to_message || (!msg.reply_to_message.photo && !msg.reply_to_message.video)) {
-        return bot.sendMessage(chatId, '[ERROR] Please reply to a photo or video with /watermark');
+    const input = match[1].trim();
+    let count = 3;
+    let searchQuery = input;
+
+    const numberMatch = input.match(/^(\d+)\s+(.+)$/);
+    if (numberMatch) {
+        count = parseInt(numberMatch[1]);
+        searchQuery = numberMatch[2];
     }
 
-    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Initiating Chroma-Key Watermark Engine...');
-    
-    const isVideo = !!msg.reply_to_message.video;
-    // Telegram stores photos in an array of sizes; grab the last one (highest resolution)
-    const fileId = isVideo ? msg.reply_to_message.video.file_id : msg.reply_to_message.photo[msg.reply_to_message.photo.length - 1].file_id;
-    
-    let inputPath = null;
-    let outputPath = null;
-    let logoPath = null;
+    if (count < 1 || count > 10) {
+        return bot.sendMessage(chatId, '[ERROR] Number of videos must be between 1 and 10.');
+    }
+
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Searching TikTok for "${searchQuery}"...`);
 
     try {
-        const fileLink = await bot.getFileLink(fileId);
-        const timestamp = Date.now();
-        
-        inputPath = path.join(__dirname, `wm_in_${timestamp}.${isVideo ? 'mp4' : 'jpg'}`);
-        outputPath = path.join(__dirname, `wm_out_${timestamp}.${isVideo ? 'mp4' : 'jpg'}`);
-        logoPath = path.join(__dirname, `wm_logo_${timestamp}.jpg`);
-        
-        // 1. Download target media to RAM/Disk
-        await bot.editMessageText('[SYSTEM] Downloading target media...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
-        const mediaResponse = await axios.get(fileLink, { responseType: 'arraybuffer' });
-        fs.writeFileSync(inputPath, Buffer.from(mediaResponse.data, 'binary'));
+        const response = await axios.post(
+            'https://tikwm.com/api/feed/search',
+            new URLSearchParams({ keywords: searchQuery, count: '20' }),
+            {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Referer': 'https://tikwm.com/'
+                },
+                timeout: 20000
+            }
+        );
 
-        // 2. Download the Sync Kennel logo dynamically from the provided link
-        await bot.editMessageText('[SYSTEM] Fetching Sync Kennel logo from cloud...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
-        const logoUrl = 'https://i.ibb.co/YBwDJ2F5/temp.jpg';
-        const logoResponse = await axios.get(logoUrl, { responseType: 'arraybuffer' });
-        fs.writeFileSync(logoPath, Buffer.from(logoResponse.data, 'binary'));
-
-        // 3. Process with FFmpeg
-        await bot.editMessageText(`[SYSTEM] Processing ${isVideo ? 'Video' : 'Image'} with White Background Removal...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
-        
-        // --- THE FFMPEG CHROMA-KEY FILTER ---
-        // 1. colorkey=white:0.05:0.1 -> Erases the white background
-        // 2. colorchannelmixer=aa=0.8 -> Drops opacity to 80% 
-        // 3. scale2ref -> Scales the logo to 20% of the main media's width
-        // 4. overlay=W-w-20:H-h-20 -> Places it in the bottom right corner
-        const filterComplex = `[1:v]format=rgba,colorkey=white:0.05:0.1,colorchannelmixer=aa=0.8[keyed_logo];[keyed_logo][0:v]scale2ref=w=iw*0.2:h=ow/mdar[scaled_logo][main_media];[main_media][scaled_logo]overlay=W-w-20:H-h-20`;
-
-        let ffmpegCmd = '';
-        if (isVideo) {
-            // Video command: preserve audio via -codec:a copy
-            ffmpegCmd = `ffmpeg -i ${inputPath} -i ${logoPath} -filter_complex "${filterComplex}" -codec:a copy -y ${outputPath}`;
-        } else {
-            // Image command: process as a single frame
-            ffmpegCmd = `ffmpeg -i ${inputPath} -i ${logoPath} -filter_complex "${filterComplex}" -y ${outputPath}`;
-        }
-        
-        await execPromise(ffmpegCmd);
-        
-        // 4. Upload to Telegram
-        await bot.editMessageText('[SYSTEM] Uploading branded media...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
-        
-        if (isVideo) {
-            await bot.sendVideo(chatId, outputPath, { caption: '[SUCCESS] Sync Kennel Watermark Applied' });
-        } else {
-            await bot.sendPhoto(chatId, outputPath, { caption: '[SUCCESS] Sync Kennel Watermark Applied' });
+        const results = response.data && response.data.data && response.data.data.videos;
+        if (!results || results.length === 0) {
+            return bot.editMessageText(`[FAILED] No results found for "${searchQuery}".`, { chat_id: chatId, message_id: statusMsg.message_id });
         }
 
-        // Cleanup Status Message
+        const videos = results.slice(0, count);
+        await bot.editMessageText(`[SYSTEM] Found results. Sending ${videos.length} video(s)...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+
+        for (const video of videos) {
+            const videoUrl = video.play.startsWith('http') ? video.play : `https://www.tikwm.com${video.play}`;
+            const author = video.author ? video.author.unique_id : 'unknown';
+            const caption = `${video.title || 'TikTok Video'}\nby @${author}`;
+            await bot.sendVideo(chatId, videoUrl, { caption }).catch(async (err) => {
+                await bot.sendMessage(chatId, `[WARNING] Failed to send one video: ${err.message}`);
+            });
+        }
+
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
 
     } catch (err) {
-        bot.editMessageText(`[ERROR] Watermark Engine: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
-    } finally {
-        // Guarantee file cleanup to prevent Heroku storage limits
-        if (inputPath && fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
-        if (outputPath && fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-        if (logoPath && fs.existsSync(logoPath)) fs.unlinkSync(logoPath);
+        await bot.editMessageText(`[ERROR] Failed to fetch TikTok videos: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
     }
 });
+
 
 
         
