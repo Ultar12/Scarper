@@ -2368,44 +2368,75 @@ bot.onText(/\/tiktok\s+(.+)/i, async (msg, match) => {
     }
 
     let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Searching TikTok for "${searchQuery}"...`);
+    let browser = null;
 
     try {
-        const response = await axios.post(
-            'https://tikwm.com/api/feed/search',
-            new URLSearchParams({ keywords: searchQuery, count: '20' }),
-            {
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Referer': 'https://tikwm.com/'
-                },
-                timeout: 20000
-            }
-        );
+        browser = await puppeteer.launch({
+            headless: true,
+            executablePath: getChromePath(),
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        });
 
-        const results = response.data && response.data.data && response.data.data.videos;
-        if (!results || results.length === 0) {
+        const page = await browser.newPage();
+        await page.setViewport({ width: 412, height: 915 });
+        await page.setUserAgent('Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+
+        const searchUrl = `https://www.tiktok.com/search/video?q=${encodeURIComponent(searchQuery)}`;
+        await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+        await new Promise(r => setTimeout(r, 3000));
+
+        for (let i = 0; i < 3; i++) {
+            await page.evaluate(() => window.scrollBy(0, 1000));
+            await new Promise(r => setTimeout(r, 1500));
+        }
+
+        const videoLinks = await page.evaluate(() => {
+            const anchors = Array.from(document.querySelectorAll('a[href*="/video/"]'));
+            const hrefs = anchors.map(a => a.href).filter(h => h.includes('/video/'));
+            return [...new Set(hrefs)];
+        });
+
+        await browser.close();
+        browser = null;
+
+        if (!videoLinks || videoLinks.length === 0) {
             return bot.editMessageText(`[FAILED] No results found for "${searchQuery}".`, { chat_id: chatId, message_id: statusMsg.message_id });
         }
 
-        const videos = results.slice(0, count);
-        await bot.editMessageText(`[SYSTEM] Found results. Sending ${videos.length} video(s)...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+        const targets = videoLinks.slice(0, count);
+        await bot.editMessageText(`[SYSTEM] Found ${videoLinks.length} results. Fetching ${targets.length} video(s)...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
 
-        for (const video of videos) {
-            const videoUrl = video.play.startsWith('http') ? video.play : `https://www.tikwm.com${video.play}`;
-            const author = video.author ? video.author.unique_id : 'unknown';
-            const caption = `${video.title || 'TikTok Video'}\nby @${author}`;
-            await bot.sendVideo(chatId, videoUrl, { caption }).catch(async (err) => {
-                await bot.sendMessage(chatId, `[WARNING] Failed to send one video: ${err.message}`);
-            });
+        let sentCount = 0;
+        for (const link of targets) {
+            try {
+                const response = await axios.get(`https://www.tikwm.com/api/?url=${encodeURIComponent(link)}&hd=1`, { timeout: 20000 });
+                const data = response.data && response.data.data;
+                if (!data) continue;
+
+                const videoUrl = data.hdplay || data.play;
+                if (!videoUrl) continue;
+
+                const caption = `${data.title || 'TikTok Video'}\nby @${data.author ? data.author.unique_id : 'unknown'}`;
+                await bot.sendVideo(chatId, videoUrl, { caption });
+                sentCount++;
+            } catch (innerErr) {
+                console.log(`[TIKTOK] Failed to process ${link}: ${innerErr.message}`);
+            }
         }
 
-        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+        if (sentCount === 0) {
+            await bot.editMessageText(`[FAILED] Found results but could not extract any playable videos.`, { chat_id: chatId, message_id: statusMsg.message_id });
+        } else {
+            await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+        }
 
     } catch (err) {
-        await bot.editMessageText(`[ERROR] Failed to fetch TikTok videos: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+        await bot.editMessageText(`[ERROR] TikTok search failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+    } finally {
+        if (browser) await browser.close().catch(() => {});
     }
 });
+
 
 
 
