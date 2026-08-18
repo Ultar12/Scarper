@@ -399,6 +399,7 @@ global.fileStorage = new Map();
                     await bot.editMessageText(`[ERROR] Termux: ${msg.message}`, { chat_id: msg.chatId, message_id: msg.msgId }).catch(()=>{});
                 }
             }
+        
             // ==========================================
             // NEW: HANDLE AI RESPONSES FROM TERMUX
             // ==========================================
@@ -408,29 +409,40 @@ global.fileStorage = new Map();
                     clearTimeout(client.timeout);
                     global.waitingAiClients.delete(msg.reqId);
 
-                    if (msg.success) {
-                        await bot.deleteMessage(client.chatId, client.msgId).catch(() => {});
-                        
-                        const replyText = msg.text;
-                        // Split massive code chunks for Telegram
-                        if (replyText.length > 4000) {
-                            const chunks = replyText.match(/[\s\S]{1,4000}/g);
-                            for (let chunk of chunks) {
-                                await bot.sendMessage(client.chatId, chunk, { parse_mode: 'Markdown' });
-                                await new Promise(r => setTimeout(r, 500));
+                    // 1. IS IT AN API CALL? (From your WhatsApp Bot)
+                    if (client.isApiCall) {
+                        if (msg.success) {
+                            if (!client.res.headersSent) client.res.json({ success: true, text: msg.text });
+                        } else {
+                            if (!client.res.headersSent) client.res.status(500).json({ success: false, error: msg.error });
+                        }
+                    } 
+                    // 2. OR IS IT A TELEGRAM COMMAND?
+                    else {
+                        if (msg.success) {
+                            await bot.deleteMessage(client.chatId, client.msgId).catch(() => {});
+                            
+                            const replyText = msg.text;
+                            // Split massive code chunks for Telegram
+                            if (replyText.length > 4000) {
+                                const chunks = replyText.match(/[\s\S]{1,4000}/g);
+                                for (let chunk of chunks) {
+                                    await bot.sendMessage(client.chatId, chunk, { parse_mode: 'Markdown' });
+                                    await new Promise(r => setTimeout(r, 500));
+                                }
+                            } else {
+                                await bot.sendMessage(client.chatId, replyText, { parse_mode: 'Markdown' });
                             }
                         } else {
-                            await bot.sendMessage(client.chatId, replyText, { parse_mode: 'Markdown' });
+                            await bot.editMessageText(`[ERROR] AI Failed: ${msg.error}`, {
+                                chat_id: client.chatId,
+                                message_id: client.msgId
+                            }).catch(() => {});
                         }
-                    } else {
-                        await bot.editMessageText(`[ERROR] AI Failed: ${msg.error}`, {
-                            chat_id: client.chatId,
-                            message_id: client.msgId
-                        }).catch(() => {});
                     }
                 }
             }
-        } 
+
         // --- 2. HANDLE BINARY STREAMING (VIDEOS/AUDIO) ---
         else {
             if (!fileMeta) return;
