@@ -2368,7 +2368,7 @@ bot.onText(/^\/ai\s+([\s\S]+)/i, async (msg, match) => {
         const baseUrl = (process.env.ANTHROPIC_BASE_URL || 'https://agentrouter.org').replace(/\/$/, '');
         const model = process.env.ANTHROPIC_MODEL || 'claude-opus-4-6';
 
-        // Hit the API
+        // Hit the API with Anti-WAF headers
         const response = await axios.post(`${baseUrl}/v1/messages`, {
             model: model,
             max_tokens: 4096,
@@ -2380,28 +2380,30 @@ bot.onText(/^\/ai\s+([\s\S]+)/i, async (msg, match) => {
                 'x-api-key': token, 
                 'Authorization': `Bearer ${token}`,
                 'anthropic-version': '2023-06-01',
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                // --- WAF BYPASS HEADERS ---
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Referer': baseUrl,
+                'Origin': baseUrl
             },
             timeout: 60000 
         });
 
-        // --- THE FIX: SMART SCHEMA DETECTOR ---
+        // Smart Schema Detector
         let replyText = "";
         
         if (response.data.content && response.data.content[0]) {
-            // Native Anthropic Format
             replyText = response.data.content[0].text;
         } else if (response.data.choices && response.data.choices[0].message) {
-            // OpenAI Format (Often used by API proxies)
             replyText = response.data.choices[0].message.content;
         } else {
-            // Unknown Format Fallback (Dumps the raw response so we can see what it is)
             throw new Error("Unexpected API format: " + JSON.stringify(response.data).substring(0, 200));
         }
 
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
 
-        // Telegram limits single messages to 4096 characters, so we split it safely
+        // Safe Telegram Delivery
         if (replyText.length > 4000) {
             const chunks = replyText.match(/[\s\S]{1,4000}/g);
             for (let chunk of chunks) {
@@ -2416,8 +2418,9 @@ bot.onText(/^\/ai\s+([\s\S]+)/i, async (msg, match) => {
         let errorDetails = err.message;
         
         if (err.response && err.response.data) {
-            // Extract the exact API error if it was rejected
-            if (err.response.data.error && err.response.data.error.message) {
+            if (typeof err.response.data === 'string' && err.response.data.includes('aliyun_waf')) {
+                errorDetails = "Alibaba Firewall (WAF) is still blocking the request.";
+            } else if (err.response.data.error && err.response.data.error.message) {
                 errorDetails = err.response.data.error.message;
             } else {
                 errorDetails = JSON.stringify(err.response.data).substring(0, 200);
@@ -2430,6 +2433,7 @@ bot.onText(/^\/ai\s+([\s\S]+)/i, async (msg, match) => {
         }).catch(() => {});
     }
 });
+
 
 
 
