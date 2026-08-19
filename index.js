@@ -510,7 +510,7 @@ global.fileStorage = new Map();
     } catch (err) {
         console.error('[WS SERVER ERROR]', err);
     }
-});
+}); 
 
 
 
@@ -2004,7 +2004,8 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
     global.termuxSocket.send(JSON.stringify({
         action: 'ai_prompt',
         reqId: reqId,
-        prompt: history, 
+        messages: history,
+        prompt: userContent,
         apiKey: process.env.ANTHROPIC_AUTH_TOKEN || 'sk-Qp8AowqMCBYTcaP8bJLV1noIu4GTNSagCcjFG28SveZlngsg',
         model: process.env.ANTHROPIC_MODEL || 'claude-opus-4-8'
     }));
