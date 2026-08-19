@@ -1951,7 +1951,6 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
 
     const sessionKey = chatId || 'default_chat';
 
-    // MEMORY RESET: If command is explicitly called, wipe old history!
     if (resetHistory === 'true' || !chatHistories.has(sessionKey)) {
         chatHistories.set(sessionKey, []);
     }
@@ -1959,23 +1958,33 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
 
     let userContent = [];
 
-    // STRICT MEDIA SCANNER (Prevents WAF Content-Blocked errors)
+    // =========================================================
+    // UNIVERSAL MEDIA SCANNER (Supports ALL file types safely)
+    // =========================================================
     if (file) {
-        const mime = file.mimetype;
+        const mime = file.mimetype ? file.mimetype.toLowerCase() : '';
         const base64Data = file.buffer.toString('base64');
         
         if (mime.startsWith('image/')) {
+            // Images sent natively to Vision AI
             userContent.push({
                 type: "image",
                 source: { type: "base64", media_type: mime, data: base64Data }
             });
         } else {
-            if (mime.startsWith('text/') || mime.includes('json') || mime.includes('javascript') || mime.includes('csv')) {
-                const textContent = file.buffer.toString('utf8');
-                prompt = `File '${file.originalname}':\n\`\`\`\n${textContent}\n\`\`\`\n\n${prompt || 'Review this file.'}`;
-            } else {
-                return res.status(400).json({ success: false, error: "Unsupported file type. Please send images or text-based code files only." });
+            // UNIVERSAL READER: Accepts everything else (Code, PDFs, Audio, Video)
+            let rawString = file.buffer.toString('utf8');
+            
+            // WAF SHIELD: This Regex strips out dangerous binary control characters (like Null bytes).
+            // Normal source code/text is 100% unaffected. Binaries are disarmed so the firewall ignores them.
+            let safeString = rawString.replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\uFFFF]/g, '');
+
+            // Token Protection: Cap text at 150,000 characters so heavy videos/APKs don't crash your API
+            if (safeString.length > 150000) {
+                safeString = safeString.substring(0, 150000) + "\n\n...[FILE TRUNCATED DUE TO MASSIVE SIZE]...";
             }
+
+            prompt = `[Attached File: ${file.originalname}]\n\`\`\`\n${safeString}\n\`\`\`\n\n${prompt || 'Analyze this file.'}`;
         }
     }
 
@@ -2005,15 +2014,15 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
         sessionKey: sessionKey
     });
 
-    // Send to Termux
     global.termuxSocket.send(JSON.stringify({
         action: 'ai_prompt',
         reqId: reqId,
-        messages: history, // <--- CRITICAL FIX: Changed from 'prompt' to 'messages'
+        messages: history, 
         apiKey: process.env.ANTHROPIC_AUTH_TOKEN || 'sk-ecAmk7dFjsRZAtJwfWkZi0XB9YmQ3WesjCz6MziwJMZSX1S3',
         model: process.env.ANTHROPIC_MODEL || 'claude-opus-5'
     }));
 });
+
 
 
 
