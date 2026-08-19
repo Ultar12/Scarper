@@ -1953,7 +1953,6 @@ global.waitingClients = new Map();
 
 
 
-
 const chatHistories = new Map(); // Stores conversation memory per JID
 
 app.post('/api/uai', upload.single('file'), async (req, res) => {
@@ -1970,7 +1969,6 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
 
     const sessionKey = chatId || 'default_chat';
 
-    // MEMORY RESET FIX: If they use the ".ui" command again, wipe the memory clean!
     if (resetHistory === 'true' || !chatHistories.has(sessionKey)) {
         chatHistories.set(sessionKey, []);
     }
@@ -1979,14 +1977,13 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
     let userContent = [];
 
     // =========================================================
-    // WAF-PROOF MEDIA SCANNER (Supports Images, PDFs, Code, Binary)
+    // MAXIMUM CAPACITY MEDIA SCANNER (800,000 Character Limit)
     // =========================================================
     if (file) {
         const mime = file.mimetype ? file.mimetype.toLowerCase() : '';
         
         if (mime.startsWith('image/')) {
             try {
-                // IMAGES: Compressed and sent to Vision AI
                 const compressedBuffer = await sharp(file.buffer)
                     .resize({ width: 800, withoutEnlargement: true })
                     .jpeg({ quality: 80 })
@@ -2003,14 +2000,12 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
         } 
         else if (mime === 'application/pdf' || file.originalname.toLowerCase().endsWith('.pdf')) {
             try {
-                // PDF EXTRACTOR: Translates binary PDFs into clean text
                 const pdfData = await pdf(file.buffer);
-                // WAF SHIELD: Strip illegal characters
                 let safeString = pdfData.text.replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\uFFFF]/g, '');
 
-                // Cap at 35,000 chars to avoid WAF payload limits
-                if (safeString.length > 150000) {
-                    safeString = safeString.substring(0, 150000) + "\n\n...[PDF TRUNCATED DUE TO MASSIVE SIZE]...";
+                // --- ABSOLUTE MAX INPUT: 800,000 CHARACTERS (~200k Tokens) ---
+                if (safeString.length > 800000) {
+                    safeString = safeString.substring(0, 800000) + "\n\n...[PDF TRUNCATED: HIT CLAUDE'S 200K TOKEN MAXIMUM]...";
                 }
 
                 prompt = `[Attached PDF Document: ${file.originalname}]\n\`\`\`\n${safeString}\n\`\`\`\n\n${prompt || 'Analyze this document.'}`;
@@ -2019,19 +2014,17 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
             }
         }
         else {
-            // EVERYTHING ELSE: Checks if it's safe code/text, or an unreadable binary
             const isBinary = file.buffer.includes(0x00);
 
             if (isBinary) {
-                // Don't send binary media to AI as text, just tell it the filename
                 prompt = `[The user attached a media/binary file named '${file.originalname}'. The raw contents cannot be read as text.]\n\n${prompt || 'What do you think this file is based on the name?'}`;
             } else {
-                // Clean Text / Code Files
                 let safeString = file.buffer.toString('utf8');
                 safeString = safeString.replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\uFFFF]/g, '');
                 
-                if (safeString.length > 35000) {
-                    safeString = safeString.substring(0, 35000) + "\n\n...[FILE TRUNCATED DUE TO MASSIVE SIZE]...";
+                // --- ABSOLUTE MAX INPUT: 800,000 CHARACTERS (~200k Tokens) ---
+                if (safeString.length > 800000) {
+                    safeString = safeString.substring(0, 800000) + "\n\n...[FILE TRUNCATED: HIT CLAUDE'S 200K TOKEN MAXIMUM]...";
                 }
                 prompt = `[Attached File: ${file.originalname}]\n\`\`\`\n${safeString}\n\`\`\`\n\n${prompt || 'Analyze this code/text.'}`;
             }
@@ -2042,10 +2035,8 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
         userContent.push({ type: "text", text: prompt });
     }
 
-    // Append to memory
     history.push({ role: "user", content: userContent });
 
-    // Cap memory size so it doesn't crash token limits
     if (history.length > 10) {
         history = history.slice(history.length - 10);
     }
@@ -2053,13 +2044,9 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
 
     const reqId = 'wa_ai_' + Date.now();
 
-    // =========================================================
-    // HEROKU 503 BYPASS: The Heartbeat Stream
-    // =========================================================
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Transfer-Encoding', 'chunked');
     
-    // Stream a blank space every 15s so Heroku doesn't disconnect
     const heartbeat = setInterval(() => {
         res.write(' '); 
     }, 15000);
@@ -2067,7 +2054,7 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
     const timeout = setTimeout(() => {
         if (global.waitingAiClients.has(reqId)) {
             const client = global.waitingAiClients.get(reqId);
-            clearInterval(client.heartbeat); // Stop the heartbeat
+            clearInterval(client.heartbeat); 
             global.waitingAiClients.delete(reqId);
             
             client.res.write(JSON.stringify({ success: false, error: "Termux took too long to respond (5 Min Timeout)." }));
@@ -2083,17 +2070,15 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
         sessionKey: sessionKey
     });
 
-    // Send the compiled payload down to the Termux engine
     global.termuxSocket.send(JSON.stringify({
         action: 'ai_prompt',
         reqId: reqId,
         messages: history, 
         apiKey: process.env.ANTHROPIC_AUTH_TOKEN || 'sk-ecAmk7dFjsRZAtJwfWkZi0XB9YmQ3WesjCz6MziwJMZSX1S3',
-        model: process.env.ANTHROPIC_MODEL || 'claude-opus-5'
+        model: process.env.ANTHROPIC_MODEL || 'claude-opus-5',
+        max_tokens: 8192 // <--- ABSOLUTE MAX OUTPUT: Forces the API to generate the longest possible response!
     }));
 });
-
-
 
 
 
