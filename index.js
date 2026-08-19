@@ -2010,8 +2010,8 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
         action: 'ai_prompt',
         reqId: reqId,
         prompt: history, 
-        apiKey: process.env.ANTHROPIC_AUTH_TOKEN || 'sk-Qp8AowqMCBYTcaP8bJLV1noIu4GTNSagCcjFG28SveZlngsg',
-        model: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20240620'
+        apiKey: process.env.ANTHROPIC_AUTH_TOKEN || 'sk-ecAmk7dFjsRZAtJwfWkZi0XB9YmQ3WesjCz6MziwJMZSX1S3',
+        model: process.env.ANTHROPIC_MODEL || 'claude-opus-5'
     }));
 });
 
@@ -2577,8 +2577,8 @@ bot.onText(/^\/ai(?:\s+([\s\S]+))?/i, async (msg, match) => {
             action: 'ai_prompt',
             reqId: reqId,
             prompt: aiContent, // We send the formatted array to Termux!
-            apiKey: process.env.ANTHROPIC_AUTH_TOKEN || 'sk-Qp8AowqMCBYTcaP8bJLV1noIu4GTNSagCcjFG28SveZlngsg',
-            model: process.env.ANTHROPIC_MODEL || 'claude-opus-4-8'
+            apiKey: process.env.ANTHROPIC_AUTH_TOKEN || 'sk-ecAmk7dFjsRZAtJwfWkZi0XB9YmQ3WesjCz6MziwJMZSX1S3',
+            model: process.env.ANTHROPIC_MODEL || 'claude-opus-5'
         }));
 
     } catch (err) {
