@@ -1951,7 +1951,7 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
 
     const sessionKey = chatId || 'default_chat';
 
-    // MEMORY RESET FIX: If they use the ".ui" command again, wipe the memory clean!
+    // MEMORY RESET: If command is explicitly called, wipe old history!
     if (resetHistory === 'true' || !chatHistories.has(sessionKey)) {
         chatHistories.set(sessionKey, []);
     }
@@ -1970,7 +1970,6 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
                 source: { type: "base64", media_type: mime, data: base64Data }
             });
         } else {
-            // ONLY read safe text files. Reading binary files as text triggers WAF blocks!
             if (mime.startsWith('text/') || mime.includes('json') || mime.includes('javascript') || mime.includes('csv')) {
                 const textContent = file.buffer.toString('utf8');
                 prompt = `File '${file.originalname}':\n\`\`\`\n${textContent}\n\`\`\`\n\n${prompt || 'Review this file.'}`;
@@ -2006,14 +2005,16 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
         sessionKey: sessionKey
     });
 
+    // Send to Termux
     global.termuxSocket.send(JSON.stringify({
         action: 'ai_prompt',
         reqId: reqId,
-        prompt: history, 
-        apiKey: process.env.ANTHROPIC_AUTH_TOKEN || 'sk-Qp8AowqMCBYTcaP8bJLV1noIu4GTNSagCcjFG28SveZlngsg',
-        model: process.env.ANTHROPIC_MODEL || 'claude-opus-4.8'
+        messages: history, // <--- CRITICAL FIX: Changed from 'prompt' to 'messages'
+        apiKey: process.env.ANTHROPIC_AUTH_TOKEN || 'sk-ecAmk7dFjsRZAtJwfWkZi0XB9YmQ3WesjCz6MziwJMZSX1S3',
+        model: process.env.ANTHROPIC_MODEL || 'claude-opus-5'
     }));
 });
+
 
 
 
