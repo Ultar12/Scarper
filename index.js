@@ -378,6 +378,8 @@ global.fileStorage = new Map();
 
 
 
+ 
+
     ws.on('message', async (data, isBinary) => {
     try {
         // --- 1. HANDLE TEXT/JSON MESSAGES ---
@@ -445,6 +447,7 @@ global.fileStorage = new Map();
                     }
                 }
             }
+        } // <--- FIXED: Added the missing closing bracket for `if (!isBinary)`
 
         // --- 2. HANDLE BINARY STREAMING (VIDEOS/AUDIO) ---
         else {
