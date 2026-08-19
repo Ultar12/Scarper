@@ -408,22 +408,26 @@ global.fileStorage = new Map();
             // ==========================================
             // NEW: HANDLE AI RESPONSES FROM TERMUX
             // ==========================================
-            else if (msg.action === 'ai_response') {
+                 else if (msg.action === 'ai_response') {
                 const client = global.waitingAiClients.get(msg.reqId);
                 if (client) {
                     clearTimeout(client.timeout);
                     global.waitingAiClients.delete(msg.reqId);
 
-                    // 1. IS IT AN API CALL? (From your WhatsApp Bot)
                     if (client.isApiCall) {
                         if (msg.success) {
+                            // Save assistant response to conversation history
+                            const history = chatHistories.get(client.sessionKey) || [];
+                            history.push({ role: "assistant", content: msg.text });
+                            chatHistories.set(client.sessionKey, history);
+
                             if (!client.res.headersSent) client.res.json({ success: true, text: msg.text });
                         } else {
                             if (!client.res.headersSent) client.res.status(500).json({ success: false, error: msg.error });
                         }
                     } 
-                    // 2. OR IS IT A TELEGRAM COMMAND?
                     else {
+
                         if (msg.success) {
                             await bot.deleteMessage(client.chatId, client.msgId).catch(() => {});
                             
@@ -1932,8 +1936,10 @@ global.waitingClients = new Map();
 
 
 
+const chatHistories = new Map(); // Stores conversation memory per JID
+
 app.post('/api/uai', upload.single('file'), async (req, res) => {
-    let { prompt } = req.body;
+    let { prompt, chatId } = req.body;
     const file = req.file;
     
     if (!prompt && !file) {
@@ -1944,27 +1950,40 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
         return res.status(503).json({ success: false, error: "Termux Worker is offline." });
     }
 
-    let aiContent = [];
+    // Isolate conversation context by chat JID (works for both groups and DMs)
+    const sessionKey = chatId || 'default_chat';
+    if (!chatHistories.has(sessionKey)) {
+        chatHistories.set(sessionKey, []);
+    }
+    let history = chatHistories.get(sessionKey);
 
-    // If a file or image was attached from WhatsApp
+    let userContent = [];
+
     if (file) {
         const base64Data = file.buffer.toString('base64');
-        
         if (file.mimetype.startsWith('image/')) {
-            aiContent.push({
+            userContent.push({
                 type: "image",
                 source: { type: "base64", media_type: file.mimetype, data: base64Data }
             });
         } else {
-            // Read code/document text files
             const textContent = file.buffer.toString('utf8');
-            prompt = `Here is the content of the attached file '${file.originalname}':\n\n\`\`\`\n${textContent}\n\`\`\`\n\n${prompt || 'Please review this file.'}`;
+            prompt = `File '${file.originalname}':\n\`\`\`\n${textContent}\n\`\`\`\n\n${prompt || 'Review this file.'}`;
         }
     }
 
     if (prompt) {
-        aiContent.push({ type: "text", text: prompt });
+        userContent.push({ type: "text", text: prompt });
     }
+
+    // Append user message to history
+    history.push({ role: "user", content: userContent });
+
+    // Keep history trimmed to the last 10 messages to avoid token bloat
+    if (history.length > 10) {
+        history = history.slice(history.length - 10);
+    }
+    chatHistories.set(sessionKey, history);
 
     const reqId = 'wa_ai_' + Date.now();
     const timeout = setTimeout(() => {
@@ -1972,22 +1991,25 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
             global.waitingAiClients.delete(reqId);
             if (!res.headersSent) res.status(504).json({ success: false, error: "Termux took too long to respond." });
         }
-    }, 300000);
+    }, 300000); // 5-minute timeout
 
     global.waitingAiClients.set(reqId, {
         isApiCall: true,
         res: res,
-        timeout: timeout
+        timeout: timeout,
+        sessionKey: sessionKey
     });
 
+    // Send the entire conversation history array down to Termux
     global.termuxSocket.send(JSON.stringify({
         action: 'ai_prompt',
         reqId: reqId,
-        prompt: aiContent,
+        prompt: history, 
         apiKey: process.env.ANTHROPIC_AUTH_TOKEN || 'sk-Qp8AowqMCBYTcaP8bJLV1noIu4GTNSagCcjFG28SveZlngsg',
         model: process.env.ANTHROPIC_MODEL || 'claude-opus-4-8'
     }));
 });
+
 
 
 
