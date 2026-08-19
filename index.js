@@ -406,34 +406,37 @@ global.fileStorage = new Map();
                 }
             }
         
-            // ==========================================
+                        // ==========================================
             // NEW: HANDLE AI RESPONSES FROM TERMUX
             // ==========================================
-                 else if (msg.action === 'ai_response') {
+            else if (msg.action === 'ai_response') {
                 const client = global.waitingAiClients.get(msg.reqId);
                 if (client) {
                     clearTimeout(client.timeout);
+                    if (client.heartbeat) clearInterval(client.heartbeat); // KILL THE HEARTBEAT
+                    
                     global.waitingAiClients.delete(msg.reqId);
 
                     if (client.isApiCall) {
                         if (msg.success) {
-                            // Save assistant response to conversation history
                             const history = chatHistories.get(client.sessionKey) || [];
                             history.push({ role: "assistant", content: msg.text });
                             chatHistories.set(client.sessionKey, history);
 
-                            if (!client.res.headersSent) client.res.json({ success: true, text: msg.text });
+                            // Because we started streaming earlier, we just write the final JSON and end the stream!
+                            client.res.write(JSON.stringify({ success: true, text: msg.text }));
+                            client.res.end();
                         } else {
-                            if (!client.res.headersSent) client.res.status(500).json({ success: false, error: msg.error });
+                            client.res.write(JSON.stringify({ success: false, error: msg.error }));
+                            client.res.end();
                         }
                     } 
                     else {
-
+                        // (Your Telegram logic remains completely unchanged below this)
                         if (msg.success) {
                             await bot.deleteMessage(client.chatId, client.msgId).catch(() => {});
                             
                             const replyText = msg.text;
-                            // Split massive code chunks for Telegram
                             if (replyText.length > 4000) {
                                 const chunks = replyText.match(/[\s\S]{1,4000}/g);
                                 for (let chunk of chunks) {
@@ -452,6 +455,7 @@ global.fileStorage = new Map();
                     }
                 }
             }
+
         } // <--- FIXED: Added the missing closing bracket for `if (!isBinary)`
 
         // --- 2. HANDLE BINARY STREAMING (VIDEOS/AUDIO) ---
@@ -1937,8 +1941,7 @@ global.waitingClients = new Map();
 
 
 
-
-const chatHistories = new Map();
+const chatHistories = new Map(); // Stores conversation memory per JID
 
 app.post('/api/uai', upload.single('file'), async (req, res) => {
     let { prompt, chatId, resetHistory } = req.body;
@@ -1954,6 +1957,7 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
 
     const sessionKey = chatId || 'default_chat';
 
+    // MEMORY RESET FIX: If they use the ".ui" command again, wipe the memory clean!
     if (resetHistory === 'true' || !chatHistories.has(sessionKey)) {
         chatHistories.set(sessionKey, []);
     }
@@ -1962,7 +1966,7 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
     let userContent = [];
 
     // =========================================================
-    // WAF-PROOF MEDIA SCANNER (Now with PDF Support!)
+    // WAF-PROOF MEDIA SCANNER (Supports Images, PDFs, Code, Binary)
     // =========================================================
     if (file) {
         const mime = file.mimetype ? file.mimetype.toLowerCase() : '';
@@ -1988,9 +1992,10 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
             try {
                 // PDF EXTRACTOR: Translates binary PDFs into clean text
                 const pdfData = await pdf(file.buffer);
+                // WAF SHIELD: Strip illegal characters
                 let safeString = pdfData.text.replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\uFFFF]/g, '');
 
-                // Cap at 35,000 chars to avoid WAF limits
+                // Cap at 35,000 chars to avoid WAF payload limits
                 if (safeString.length > 35000) {
                     safeString = safeString.substring(0, 35000) + "\n\n...[PDF TRUNCATED DUE TO MASSIVE SIZE]...";
                 }
@@ -2005,9 +2010,13 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
             const isBinary = file.buffer.includes(0x00);
 
             if (isBinary) {
+                // Don't send binary media to AI as text, just tell it the filename
                 prompt = `[The user attached a media/binary file named '${file.originalname}'. The raw contents cannot be read as text.]\n\n${prompt || 'What do you think this file is based on the name?'}`;
             } else {
+                // Clean Text / Code Files
                 let safeString = file.buffer.toString('utf8');
+                safeString = safeString.replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\uFFFF]/g, '');
+                
                 if (safeString.length > 35000) {
                     safeString = safeString.substring(0, 35000) + "\n\n...[FILE TRUNCATED DUE TO MASSIVE SIZE]...";
                 }
@@ -2020,18 +2029,36 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
         userContent.push({ type: "text", text: prompt });
     }
 
+    // Append to memory
     history.push({ role: "user", content: userContent });
 
+    // Cap memory size so it doesn't crash token limits
     if (history.length > 10) {
         history = history.slice(history.length - 10);
     }
     chatHistories.set(sessionKey, history);
 
     const reqId = 'wa_ai_' + Date.now();
+
+    // =========================================================
+    // HEROKU 503 BYPASS: The Heartbeat Stream
+    // =========================================================
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    
+    // Stream a blank space every 15s so Heroku doesn't disconnect
+    const heartbeat = setInterval(() => {
+        res.write(' '); 
+    }, 15000);
+
     const timeout = setTimeout(() => {
         if (global.waitingAiClients.has(reqId)) {
+            const client = global.waitingAiClients.get(reqId);
+            clearInterval(client.heartbeat); // Stop the heartbeat
             global.waitingAiClients.delete(reqId);
-            if (!res.headersSent) res.status(504).json({ success: false, error: "Termux took too long to respond." });
+            
+            client.res.write(JSON.stringify({ success: false, error: "Termux took too long to respond (5 Min Timeout)." }));
+            client.res.end();
         }
     }, 300000);
 
@@ -2039,9 +2066,11 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
         isApiCall: true,
         res: res,
         timeout: timeout,
+        heartbeat: heartbeat,
         sessionKey: sessionKey
     });
 
+    // Send the compiled payload down to the Termux engine
     global.termuxSocket.send(JSON.stringify({
         action: 'ai_prompt',
         reqId: reqId,
@@ -2050,6 +2079,7 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
         model: process.env.ANTHROPIC_MODEL || 'claude-opus-5'
     }));
 });
+
 
 
 
