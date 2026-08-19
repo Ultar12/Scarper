@@ -16,6 +16,9 @@ const puppeteer = require('puppeteer-extra');
 const QRCode = require('qrcode');
 const { remote } = require('webdriverio');
 const axios = require('axios');
+const { pipeline: hfPipeline } = require('@huggingface/transformers');
+const { WaveFile } = require('wavefile');
+const ffmpegFluent = require('fluent-ffmpeg');
 const cheerio = require('cheerio');
 const pdf = require('pdf-parse');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
@@ -324,6 +327,15 @@ let wsTaskMode = false;
 let wsTaskTimer = null; // Added timer for the 30-minute auto-close
 let wsDailyCount = 0;
 let wsLastResetDate = new Date().toLocaleDateString('en-NG', { timeZone: 'Africa/Lagos' });
+
+let ttsPipeline = null;
+
+async function getTTSPipeline() {
+    if (!ttsPipeline) {
+        ttsPipeline = await hfPipeline('text-to-speech', 'Xenova/mms-tts-eng');
+    }
+    return ttsPipeline;
+}
 
 
 
@@ -2543,6 +2555,77 @@ bot.onText(/\/start/i, (msg) => {
             is_persistent: true
         }
     });
+});
+
+
+
+bot.onText(/^\/tts\s+([\s\S]+)/i, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID && !AUTHORIZED.includes(chatId)) return;
+
+    const text = match[1].trim();
+    if (text.length > 500) {
+        return bot.sendMessage(chatId, '[ERROR] Max 500 characters.');
+    }
+
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Warming up TTS engine...');
+
+    const wavPath = path.join(__dirname, `tts_${Date.now()}.wav`);
+    const oggPath = path.join(__dirname, `tts_${Date.now()}.ogg`);
+
+    try {
+        await bot.editMessageText('[SYSTEM] Loading model (first run downloads it)...', {
+            chat_id: chatId,
+            message_id: statusMsg.message_id
+        }).catch(() => {});
+
+        const synthesizer = await getTTSPipeline();
+
+        await bot.editMessageText('[SYSTEM] Synthesizing speech...', {
+            chat_id: chatId,
+            message_id: statusMsg.message_id
+        }).catch(() => {});
+
+        const result = await synthesizer(text);
+
+        const pcm = new Int16Array(result.audio.length);
+        for (let i = 0; i < result.audio.length; i++) {
+            const clamped = Math.max(-1, Math.min(1, result.audio[i]));
+            pcm[i] = Math.round(clamped * 32767);
+        }
+
+        const wav = new WaveFile();
+        wav.fromScratch(1, result.sampling_rate, '16', pcm);
+        fs.writeFileSync(wavPath, wav.toBuffer());
+
+        await bot.editMessageText('[SYSTEM] Encoding to voice format...', {
+            chat_id: chatId,
+            message_id: statusMsg.message_id
+        }).catch(() => {});
+
+        await new Promise((resolve, reject) => {
+            ffmpegFluent(wavPath)
+                .audioCodec('libopus')
+                .format('ogg')
+                .on('end', resolve)
+                .on('error', reject)
+                .save(oggPath);
+        });
+
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+        await bot.sendVoice(chatId, oggPath, {
+            caption: `🗣️ ${text.length > 80 ? text.substring(0, 80) + '...' : text}`
+        });
+
+    } catch (err) {
+        await bot.editMessageText(`[ERROR] TTS failed: ${err.message}`, {
+            chat_id: chatId,
+            message_id: statusMsg.message_id
+        }).catch(() => {});
+    } finally {
+        if (fs.existsSync(wavPath)) fs.unlinkSync(wavPath);
+        if (fs.existsSync(oggPath)) fs.unlinkSync(oggPath);
+    }
 });
 
 
