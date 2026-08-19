@@ -28,6 +28,7 @@
     "cheerio": "^1.0.0",
     "sharp": "^0.33.3",
     "libphonenumber-js": "^1.11.0",
+    "pdf-parse": "^1.1.1",
     "ws": "^8.20.1",
     "webdriverio": "^8.32.0",
     "whatsapp-web.js": "^1.23.0",
