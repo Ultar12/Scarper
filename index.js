@@ -1,8 +1,17 @@
 import 'dotenv/config.js';
 import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
+import path from 'path';
+
+// 1. Bring back 'require'
 const require = createRequire(import.meta.url);
 
+// 2. Bring back '__dirname' and '__filename'
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
+
 
 
 const fs = require('fs');
