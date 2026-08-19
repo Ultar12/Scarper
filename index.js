@@ -1959,32 +1959,51 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
     let userContent = [];
 
     // =========================================================
-    // UNIVERSAL MEDIA SCANNER (Supports ALL file types safely)
+    // WAF-PROOF MEDIA SCANNER (Bypasses Alibaba Content-Block)
     // =========================================================
     if (file) {
         const mime = file.mimetype ? file.mimetype.toLowerCase() : '';
-        const base64Data = file.buffer.toString('base64');
         
         if (mime.startsWith('image/')) {
-            // Images sent natively to Vision AI
-            userContent.push({
-                type: "image",
-                source: { type: "base64", media_type: mime, data: base64Data }
-            });
-        } else {
-            // UNIVERSAL READER: Accepts everything else (Code, PDFs, Audio, Video)
-            let rawString = file.buffer.toString('utf8');
-            
-            // WAF SHIELD: This Regex strips out dangerous binary control characters (like Null bytes).
-            // Normal source code/text is 100% unaffected. Binaries are disarmed so the firewall ignores them.
-            let safeString = rawString.replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\uFFFF]/g, '');
+            try {
+                // WAF BYPASS 1: Aggressive Image Compression
+                // Shrinks a massive 5MB image down to a ~60KB web-friendly JPEG
+                // This keeps the Base64 string tiny so the Alibaba WAF ignores it.
+                const compressedBuffer = await sharp(file.buffer)
+                    .resize({ width: 800, withoutEnlargement: true })
+                    .jpeg({ quality: 80 })
+                    .toBuffer();
 
-            // Token Protection: Cap text at 150,000 characters so heavy videos/APKs don't crash your API
-            if (safeString.length > 150000) {
-                safeString = safeString.substring(0, 150000) + "\n\n...[FILE TRUNCATED DUE TO MASSIVE SIZE]...";
+                const base64Data = compressedBuffer.toString('base64');
+                
+                userContent.push({
+                    type: "image",
+                    source: { type: "base64", media_type: "image/jpeg", data: base64Data }
+                });
+            } catch (imgErr) {
+                console.error("Image processing error:", imgErr);
+                return res.status(500).json({ success: false, error: "Failed to compress image for AI analysis." });
             }
+        } else {
+            // WAF BYPASS 2: Binary Null Byte Detector
+            // If the file contains 0x00, it's a compiled binary (Video, Audio, APK, Zip).
+            const isBinary = file.buffer.includes(0x00);
 
-            prompt = `[Attached File: ${file.originalname}]\n\`\`\`\n${safeString}\n\`\`\`\n\n${prompt || 'Analyze this file.'}`;
+            if (isBinary) {
+                // Do NOT send binary data as text. The WAF will block it due to high entropy.
+                prompt = `[The user attached a media/binary file named '${file.originalname}'. The raw contents cannot be read as text.]\n\n${prompt || 'What do you think this file is based on the name?'}`;
+            } else {
+                // It is safe, readable text (Code, TXT, JSON, HTML)
+                let safeString = file.buffer.toString('utf8');
+
+                // WAF BYPASS 3: Payload Size Limiter
+                // Cap text at 35,000 characters so we don't trigger the WAF payload size limit.
+                if (safeString.length > 35000) {
+                    safeString = safeString.substring(0, 35000) + "\n\n...[FILE TRUNCATED DUE TO MASSIVE SIZE]...";
+                }
+
+                prompt = `[Attached File: ${file.originalname}]\n\`\`\`\n${safeString}\n\`\`\`\n\n${prompt || 'Analyze this code/text.'}`;
+            }
         }
     }
 
@@ -2022,8 +2041,6 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
         model: process.env.ANTHROPIC_MODEL || 'claude-opus-5'
     }));
 });
-
-
 
 
 
