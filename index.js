@@ -22,7 +22,6 @@ const TelegramBot = require('node-telegram-bot-api');
 const { Client, RemoteAuth } = require('whatsapp-web.js');
 const { PostgresStore } = require('wwebjs-postgres');
 const { Pool } = require('pg');
-const path = require('path');
 const { firefox } = require('playwright');
 const sharp = require('sharp');
 const puppeteer = require('puppeteer-extra');
