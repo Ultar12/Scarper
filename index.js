@@ -1935,11 +1935,10 @@ global.waitingClients = new Map();
 
 
 
-
-const chatHistories = new Map(); // Stores conversation memory per JID
+const chatHistories = new Map();
 
 app.post('/api/uai', upload.single('file'), async (req, res) => {
-    let { prompt, chatId } = req.body;
+    let { prompt, chatId, resetHistory } = req.body;
     const file = req.file;
     
     if (!prompt && !file) {
@@ -1950,25 +1949,34 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
         return res.status(503).json({ success: false, error: "Termux Worker is offline." });
     }
 
-    // Isolate conversation context by chat JID (works for both groups and DMs)
     const sessionKey = chatId || 'default_chat';
-    if (!chatHistories.has(sessionKey)) {
+
+    // MEMORY RESET FIX: If they use the ".ui" command again, wipe the memory clean!
+    if (resetHistory === 'true' || !chatHistories.has(sessionKey)) {
         chatHistories.set(sessionKey, []);
     }
     let history = chatHistories.get(sessionKey);
 
     let userContent = [];
 
+    // STRICT MEDIA SCANNER (Prevents WAF Content-Blocked errors)
     if (file) {
+        const mime = file.mimetype;
         const base64Data = file.buffer.toString('base64');
-        if (file.mimetype.startsWith('image/')) {
+        
+        if (mime.startsWith('image/')) {
             userContent.push({
                 type: "image",
-                source: { type: "base64", media_type: file.mimetype, data: base64Data }
+                source: { type: "base64", media_type: mime, data: base64Data }
             });
         } else {
-            const textContent = file.buffer.toString('utf8');
-            prompt = `File '${file.originalname}':\n\`\`\`\n${textContent}\n\`\`\`\n\n${prompt || 'Review this file.'}`;
+            // ONLY read safe text files. Reading binary files as text triggers WAF blocks!
+            if (mime.startsWith('text/') || mime.includes('json') || mime.includes('javascript') || mime.includes('csv')) {
+                const textContent = file.buffer.toString('utf8');
+                prompt = `File '${file.originalname}':\n\`\`\`\n${textContent}\n\`\`\`\n\n${prompt || 'Review this file.'}`;
+            } else {
+                return res.status(400).json({ success: false, error: "Unsupported file type. Please send images or text-based code files only." });
+            }
         }
     }
 
@@ -1976,10 +1984,8 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
         userContent.push({ type: "text", text: prompt });
     }
 
-    // Append user message to history
     history.push({ role: "user", content: userContent });
 
-    // Keep history trimmed to the last 10 messages to avoid token bloat
     if (history.length > 10) {
         history = history.slice(history.length - 10);
     }
@@ -1991,7 +1997,7 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
             global.waitingAiClients.delete(reqId);
             if (!res.headersSent) res.status(504).json({ success: false, error: "Termux took too long to respond." });
         }
-    }, 300000); // 5-minute timeout
+    }, 300000);
 
     global.waitingAiClients.set(reqId, {
         isApiCall: true,
@@ -2000,14 +2006,12 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
         sessionKey: sessionKey
     });
 
-    // Send the entire conversation history array down to Termux
     global.termuxSocket.send(JSON.stringify({
         action: 'ai_prompt',
         reqId: reqId,
-        messages: history,
-        prompt: userContent,
-        apiKey: process.env.ANTHROPIC_AUTH_TOKEN || 'sk-ecAmk7dFjsRZAtJwfWkZi0XB9YmQ3WesjCz6MziwJMZSX1S3',
-        model: process.env.ANTHROPIC_MODEL || 'claude-opus-5'
+        prompt: history, 
+        apiKey: process.env.ANTHROPIC_AUTH_TOKEN || 'sk-Qp8AowqMCBYTcaP8bJLV1noIu4GTNSagCcjFG28SveZlngsg',
+        model: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20240620'
     }));
 });
 
