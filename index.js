@@ -1996,8 +1996,8 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
                 let safeString = pdfData.text.replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\uFFFF]/g, '');
 
                 // Cap at 35,000 chars to avoid WAF payload limits
-                if (safeString.length > 35000) {
-                    safeString = safeString.substring(0, 35000) + "\n\n...[PDF TRUNCATED DUE TO MASSIVE SIZE]...";
+                if (safeString.length > 150000) {
+                    safeString = safeString.substring(0, 150000) + "\n\n...[PDF TRUNCATED DUE TO MASSIVE SIZE]...";
                 }
 
                 prompt = `[Attached PDF Document: ${file.originalname}]\n\`\`\`\n${safeString}\n\`\`\`\n\n${prompt || 'Analyze this document.'}`;
