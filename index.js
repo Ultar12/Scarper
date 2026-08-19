@@ -16,9 +16,6 @@ const puppeteer = require('puppeteer-extra');
 const QRCode = require('qrcode');
 const { remote } = require('webdriverio');
 const axios = require('axios');
-const { pipeline: hfPipeline } = require('@huggingface/transformers');
-const { WaveFile } = require('wavefile');
-const ffmpegFluent = require('fluent-ffmpeg');
 const cheerio = require('cheerio');
 const pdf = require('pdf-parse');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
@@ -327,15 +324,6 @@ let wsTaskMode = false;
 let wsTaskTimer = null; // Added timer for the 30-minute auto-close
 let wsDailyCount = 0;
 let wsLastResetDate = new Date().toLocaleDateString('en-NG', { timeZone: 'Africa/Lagos' });
-
-let ttsPipeline = null;
-
-async function getTTSPipeline() {
-    if (!ttsPipeline) {
-        ttsPipeline = await hfPipeline('text-to-speech', 'Xenova/mms-tts-eng');
-    }
-    return ttsPipeline;
-}
 
 
 
@@ -2558,59 +2546,149 @@ bot.onText(/\/start/i, (msg) => {
 });
 
 
+// TRANSCRIPT — voice/audio/video → text via Python SpeechRecognition (Google backend, free)
+// Usage: Reply to any voice note, audio, or video with /transcript
+bot.onText(/^\/transcript$/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID && !AUTHORIZED.includes(chatId)) return;
 
+    const reply = msg.reply_to_message;
+    if (!reply) {
+        return bot.sendMessage(chatId,
+            '[ERROR] Reply to a voice note, audio file, or video with /transcript'
+        );
+    }
+
+    let fileId = null;
+    if      (reply.voice)                                           fileId = reply.voice.file_id;
+    else if (reply.audio)                                           fileId = reply.audio.file_id;
+    else if (reply.video)                                           fileId = reply.video.file_id;
+    else if (reply.video_note)                                      fileId = reply.video_note.file_id;
+    else if (reply.document && reply.document.mime_type?.startsWith('audio')) fileId = reply.document.file_id;
+
+    if (!fileId) {
+        return bot.sendMessage(chatId,
+            '[ERROR] No supported media found. Reply to a voice note, audio, or video.'
+        );
+    }
+
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Downloading media...');
+
+    const uid   = Date.now();
+    const raw   = path.join(__dirname, `stt_${uid}.tmp`);
+    const wav   = path.join(__dirname, `stt_${uid}.wav`);
+    const pyf   = path.join(__dirname, `stt_${uid}.py`);
+
+    try {
+        // 1. Download
+        const fileLink = await bot.getFileLink(fileId);
+        const dlRes    = await axios({ method: 'GET', url: fileLink, responseType: 'stream' });
+        const writer   = fs.createWriteStream(raw);
+        await new Promise((resolve, reject) =>
+            dlRes.data.pipe(writer).on('finish', resolve).on('error', reject)
+        );
+
+        // 2. Convert to 16kHz mono WAV — FFmpeg is already on your dyno
+        await bot.editMessageText('[SYSTEM] Converting audio...', {
+            chat_id: chatId, message_id: statusMsg.message_id
+        }).catch(() => {});
+        await execPromise(`ffmpeg -y -i "${raw}" -ar 16000 -ac 1 -c:a pcm_s16le "${wav}"`);
+
+        // 3. Transcribe — chunks of 59s to stay inside Google's free tier limit
+        await bot.editMessageText('[SYSTEM] Transcribing...', {
+            chat_id: chatId, message_id: statusMsg.message_id
+        }).catch(() => {});
+
+        const pyScript = `
+import speech_recognition as sr, sys, wave, math
+
+def run(wav_path):
+    r = sr.Recognizer()
+    out = []
+    try:
+        with wave.open(wav_path, 'rb') as wf:
+            total = wf.getnframes() / wf.getframerate()
+        chunk = 59
+        for offset in range(0, math.ceil(total), chunk):
+            try:
+                with sr.AudioFile(wav_path) as src:
+                    audio = r.record(src, offset=offset,
+                                     duration=min(chunk, total - offset))
+                text = r.recognize_google(audio)
+                if text:
+                    out.append(text)
+            except sr.UnknownValueError:
+                pass
+            except Exception as e:
+                out.append(f'[chunk error: {e}]')
+        return ' '.join(out) if out else '[EMPTY] No speech detected'
+    except Exception as e:
+        return f'[ERROR] {e}'
+
+print(run(sys.argv[1]))
+`;
+
+        fs.writeFileSync(pyf, pyScript);
+        const { stdout } = await execPromise(
+            `python3 "${pyf}" "${wav}"`,
+            { timeout: 120000 }
+        );
+
+        const transcript = (stdout || '').trim() || '[EMPTY] No speech detected';
+
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+
+        if (transcript.length > 4000) {
+            for (const chunk of transcript.match(/[\s\S]{1,4000}/g)) {
+                await bot.sendMessage(chatId, `${chunk}`);
+                await new Promise(r => setTimeout(r, 300));
+            }
+        } else {
+            await bot.sendMessage(chatId,
+                `*Transcript:*\n\n${transcript}`,
+                { parse_mode: 'Markdown' }
+            );
+        }
+
+    } catch (err) {
+        await bot.editMessageText(`[ERROR] Transcription failed: ${err.message}`, {
+            chat_id: chatId, message_id: statusMsg.message_id
+        }).catch(() => {});
+    } finally {
+        [raw, wav, pyf].forEach(p => { try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch(_) {} });
+    }
+});
+
+
+
+// TTS — StreamElements free API (no package, no model, Brian neural voice)
 bot.onText(/^\/tts\s+([\s\S]+)/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID && !AUTHORIZED.includes(chatId)) return;
 
     const text = match[1].trim();
-    if (text.length > 500) {
-        return bot.sendMessage(chatId, '[ERROR] Max 500 characters.');
-    }
+    if (text.length > 500) return bot.sendMessage(chatId, '[ERROR] Max 500 characters.');
 
-    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Warming up TTS engine...');
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Generating voice...');
 
-    const wavPath = path.join(__dirname, `tts_${Date.now()}.wav`);
-    const oggPath = path.join(__dirname, `tts_${Date.now()}.ogg`);
+    const mp3Path = path.join(__dirname, `tts_${Date.now()}.mp3`);
+    const oggPath = mp3Path.replace('.mp3', '.ogg');
 
     try {
-        await bot.editMessageText('[SYSTEM] Loading model (first run downloads it)...', {
-            chat_id: chatId,
-            message_id: statusMsg.message_id
-        }).catch(() => {});
-
-        const synthesizer = await getTTSPipeline();
-
-        await bot.editMessageText('[SYSTEM] Synthesizing speech...', {
-            chat_id: chatId,
-            message_id: statusMsg.message_id
-        }).catch(() => {});
-
-        const result = await synthesizer(text);
-
-        const pcm = new Int16Array(result.audio.length);
-        for (let i = 0; i < result.audio.length; i++) {
-            const clamped = Math.max(-1, Math.min(1, result.audio[i]));
-            pcm[i] = Math.round(clamped * 32767);
-        }
-
-        const wav = new WaveFile();
-        wav.fromScratch(1, result.sampling_rate, '16', pcm);
-        fs.writeFileSync(wavPath, wav.toBuffer());
-
-        await bot.editMessageText('[SYSTEM] Encoding to voice format...', {
-            chat_id: chatId,
-            message_id: statusMsg.message_id
-        }).catch(() => {});
-
-        await new Promise((resolve, reject) => {
-            ffmpegFluent(wavPath)
-                .audioCodec('libopus')
-                .format('ogg')
-                .on('end', resolve)
-                .on('error', reject)
-                .save(oggPath);
+        // StreamElements free TTS — no API key, no package, Brian = best English voice
+        const response = await axios({
+            method: 'GET',
+            url: `https://api.streamelements.com/kappa/v2/speech?voice=Brian&text=${encodeURIComponent(text)}`,
+            responseType: 'arraybuffer',
+            timeout: 30000,
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
         });
+
+        fs.writeFileSync(mp3Path, Buffer.from(response.data));
+        if (fs.statSync(mp3Path).size < 1000) throw new Error('TTS response was empty. Try again.');
+
+        // FFmpeg is already installed by your buildpack — no package needed
+        await execPromise(`ffmpeg -y -i "${mp3Path}" -c:a libopus -b:a 64k "${oggPath}"`);
 
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
         await bot.sendVoice(chatId, oggPath, {
@@ -2619,15 +2697,13 @@ bot.onText(/^\/tts\s+([\s\S]+)/i, async (msg, match) => {
 
     } catch (err) {
         await bot.editMessageText(`[ERROR] TTS failed: ${err.message}`, {
-            chat_id: chatId,
-            message_id: statusMsg.message_id
+            chat_id: chatId, message_id: statusMsg.message_id
         }).catch(() => {});
     } finally {
-        if (fs.existsSync(wavPath)) fs.unlinkSync(wavPath);
+        if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
         if (fs.existsSync(oggPath)) fs.unlinkSync(oggPath);
     }
 });
-
 
 // Global Map for pending AI requests
 global.waitingAiClients = new Map();
