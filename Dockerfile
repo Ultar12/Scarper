@@ -15,10 +15,11 @@ RUN apt-get update && apt-get install -y \
     libpulse0 \
     libglu1-mesa \
     xvfb \
+    chromium \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Install Node.js
-RUN curl -sL https://deb.nodesource.com/setup_18.x | bash - \
+RUN curl -sL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs
 
 # 3. Setup Android SDK
@@ -40,6 +41,7 @@ RUN appium driver install uiautomator2
 
 # 5. App code setup
 WORKDIR /app
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 COPY package.json .
 RUN npm install
 COPY . .

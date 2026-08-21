@@ -79,7 +79,9 @@ function getChromePath() {
         process.env.CHROME_BIN,
         process.env.GOOGLE_CHROME_SHIM,
         '/app/.chrome-for-testing/chrome-linux64/chrome', // The exact path from your Heroku build log
-        '/usr/bin/google-chrome'
+        '/usr/bin/google-chrome',
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser'
     ];
     
     for (const path of possiblePaths) {
@@ -96,6 +98,144 @@ function getChromePath() {
     } catch (e) {
         console.log('[ERROR] Could not locate Chrome path automatically.');
         return null;
+    }
+}
+
+const MEDIA_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+const ffmpegPath = require('ffmpeg-static');
+
+function isPinterestUrl(rawUrl) {
+    try {
+        const hostname = new URL(rawUrl).hostname.toLowerCase();
+        return hostname === 'pin.it' || hostname === 'pinterest.com' || hostname.endsWith('.pinterest.com');
+    } catch {
+        return false;
+    }
+}
+
+function normalizeMediaUrl(rawUrl, baseUrl) {
+    if (!rawUrl || typeof rawUrl !== 'string') return null;
+
+    let value = rawUrl
+        .replaceAll('\\u002F', '/')
+        .replaceAll('\\/', '/')
+        .replace(/&amp;/gi, '&')
+        .trim()
+        .replace(/[),.;}\]]+$/, '');
+
+    try {
+        const resolved = new URL(value, baseUrl);
+        if (!['http:', 'https:'].includes(resolved.protocol)) return null;
+        return resolved.href;
+    } catch {
+        return null;
+    }
+}
+
+function normalizePinterestImageUrl(rawUrl) {
+    const url = normalizeMediaUrl(rawUrl, 'https://www.pinterest.com/');
+    if (!url || !url.includes('pinimg.com')) return url;
+    return url.replace(/\/(?:\d+x\d*|originals)\//i, '/originals/');
+}
+
+function launchScraperBrowser() {
+    const launchOptions = {
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+    };
+    const chromePath = getChromePath();
+    if (chromePath) launchOptions.executablePath = chromePath;
+    return puppeteer.launch(launchOptions);
+}
+
+async function extractPinterestMedia(page) {
+    const media = await page.evaluate(() => {
+        const candidates = [];
+        const add = (value, kind) => {
+            if (typeof value !== 'string' || !/^https?:/i.test(value)) return;
+            candidates.push({ url: value, kind });
+        };
+
+        document.querySelectorAll('video, source').forEach((element) => {
+            add(element.currentSrc || element.src, 'video');
+            add(element.getAttribute('src'), 'video');
+        });
+        document.querySelectorAll('meta[property="og:video"], meta[property="og:video:url"], meta[name="twitter:player:stream"]').forEach((element) => add(element.content, 'video'));
+        document.querySelectorAll('img').forEach((element) => {
+            if (element.naturalWidth >= 120 && element.naturalHeight >= 120) {
+                add(element.currentSrc || element.src, 'image');
+                add(element.getAttribute('data-src'), 'image');
+            }
+        });
+        document.querySelectorAll('meta[property="og:image"], meta[name="twitter:image"], link[rel="image_src"]').forEach((element) => {
+            add(element.content || element.href, 'image');
+        });
+
+        // Pinterest frequently stores the original media in serialized page state rather than visible DOM.
+        const pageState = Array.from(document.scripts).map((script) => script.textContent || '').join('\\n');
+        const pinimgPattern = /https?:\/\/(?:i|v1)\.pinimg\.com\/[^"'\\\s<>),;}\]]+/gi;
+        for (const match of pageState.matchAll(pinimgPattern)) {
+            const decoded = match[0].replaceAll('\\u002F', '/').replaceAll('\\/', '/');
+            add(decoded, /\.(?:mp4|m3u8)(?:[?#]|$)/i.test(decoded) || /\/videos\//i.test(decoded) ? 'video' : 'image');
+        }
+
+        const videos = [...new Set(candidates.filter((item) => item.kind === 'video').map((item) => item.url))];
+        const images = [...new Set(candidates.filter((item) => item.kind === 'image').map((item) => item.url))];
+        const preferredVideo = videos.find((url) => /\.(?:mp4|m3u8)(?:[?#]|$)/i.test(url)) || videos.find((url) => /\/videos\//i.test(url)) || videos[0];
+        if (preferredVideo) return { type: 'video', url: preferredVideo };
+
+        const originalImages = images.filter((url) => /\/originals\//i.test(url));
+        const usableImages = originalImages.length ? originalImages : images.filter((url) => !/(?:\/75x75|\/236x|\/474x|\/564x|\/60x60)\//i.test(url));
+        if (usableImages.length) return { type: 'images', urls: usableImages.slice(0, 20) };
+        return null;
+    });
+
+    if (!media) return null;
+    if (media.type === 'video') {
+        const url = normalizeMediaUrl(media.url, page.url());
+        return url ? { type: 'video', url } : null;
+    }
+
+    const urls = [...new Set(media.urls.map(normalizePinterestImageUrl).filter(Boolean))];
+    return urls.length ? { type: 'images', urls } : null;
+}
+
+async function fetchRemoteMediaBuffer(mediaUrl) {
+    const response = await axios.get(mediaUrl, {
+        responseType: 'arraybuffer',
+        timeout: 120000,
+        maxContentLength: 50 * 1024 * 1024,
+        headers: {
+            'User-Agent': MEDIA_USER_AGENT,
+            'Referer': 'https://www.pinterest.com/'
+        }
+    });
+    return Buffer.from(response.data);
+}
+
+async function resolvePinterestMedia(sourceUrl) {
+    let browser = null;
+    try {
+        browser = await launchScraperBrowser();
+        const page = await browser.newPage();
+        await page.setUserAgent(MEDIA_USER_AGENT);
+        await page.setExtraHTTPHeaders({
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.pinterest.com/'
+        });
+        await page.goto(sourceUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+        await page.waitForTimeout(3500);
+
+        let media = await extractPinterestMedia(page);
+        if (!media) {
+            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+            await page.waitForTimeout(2000);
+            media = await extractPinterestMedia(page);
+        }
+        if (!media) throw new Error('Pinterest returned no public image or video URL. The pin may be private, deleted, or login-gated.');
+        return media;
+    } finally {
+        if (browser) await browser.close().catch(() => {});
     }
 }
 
@@ -2193,7 +2333,28 @@ app.get('/api/download', async (req, res) => {
         }
 
 
-        // --- 2. YOUTUBE TERMUX WORKER LOGIC ---
+        // --- 2. PINTEREST DIRECT RESOLVER ---
+        if (isPinterestUrl(url)) {
+            const mediaData = await resolvePinterestMedia(url);
+            if (mediaData.type === 'images') {
+                return res.status(200).json({ type: 'images', urls: mediaData.urls });
+            }
+
+            const videoStream = await axios({
+                method: 'GET',
+                url: mediaData.url,
+                responseType: 'stream',
+                timeout: 60000,
+                headers: {
+                    'User-Agent': MEDIA_USER_AGENT,
+                    'Referer': 'https://www.pinterest.com/'
+                }
+            });
+            res.setHeader('Content-Type', videoStream.headers['content-type'] || 'video/mp4');
+            return videoStream.data.pipe(res);
+        }
+
+        // --- 3. YOUTUBE TERMUX WORKER LOGIC ---
         if (url.includes('youtube.com') || url.includes('youtu.be')) {
             if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
                 return res.status(503).json({ error: "Termux Worker is offline" });
@@ -2240,7 +2401,9 @@ app.get('/api/download', async (req, res) => {
             // FORCE yt-dlp to grab a pre-merged, standard MP4
             await youtubedl(url, {
                 output: videoPath,
-                format: 'best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best', 
+                format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                mergeOutputFormat: 'mp4',
+                ffmpegLocation: ffmpegPath,
                 noWarnings: true
             });
             ytdlpSuccess = true; 
@@ -2252,11 +2415,7 @@ app.get('/api/download', async (req, res) => {
             
             let rescueBrowser = null;
             try {
-                rescueBrowser = await puppeteer.launch({
-                    headless: true,
-                    executablePath: getChromePath(),
-                    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-                });
+                rescueBrowser = await launchScraperBrowser();
                 
                 const rescuePage = await rescueBrowser.newPage();
                 await rescuePage.setViewport({ width: 1280, height: 800 });
@@ -4408,7 +4567,26 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
             return;
         }
 
-        // --- 2. YOUTUBE TERMINAL ROUTING ---
+        // --- 2. PINTEREST DIRECT RESOLVER ---
+        if (isPinterestUrl(url)) {
+            await bot.editMessageText('[SYSTEM] Pinterest link detected. Resolving the original media...', { chat_id: chatId, message_id: statusMsg.message_id });
+            const mediaData = await resolvePinterestMedia(url);
+
+            if (mediaData.type === 'video') {
+                const video = await fetchRemoteMediaBuffer(mediaData.url);
+                await bot.sendVideo(chatId, video, { caption: '[SUCCESS] Pinterest video downloaded' });
+            } else {
+                for (let i = 0; i < mediaData.urls.length; i++) {
+                    const image = await fetchRemoteMediaBuffer(mediaData.urls[i]);
+                    await bot.sendPhoto(chatId, image, { caption: i === 0 ? '[SUCCESS] Pinterest image downloaded' : undefined });
+                }
+            }
+
+            await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+            return;
+        }
+
+        // --- 3. YOUTUBE TERMINAL ROUTING ---
         if (url.includes('youtube.com') || url.includes('youtu.be')) {
             if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
                 return bot.editMessageText('[ERROR] Termux Node is offline. Start the worker script on your phone.', { chat_id: chatId, message_id: statusMsg.message_id });
@@ -4437,6 +4615,7 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
                 output: videoPath,
                 format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 mergeOutputFormat: 'mp4',
+                ffmpegLocation: ffmpegPath,
                 cookies: cookiePath,
                 jsRuntimes: 'nodejs', 
                 noWarnings: true
@@ -4451,11 +4630,7 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
             
             let rescueBrowser = null;
             try {
-                rescueBrowser = await puppeteer.launch({
-                    headless: true,
-                    executablePath: getChromePath(),
-                    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-                });
+                rescueBrowser = await launchScraperBrowser();
                 
                 const rescuePage = await rescueBrowser.newPage();
                 await rescuePage.setViewport({ width: 1280, height: 800 });

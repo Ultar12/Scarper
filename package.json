@@ -3,17 +3,19 @@
   "version": "1.0.0",
   "description": "WhatsApp Web JS with PostgreSQL RemoteAuth - 32GB RAM Optimized",
   "main": "index.js",
-    "scripts": {
-  "start": "node index.js",
-  "postinstall": "PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install firefox"
-},
-
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "check": "node --check index.js",
+    "postinstall": "PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install firefox"
+  },
   "dependencies": {
     "axios": "^1.6.8",
     "express": "^4.19.2",
     "node-telegram-bot-api": "^0.66.0",
     "pg": "^8.11.5",
     "playwright": "latest",
+    "puppeteer": "19.0.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "puppeteer-core": "^25.0.4",
@@ -35,9 +37,10 @@
     "whatsapp-web.js": "^1.23.0",
     "youtube-dl-exec": "^3.0.0",
     "ytdlp-nodejs": "3.4.4",
-    "wwebjs-postgres": "^1.0.0"
+    "wwebjs-postgres": "^1.0.0",
+    "ffmpeg-static": "^5.2.0"
   },
   "engines": {
-    "node": "20.x"
+    "node": ">=20"
   }
 }
