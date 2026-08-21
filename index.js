@@ -16,6 +16,7 @@ process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
 
 const fs = require('fs');
 const crypto = require('crypto');
+const { Readable } = require('stream');
 const { execSync } = require('child_process');
 const express = require('express');
 const youtubedl = require('youtube-dl-exec');
@@ -241,14 +242,33 @@ async function deliverPublicAdultVideo(bot, chatId, videoPath, caption) {
         return sendTelegramVideo(bot, chatId, videoPath, caption);
     }
 
-    const temporaryUrl = registerTemporaryDownload(videoPath, `scarper-${Date.now()}.mp4`);
-    if (temporaryUrl) {
-        await bot.sendMessage(chatId, `${caption}\n\nThe original 1080p file is larger than Telegram's bot upload limit.\nDownload it here within 1 hour:\n${temporaryUrl}`);
+    try {
+        const temporaryUrl = await uploadToExternalTemporaryStorage(videoPath);
+        await bot.sendMessage(chatId, `${caption}\n\nThe original 1080p file is larger than Telegram's bot upload limit.\nDownload it from the external temporary link:\n${temporaryUrl}\n\nThis link expires in approximately 60 minutes.`);
         return { count: 0, bytes: fileSize, temporaryUrl };
+    } catch (uploadError) {
+        console.error(`[TEMP UPLOAD] Full external upload failed: ${uploadError.message}`);
+        if (fileSize > 100 * 1024 * 1024) {
+            let parts = [];
+            try {
+                parts = await prepareTelegramVideoFiles(videoPath);
+                const links = [];
+                for (let index = 0; index < parts.length; index++) {
+                    links.push(await uploadToExternalTemporaryStorage(parts[index]));
+                }
+                await bot.sendMessage(chatId, `${caption}\n\nThe original 1080p file was split without recompression because the external service accepts files up to 100 MB.\nDownload parts (each link expires in approximately 60 minutes):\n${links.map((link, index) => `Part ${index + 1}: ${link}`).join('\\n')}`);
+                return { count: links.length, bytes: fileSize, temporaryUrls: links };
+            } finally {
+                for (const part of parts) {
+                    if (part !== videoPath && fs.existsSync(part)) {
+                        try { fs.unlinkSync(part); } catch {}
+                    }
+                }
+            }
+        }
+        await bot.sendMessage(chatId, `${caption}\n\nThe external temporary service was unavailable, so the original file will be sent as split documents.`);
+        return sendTelegramVideo(bot, chatId, videoPath, caption);
     }
-
-    await bot.sendMessage(chatId, `${caption}\n\nA public base URL is not configured, so the original file will be sent as split documents.`);
-    return sendTelegramVideo(bot, chatId, videoPath, caption);
 }
 
 function getYouTubeCookiePath() {
@@ -270,6 +290,8 @@ function buildYouTubeDownloadOptions(outputPath, format = null, cookies = null, 
         noWarnings: true,
         jsRuntimes: 'nodejs',
         remoteComponents: 'ejs:github',
+        userAgent: process.env.YOUTUBE_USER_AGENT || MEDIA_USER_AGENT,
+        httpChunkSize: '10M',
         extractorArgs: [
             ...(client ? [`youtube:player_client=${client}`] : []),
             ...(fs.existsSync(BGUTIL_SERVER_HOME) ? [`youtubepot-bgutilscript:server_home=${BGUTIL_SERVER_HOME}`] : [])
@@ -288,12 +310,12 @@ async function downloadYouTubeVideo(sourceUrl, outputPath) {
         'bestvideo*+bestaudio/best',
         'best'
     ];
-    const clients = ['android_music', 'web', 'web_safari', 'tv_embedded', null];
+    const clients = [null, 'android_music', 'web', 'web_safari', 'tv_embedded'];
     const authenticatedAttempts = cookies
         ? clients.flatMap(client => formats.map(format => buildYouTubeDownloadOptions(outputPath, format, cookies, false, client)))
         : [];
     const anonymousAttempts = clients.flatMap(client => formats.map(format => buildYouTubeDownloadOptions(outputPath, format, null, true, client)));
-    const attempts = [...authenticatedAttempts, ...anonymousAttempts];
+    const attempts = [...anonymousAttempts, ...authenticatedAttempts];
     let lastError = null;
     for (let index = 0; index < attempts.length; index++) {
         const options = attempts[index];
@@ -709,64 +731,49 @@ if (!fs.existsSync('./public')) {
     fs.mkdirSync('./public');
 }
 
-const TEMPORARY_DOWNLOAD_TTL_MS = 60 * 60 * 1000;
-const temporaryDownloads = new Map();
+async function uploadToExternalTemporaryStorage(filePath) {
+    if (!fs.existsSync(filePath)) throw new Error('The downloaded video file no longer exists.');
 
-function getPublicBaseUrl() {
-    const configured = process.env.PUBLIC_BASE_URL || process.env.APP_URL || process.env.HEROKU_APP_URL;
-    if (configured) return configured.replace(/\/+$/, '');
-    if (process.env.HEROKU_APP_NAME) return `https://${process.env.HEROKU_APP_NAME}.herokuapp.com`;
-    return null;
-}
+    const filename = `scarper-${Date.now()}.mp4`;
+    const boundary = `----ScarperFileBoundary${crypto.randomBytes(12).toString('hex')}`;
+    const header = Buffer.from(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+        'Content-Type: video/mp4\r\n\r\n'
+    );
+    const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
+    const fileSize = fs.statSync(filePath).size;
+    const body = Readable.from((async function* () {
+        yield header;
+        for await (const chunk of fs.createReadStream(filePath)) yield chunk;
+        yield footer;
+    })());
 
-function registerTemporaryDownload(filePath, filename = 'scarper-video.mp4') {
-    const baseUrl = getPublicBaseUrl();
-    if (!baseUrl || !fs.existsSync(filePath)) return null;
-
-    const token = crypto.randomBytes(24).toString('hex');
-    temporaryDownloads.set(token, {
-        filePath,
-        filename: path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_'),
-        expiresAt: Date.now() + TEMPORARY_DOWNLOAD_TTL_MS
+    const endpoint = process.env.TEMP_UPLOAD_ENDPOINT || 'https://tmpfiles.org/api/v1/upload';
+    const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+            'Content-Type': `multipart/form-data; boundary=${boundary}`,
+            'Content-Length': String(header.length + fileSize + footer.length)
+        },
+        body,
+        duplex: 'half'
     });
-    return `${baseUrl}/temporary-download/${token}`;
-}
-
-function isTemporaryDownloadPath(filePath) {
-    return [...temporaryDownloads.values()].some(item => item.filePath === filePath);
-}
-
-function cleanupTemporaryDownloads() {
-    const now = Date.now();
-    for (const [token, item] of temporaryDownloads) {
-        if (item.expiresAt <= now || !fs.existsSync(item.filePath)) {
-            temporaryDownloads.delete(token);
-            if (fs.existsSync(item.filePath)) {
-                try { fs.unlinkSync(item.filePath); } catch {}
-            }
-        }
-    }
-}
-
-const temporaryDownloadCleanupTimer = setInterval(cleanupTemporaryDownloads, 5 * 60 * 1000);
-temporaryDownloadCleanupTimer.unref?.();
-
-app.get('/temporary-download/:token', (req, res) => {
-    const item = temporaryDownloads.get(req.params.token);
-    if (!item || item.expiresAt <= Date.now() || !fs.existsSync(item.filePath)) {
-        if (item) temporaryDownloads.delete(req.params.token);
-        return res.status(404).send('This temporary download link has expired or is invalid.');
+    const payload = await response.json().catch(() => ({}));
+    const landingUrl = payload?.data?.url;
+    if (!response.ok || payload?.status !== 'success' || !landingUrl) {
+        throw new Error(`External temporary storage rejected the upload (HTTP ${response.status}).`);
     }
 
-    res.set({
-        'Content-Type': 'video/mp4',
-        'Content-Disposition': `attachment; filename="${item.filename}"`,
-        'Cache-Control': 'no-store, max-age=0'
-    });
-    res.sendFile(item.filePath, (error) => {
-        if (error && !res.headersSent) res.status(error.statusCode || 500).send('Unable to serve this temporary download.');
-    });
-});
+    const landingResponse = await fetch(landingUrl, { redirect: 'follow' });
+    const landingHtml = await landingResponse.text();
+    const directMatch = landingHtml.match(/href=["'](https:\/\/tmpfiles\.org\/dl\/[^"']+)["']/i);
+    if (!landingResponse.ok || !directMatch) {
+        throw new Error('External temporary storage returned no direct download URL.');
+    }
+    return directMatch[1].replaceAll('&amp;', '&');
+}
+
 
 app.get('/', (req, res) => res.send('WhatsApp Bot running with Postgres Auth.'));
 
@@ -1490,6 +1497,15 @@ function getRawCookieString(cookies) {
 
 // --- ENGINE STATE ---
 const rawNpSessions = {};
+const rawNpLoggedErrors = new Set();
+
+function logRawNpErrorOnce(username, error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const key = `${username}:${message}`;
+    if (rawNpLoggedErrors.has(key)) return;
+    rawNpLoggedErrors.add(key);
+    console.error(`[ERROR] Original NumberPanel Login Error: ${message}`);
+}
 
 // --- LOGIN ROUTINE (PURE AXIOS) ---
 async function loginRawNumPanel(username, password, force = false) {
@@ -1556,7 +1572,7 @@ async function loginRawNumPanel(username, password, force = false) {
         return rawNpSessions[username];
 
     } catch (err) {
-        console.error(`[ERROR] Original NumberPanel Login Error: ${err.message}`);
+        logRawNpErrorOnce(username, err);
         return null;
     }
 }
@@ -3649,7 +3665,7 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
                 if (delivery.temporaryUrl) return;
                 return;
             } finally {
-                if (fs.existsSync(videoPath) && !isTemporaryDownloadPath(videoPath)) fs.unlinkSync(videoPath);
+                if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
             }
         }
 
@@ -3792,7 +3808,7 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
         // We use regex to clean up any leftover video files matching the pattern
         fs.readdirSync(__dirname).forEach(file => {
             const filePath = path.join(__dirname, file);
-            if (file.startsWith('dl_') && file.endsWith('.mp4') && !isTemporaryDownloadPath(filePath)) {
+            if (file.startsWith('dl_') && file.endsWith('.mp4')) {
                 try { fs.unlinkSync(filePath); } catch (e) {}
             }
         });
