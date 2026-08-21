@@ -102,7 +102,6 @@ function getChromePath() {
 }
 
 const MEDIA_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
-const ffmpegPath = require('ffmpeg-static');
 
 function isPinterestUrl(rawUrl) {
     try {
@@ -2403,7 +2402,6 @@ app.get('/api/download', async (req, res) => {
                 output: videoPath,
                 format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 mergeOutputFormat: 'mp4',
-                ffmpegLocation: ffmpegPath,
                 noWarnings: true
             });
             ytdlpSuccess = true; 
@@ -4615,7 +4613,6 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
                 output: videoPath,
                 format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 mergeOutputFormat: 'mp4',
-                ffmpegLocation: ffmpegPath,
                 cookies: cookiePath,
                 jsRuntimes: 'nodejs', 
                 noWarnings: true

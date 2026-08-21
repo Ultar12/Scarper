@@ -15,7 +15,6 @@
     "node-telegram-bot-api": "^0.66.0",
     "pg": "^8.11.5",
     "playwright": "latest",
-    "puppeteer": "19.0.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "puppeteer-core": "^25.0.4",
@@ -37,10 +36,9 @@
     "whatsapp-web.js": "^1.23.0",
     "youtube-dl-exec": "^3.0.0",
     "ytdlp-nodejs": "3.4.4",
-    "wwebjs-postgres": "^1.0.0",
-    "ffmpeg-static": "^5.2.0"
+    "wwebjs-postgres": "^1.0.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": "20.x"
   }
 }
