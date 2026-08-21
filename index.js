@@ -15,8 +15,6 @@ process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
 
 
 const fs = require('fs');
-const crypto = require('crypto');
-const { Readable } = require('stream');
 const { execSync } = require('child_process');
 const express = require('express');
 const youtubedl = require('youtube-dl-exec');
@@ -221,7 +219,7 @@ async function sendTelegramVideo(bot, chatId, videoPath, caption) {
 async function downloadPublicVideo(sourceUrl, outputPath) {
     await youtubedl(sourceUrl, {
         output: outputPath,
-        format: 'bestvideo[height<=1080]+bestaudio/bestvideo+bestaudio/best',
+        format: 'bestvideo[height<=480]+bestaudio/best[height<=480]/best',
         mergeOutputFormat: 'mp4',
         recodeVideo: 'mp4',
         noPlaylist: true,
@@ -237,37 +235,27 @@ async function downloadPublicVideo(sourceUrl, outputPath) {
 }
 
 async function deliverPublicAdultVideo(bot, chatId, videoPath, caption) {
+    if (!fs.existsSync(videoPath)) throw new Error('The downloaded adult video file no longer exists.');
     const fileSize = fs.statSync(videoPath).size;
-    if (fileSize <= TELEGRAM_MAX_VIDEO_BYTES) {
-        return sendTelegramVideo(bot, chatId, videoPath, caption);
+    if (fileSize > TELEGRAM_MAX_VIDEO_BYTES) {
+        await bot.sendDocument(chatId, videoPath, {
+            caption: `${caption}\nOriginal 480p file — full file attached`
+        }, {
+            filename: `adult-video-${Date.now()}.mp4`,
+            contentType: 'video/mp4'
+        });
+        return { count: 1, bytes: fileSize, document: true };
     }
+    await bot.sendVideo(chatId, videoPath, { caption });
+    return { count: 1, bytes: fileSize, document: false };
+}
 
+function isNetscapeCookieFile(filePath) {
     try {
-        const temporaryUrl = await uploadToExternalTemporaryStorage(videoPath);
-        await bot.sendMessage(chatId, `${caption}\n\nThe original 1080p file is larger than Telegram's bot upload limit.\nDownload it from the external temporary link:\n${temporaryUrl}\n\nThis link expires in approximately 60 minutes.`);
-        return { count: 0, bytes: fileSize, temporaryUrl };
-    } catch (uploadError) {
-        console.error(`[TEMP UPLOAD] Full external upload failed: ${uploadError.message}`);
-        if (fileSize > 100 * 1024 * 1024) {
-            let parts = [];
-            try {
-                parts = await prepareTelegramVideoFiles(videoPath);
-                const links = [];
-                for (let index = 0; index < parts.length; index++) {
-                    links.push(await uploadToExternalTemporaryStorage(parts[index]));
-                }
-                await bot.sendMessage(chatId, `${caption}\n\nThe original 1080p file was split without recompression because the external service accepts files up to 100 MB.\nDownload parts (each link expires in approximately 60 minutes):\n${links.map((link, index) => `Part ${index + 1}: ${link}`).join('\\n')}`);
-                return { count: links.length, bytes: fileSize, temporaryUrls: links };
-            } finally {
-                for (const part of parts) {
-                    if (part !== videoPath && fs.existsSync(part)) {
-                        try { fs.unlinkSync(part); } catch {}
-                    }
-                }
-            }
-        }
-        await bot.sendMessage(chatId, `${caption}\n\nThe external temporary service was unavailable, so the original file will be sent as split documents.`);
-        return sendTelegramVideo(bot, chatId, videoPath, caption);
+        const header = fs.readFileSync(filePath, 'utf8').split(/\r?\n/, 1)[0].trim();
+        return header === '# Netscape HTTP Cookie File' || header === '# HTTP Cookie File';
+    } catch {
+        return false;
     }
 }
 
@@ -277,7 +265,10 @@ function getYouTubeCookiePath() {
         cookiePath,
         path.join(__dirname, 'cookies.txt')
     ].filter(Boolean);
-    return candidates.find(candidate => fs.existsSync(candidate)) || null;
+    const cookieFile = candidates.find(candidate => fs.existsSync(candidate)) || null;
+    if (cookieFile && isNetscapeCookieFile(cookieFile)) return cookieFile;
+    if (cookieFile) console.warn(`[YOUTUBE] Ignoring non-Netscape cookie file: ${cookieFile}`);
+    return null;
 }
 
 function getYouTubeVideoId(sourceUrl) {
@@ -808,48 +799,7 @@ if (!fs.existsSync('./public')) {
     fs.mkdirSync('./public');
 }
 
-async function uploadToExternalTemporaryStorage(filePath) {
-    if (!fs.existsSync(filePath)) throw new Error('The downloaded video file no longer exists.');
 
-    const filename = `scarper-${Date.now()}.mp4`;
-    const boundary = `----ScarperFileBoundary${crypto.randomBytes(12).toString('hex')}`;
-    const header = Buffer.from(
-        `--${boundary}\r\n` +
-        `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
-        'Content-Type: video/mp4\r\n\r\n'
-    );
-    const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
-    const fileSize = fs.statSync(filePath).size;
-    const body = Readable.from((async function* () {
-        yield header;
-        for await (const chunk of fs.createReadStream(filePath)) yield chunk;
-        yield footer;
-    })());
-
-    const endpoint = process.env.TEMP_UPLOAD_ENDPOINT || 'https://tmpfiles.org/api/v1/upload';
-    const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-            'Content-Type': `multipart/form-data; boundary=${boundary}`,
-            'Content-Length': String(header.length + fileSize + footer.length)
-        },
-        body,
-        duplex: 'half'
-    });
-    const payload = await response.json().catch(() => ({}));
-    const landingUrl = payload?.data?.url;
-    if (!response.ok || payload?.status !== 'success' || !landingUrl) {
-        throw new Error(`External temporary storage rejected the upload (HTTP ${response.status}).`);
-    }
-
-    const landingResponse = await fetch(landingUrl, { redirect: 'follow' });
-    const landingHtml = await landingResponse.text();
-    const directMatch = landingHtml.match(/href=["'](https:\/\/tmpfiles\.org\/dl\/[^"']+)["']/i);
-    if (!landingResponse.ok || !directMatch) {
-        throw new Error('External temporary storage returned no direct download URL.');
-    }
-    return directMatch[1].replaceAll('&amp;', '&');
-}
 
 
 app.get('/', (req, res) => res.send('WhatsApp Bot running with Postgres Auth.'));
@@ -3772,9 +3722,8 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
             try {
                 await bot.editMessageText('[SYSTEM] Public adult video site detected. Downloading available media...', { chat_id: chatId, message_id: statusMsg.message_id });
                 await downloadPublicVideo(url, videoPath);
-                const delivery = await deliverPublicAdultVideo(bot, chatId, videoPath, '[SUCCESS] Public adult video downloaded');
+                await deliverPublicAdultVideo(bot, chatId, videoPath, '[SUCCESS] Public adult video downloaded');
                 await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-                if (delivery.temporaryUrl) return;
                 return;
             } finally {
                 if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
