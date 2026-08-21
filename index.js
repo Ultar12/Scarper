@@ -15,6 +15,7 @@ process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
 
 
 const fs = require('fs');
+const crypto = require('crypto');
 const { execSync } = require('child_process');
 const express = require('express');
 const youtubedl = require('youtube-dl-exec');
@@ -234,6 +235,22 @@ async function downloadPublicVideo(sourceUrl, outputPath) {
     }
 }
 
+async function deliverPublicAdultVideo(bot, chatId, videoPath, caption) {
+    const fileSize = fs.statSync(videoPath).size;
+    if (fileSize <= TELEGRAM_MAX_VIDEO_BYTES) {
+        return sendTelegramVideo(bot, chatId, videoPath, caption);
+    }
+
+    const temporaryUrl = registerTemporaryDownload(videoPath, `scarper-${Date.now()}.mp4`);
+    if (temporaryUrl) {
+        await bot.sendMessage(chatId, `${caption}\n\nThe original 1080p file is larger than Telegram's bot upload limit.\nDownload it here within 1 hour:\n${temporaryUrl}`);
+        return { count: 0, bytes: fileSize, temporaryUrl };
+    }
+
+    await bot.sendMessage(chatId, `${caption}\n\nA public base URL is not configured, so the original file will be sent as split documents.`);
+    return sendTelegramVideo(bot, chatId, videoPath, caption);
+}
+
 function getYouTubeCookiePath() {
     const candidates = [
         process.env.YOUTUBE_COOKIES_PATH,
@@ -243,10 +260,10 @@ function getYouTubeCookiePath() {
     return candidates.find(candidate => fs.existsSync(candidate)) || null;
 }
 
-function buildYouTubeDownloadOptions(outputPath, format = 'bv*+ba/b', cookies = null, ignoreCookies = false, client = 'android_music') {
+function buildYouTubeDownloadOptions(outputPath, format = null, cookies = null, ignoreCookies = false, client = 'android_music') {
     return {
         output: outputPath,
-        format,
+        ...(format ? { format } : {}),
         mergeOutputFormat: 'mp4',
         recodeVideo: 'mp4',
         noPlaylist: true,
@@ -254,7 +271,7 @@ function buildYouTubeDownloadOptions(outputPath, format = 'bv*+ba/b', cookies = 
         jsRuntimes: 'nodejs',
         remoteComponents: 'ejs:github',
         extractorArgs: [
-            `youtube:player_client=${client}`,
+            ...(client ? [`youtube:player_client=${client}`] : []),
             ...(fs.existsSync(BGUTIL_SERVER_HOME) ? [`youtubepot-bgutilscript:server_home=${BGUTIL_SERVER_HOME}`] : [])
         ],
         ...(fs.existsSync(BGUTIL_SERVER_HOME) ? { pluginDirs: BGUTIL_PLUGIN_DIR } : {}),
@@ -266,18 +283,23 @@ function buildYouTubeDownloadOptions(outputPath, format = 'bv*+ba/b', cookies = 
 async function downloadYouTubeVideo(sourceUrl, outputPath) {
     const cookies = getYouTubeCookiePath();
     const formats = [
+        null,
         'bv*+ba/best',
         'bestvideo*+bestaudio/best',
-        'best',
-        'b'
+        'best'
     ];
-    const clients = ['android_music', 'web'];
-    const attempts = clients.flatMap(client => formats.map(format => buildYouTubeDownloadOptions(outputPath, format, null, true, client)));
-    if (cookies) {
-        attempts.push(...clients.flatMap(client => formats.map(format => buildYouTubeDownloadOptions(outputPath, format, cookies, false, client))));
-    }
+    const clients = ['android_music', 'web', 'web_safari', 'tv_embedded', null];
+    const authenticatedAttempts = cookies
+        ? clients.flatMap(client => formats.map(format => buildYouTubeDownloadOptions(outputPath, format, cookies, false, client)))
+        : [];
+    const anonymousAttempts = clients.flatMap(client => formats.map(format => buildYouTubeDownloadOptions(outputPath, format, null, true, client)));
+    const attempts = [...authenticatedAttempts, ...anonymousAttempts];
     let lastError = null;
-    for (const options of attempts) {
+    for (let index = 0; index < attempts.length; index++) {
+        const options = attempts[index];
+        const hasCookies = Boolean(options.cookies);
+        const clientLabel = options.extractorArgs.find(value => value.startsWith('youtube:player_client='))?.split('=')[1] || 'auto';
+        console.log(`[YOUTUBE] Attempt ${index + 1}/${attempts.length} client=${clientLabel} cookies=${hasCookies ? 'yes' : 'no'} format=${options.format || 'default'}`);
         try {
             await youtubedl(sourceUrl, options);
             if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) return;
@@ -494,49 +516,6 @@ pool.query(`CREATE TABLE IF NOT EXISTS browser_sessions (platform VARCHAR(50) PR
     .then(() => console.log('[SYSTEM] Browser Session DB Ready.'))
     .catch(console.error);
 
-// --- MEME RADAR PERSISTENCE DATABASE ---
-pool.query(`
-    CREATE TABLE IF NOT EXISTS meme_radar_alerts (
-        contract_address VARCHAR(100) PRIMARY KEY,
-        last_alert_time BIGINT,
-        last_price NUMERIC
-    );
-`)
-.then(() => console.log('[SYSTEM] Meme Radar DB Ready.'))
-.catch(console.error);
-
-
-// --- TRENCH TRACKER DATABASE INITIALIZATION ---
-pool.query(`
-    CREATE TABLE IF NOT EXISTS tracked_tokens (
-        contract_address VARCHAR(100) PRIMARY KEY,
-        symbol VARCHAR(50),
-        name VARCHAR(100),
-        initial_mc NUMERIC,
-        ath_mc NUMERIC,
-        is_manual BOOLEAN,
-        added_time BIGINT
-    );
-    CREATE TABLE IF NOT EXISTS tracking_batch (
-        id SERIAL PRIMARY KEY,
-        start_time BIGINT,
-        day1_done BOOLEAN DEFAULT FALSE,
-        day2_done BOOLEAN DEFAULT FALSE,
-        day3_done BOOLEAN DEFAULT FALSE
-    );
-`)
-.then(() => console.log('[SYSTEM] Trench Tracker DB Ready.'))
-.catch(console.error);
-
-// Helper function to format Market Caps (e.g., 5700 -> 5.7K)
-function formatMC(num) {
-    if (!num) return '0';
-    if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
-    if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
-    return num.toFixed(0);
-}
-
-
 // --- JSON TO NETSCAPE COOKIE CONVERTER ---
 function prepareGhostCookies() {
     const jsonPath = path.join(__dirname, 'cookies.json');
@@ -729,6 +708,65 @@ app.use('/public', express.static(path.join(__dirname, 'public')));
 if (!fs.existsSync('./public')) {
     fs.mkdirSync('./public');
 }
+
+const TEMPORARY_DOWNLOAD_TTL_MS = 60 * 60 * 1000;
+const temporaryDownloads = new Map();
+
+function getPublicBaseUrl() {
+    const configured = process.env.PUBLIC_BASE_URL || process.env.APP_URL || process.env.HEROKU_APP_URL;
+    if (configured) return configured.replace(/\/+$/, '');
+    if (process.env.HEROKU_APP_NAME) return `https://${process.env.HEROKU_APP_NAME}.herokuapp.com`;
+    return null;
+}
+
+function registerTemporaryDownload(filePath, filename = 'scarper-video.mp4') {
+    const baseUrl = getPublicBaseUrl();
+    if (!baseUrl || !fs.existsSync(filePath)) return null;
+
+    const token = crypto.randomBytes(24).toString('hex');
+    temporaryDownloads.set(token, {
+        filePath,
+        filename: path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_'),
+        expiresAt: Date.now() + TEMPORARY_DOWNLOAD_TTL_MS
+    });
+    return `${baseUrl}/temporary-download/${token}`;
+}
+
+function isTemporaryDownloadPath(filePath) {
+    return [...temporaryDownloads.values()].some(item => item.filePath === filePath);
+}
+
+function cleanupTemporaryDownloads() {
+    const now = Date.now();
+    for (const [token, item] of temporaryDownloads) {
+        if (item.expiresAt <= now || !fs.existsSync(item.filePath)) {
+            temporaryDownloads.delete(token);
+            if (fs.existsSync(item.filePath)) {
+                try { fs.unlinkSync(item.filePath); } catch {}
+            }
+        }
+    }
+}
+
+const temporaryDownloadCleanupTimer = setInterval(cleanupTemporaryDownloads, 5 * 60 * 1000);
+temporaryDownloadCleanupTimer.unref?.();
+
+app.get('/temporary-download/:token', (req, res) => {
+    const item = temporaryDownloads.get(req.params.token);
+    if (!item || item.expiresAt <= Date.now() || !fs.existsSync(item.filePath)) {
+        if (item) temporaryDownloads.delete(req.params.token);
+        return res.status(404).send('This temporary download link has expired or is invalid.');
+    }
+
+    res.set({
+        'Content-Type': 'video/mp4',
+        'Content-Disposition': `attachment; filename="${item.filename}"`,
+        'Cache-Control': 'no-store, max-age=0'
+    });
+    res.sendFile(item.filePath, (error) => {
+        if (error && !res.headersSent) res.status(error.statusCode || 500).send('Unable to serve this temporary download.');
+    });
+});
 
 app.get('/', (req, res) => res.send('WhatsApp Bot running with Postgres Auth.'));
 
@@ -941,77 +979,6 @@ async function getNgnRate() {
 }
 
 
-// --- RICK-STYLE REPORT GENERATOR ---
-async function generateTrenchReport(timeframeLabel) {
-    const res = await pool.query('SELECT * FROM tracked_tokens');
-    const tokens = res.rows;
-    if (tokens.length === 0) return null;
-
-    let totalGain = 0;
-    let hit2x = 0;
-    let hit5x = 0;
-    let oldestTime = Date.now();
-    
-    // Calculate multipliers for each token and find the oldest
-    const performance = tokens.map(t => {
-        const initial = parseFloat(t.initial_mc) || 1;
-        const ath = parseFloat(t.ath_mc) || 0;
-        const multiplier = ath / initial;
-        
-        const addedTime = parseInt(t.added_time) || Date.now();
-        if (addedTime < oldestTime) oldestTime = addedTime;
-
-        return { ...t, multiplier, addedTime };
-    });
-
-    // Sort by biggest winners
-    performance.sort((a, b) => b.multiplier - a.multiplier);
-
-    performance.forEach(t => {
-        totalGain += t.multiplier;
-        if (t.multiplier >= 2) hit2x++;
-        if (t.multiplier >= 5) hit5x++;
-    });
-
-    const avgGain = (totalGain / tokens.length).toFixed(1);
-    const top10 = performance.slice(0, 10);
-    const top10Gain = top10.reduce((sum, t) => sum + t.multiplier, 0) / (top10.length || 1);
-    
-    // Median calculation
-    const mid = Math.floor(performance.length / 2);
-    const medianGain = performance.length % 2 !== 0 ? performance[mid].multiplier : (performance[mid - 1].multiplier + performance[mid].multiplier) / 2;
-
-    const rate2x = Math.round((hit2x / tokens.length) * 100);
-    const rate5x = Math.round((hit5x / tokens.length) * 100);
-
-    // Calculate "Oldest: Xd ago"
-    const elapsedMs = Date.now() - oldestTime;
-    const days = Math.floor(elapsedMs / (24 * 60 * 60 * 1000));
-    const hours = Math.floor((elapsedMs % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
-    const oldestStr = days > 0 ? `${days}d ago` : `${hours}h ago`;
-
-    // Strict Rick Bot formatting (No Emojis, using · and Δ symbols)
-    let report = `[ALPHA REPORT] ${timeframeLabel}\n`;
-    report += `Tokens: ${tokens.length} · Oldest: ${oldestStr}\n`;
-    report += `Average gain: ${parseFloat(avgGain)}x · Top 10: ${parseFloat(top10Gain.toFixed(1))}x\n`;
-    report += `Median: ${parseFloat(medianGain.toFixed(1))}x\n`;
-    report += `Hit rate 5x: ${rate5x}% · Hit rate 2x: ${rate2x}%\n`;
-    report += `SOL dominance: 100%\n\n`;
-
-    // Build the Top 10 List matching the screenshot exact layout
-    top10.forEach((t, i) => {
-        const initText = formatMC(parseFloat(t.initial_mc));
-        const athText = formatMC(parseFloat(t.ath_mc));
-        const multText = parseFloat(t.multiplier.toFixed(1)) + 'x';
-        
-        report += `${i + 1}. ${t.symbol} @ ${initText} -> ${athText} Δ ${multText}\n`;
-        report += `↳ Contract: \`${t.contract_address}\`\n`;
-    });
-
-    return report;
-}
-
-
 // --- TASK MODE IDLE TIMER HELPER ---
 function resetTaskModeTimer(chatId) {
     if (taskModeTimer) clearTimeout(taskModeTimer);
@@ -1159,149 +1126,6 @@ async function runAutoTaskScanner(chatId) {
     isRadarScanning = false; 
 }
 
-
-
-
-
-// --- THE MASTER TRACKING ENGINE ---
-const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
-
-async function runTrackingEngine() {
-    try {
-        const now = Date.now();
-        const targetChannel = process.env.CHANNELRADAR_ID || process.env.ADMIN_ID || "-1003897238505";
-
-        // 1. Get current batch status
-        let batchRes = await pool.query('SELECT * FROM tracking_batch ORDER BY id DESC LIMIT 1');
-        let batch = batchRes.rows[0];
-
-        // 2. CHECK IF WE NEED TO START A NEW BATCH
-        if (!batch) {
-            // No batch exists, start fresh
-            await pool.query('INSERT INTO tracking_batch (start_time) VALUES ($1)', [now]);
-            batchRes = await pool.query('SELECT * FROM tracking_batch ORDER BY id DESC LIMIT 1');
-            batch = batchRes.rows[0];
-        }
-
-        const elapsedMs = now - parseInt(batch.start_time);
-
-        // 3. DAY 3 COMPLETION (72 HOURS) -> Final Report & Wipe
-        if (elapsedMs >= TWENTY_FOUR_HOURS * 3 && !batch.day3_done) {
-            const report = await generateTrenchReport('DAY 3 FINAL REPORT');
-            if (report) await bot.sendMessage(targetChannel, report, { parse_mode: 'Markdown' });
-            
-            // Delete the batch and all auto-added tokens to start completely fresh
-            await pool.query('DELETE FROM tracking_batch WHERE id = $1', [batch.id]);
-            await pool.query('DELETE FROM tracked_tokens WHERE is_manual = FALSE');
-            return; // Exit and let the next loop create a new batch
-        }
-
-        // 4. DAY 2 REPORT (48 HOURS)
-        if (elapsedMs >= TWENTY_FOUR_HOURS * 2 && !batch.day2_done) {
-            const report = await generateTrenchReport('DAY 2 UPDATE');
-            if (report) await bot.sendMessage(targetChannel, report, { parse_mode: 'Markdown' });
-            await pool.query('UPDATE tracking_batch SET day2_done = TRUE WHERE id = $1', [batch.id]);
-        }
-
-        // 5. DAY 1 REPORT (24 HOURS)
-        if (elapsedMs >= TWENTY_FOUR_HOURS && !batch.day1_done) {
-            const report = await generateTrenchReport('DAY 1 UPDATE');
-            if (report) await bot.sendMessage(targetChannel, report, { parse_mode: 'Markdown' });
-            await pool.query('UPDATE tracking_batch SET day1_done = TRUE WHERE id = $1', [batch.id]);
-        }
-
-        // 6. MANAGE THE 20 COIN ROSTER
-        const tokensRes = await pool.query('SELECT contract_address, ath_mc FROM tracked_tokens');
-        const trackedTokens = tokensRes.rows;
-        
-        // Count how many automatic tokens we currently have
-        const autoRes = await pool.query('SELECT COUNT(*) FROM tracked_tokens WHERE is_manual = FALSE');
-        const autoCount = parseInt(autoRes.rows[0].count);
-
-        if (autoCount < 20) {
-            // Need to hunt for new tokens to fill the roster
-            const newProfilesRes = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
-            if (newProfilesRes.ok) {
-                const newTokens = await newProfilesRes.json();
-                const addressesToScan = [];
-                
-                for (let token of newTokens) {
-                    if (token.chainId === 'solana' && !trackedTokens.find(t => t.contract_address === token.tokenAddress)) {
-                        addressesToScan.push(token.tokenAddress);
-                    }
-                    if (addressesToScan.length >= 30) break;
-                }
-
-                if (addressesToScan.length > 0) {
-                    const mathRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addressesToScan.join(',')}`);
-                    const mathData = await mathRes.json();
-                    
-                    if (mathData.pairs) {
-                        // --- THE FIX: VOLUME IS KING ---
-                        // Sort pairs strictly by 24h volume to avoid high-liquidity honeypots and dead copycats
-                        mathData.pairs.sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0));
-
-                        let added = 0;
-                        for (let pair of mathData.pairs) {
-                            if (added + autoCount >= 20) break; // Don't exceed 20 auto coins
-                            
-                            // Double check chain logic (DexScreener can sometimes group multi-chain pairs)
-                            if (pair.chainId !== 'solana') continue;
-
-                            const rawLiq = pair.liquidity?.usd || 0;
-                            const rawVol = pair.volume?.h24 || 0;
-                            const rawFdv = pair.fdv || 0; 
-                            
-                            // THE GAUNTLET: Must be an active micro-cap
-                            if (rawLiq < 2000 || rawVol < 5000 || rawFdv > 2000000 || rawFdv === 0) continue;
-
-                            // Insert into DB
-                            await pool.query(
-                                `INSERT INTO tracked_tokens (contract_address, symbol, name, initial_mc, ath_mc, is_manual, added_time) 
-                                 VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING`,
-                                [pair.baseToken.address, pair.baseToken.symbol, pair.baseToken.name, rawFdv, rawFdv, false, now]
-                            );
-                            added++;
-                        }
-                    }
-                }
-            }
-        }
-
-        // 7. UPDATE ALL-TIME HIGHS FOR EXISTING TOKENS
-        if (trackedTokens.length > 0) {
-            // Split into batches of 30 for the DexScreener API limit
-            const addresses = trackedTokens.map(t => t.contract_address);
-            for (let i = 0; i < addresses.length; i += 30) {
-                const chunk = addresses.slice(i, i + 30);
-                const mathRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${chunk.join(',')}`);
-                
-                if (mathRes.ok) {
-                    const mathData = await mathRes.json();
-                    if (mathData.pairs) {
-                        for (let pair of mathData.pairs) {
-                            // Ensure we are matching the correct Solana pair
-                            if (pair.chainId !== 'solana') continue;
-                            
-                            const currentFdv = pair.fdv || 0;
-                            const dbToken = trackedTokens.find(t => t.contract_address === pair.baseToken.address);
-                            
-                            if (dbToken && currentFdv > parseFloat(dbToken.ath_mc)) {
-                                // NEW ATH DETECTED! Save it.
-                                await pool.query('UPDATE tracked_tokens SET ath_mc = $1 WHERE contract_address = $2', [currentFdv, pair.baseToken.address]);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    } catch (err) {
-        console.log("[Tracking Engine Error]", err.message);
-    }
-}
-
-// Run the engine every 2 minutes
-setInterval(runTrackingEngine, 120000);
 
 
 
@@ -1531,7 +1355,7 @@ async function scrapeRecentOTPNumbers() {
 // --- Fully Isolated to prevent TimeSMS collisions ---
 // =========================================================
 
-const RAW_NP_BASE_URL = "http://51.89.99.105/NumberPanel";
+const RAW_NP_BASE_URL = (process.env.RAW_NP_BASE_URL || 'http://51.89.99.105/NumberPanel').replace(/\/+$/, '');
 const RAW_NP_POLL_SEC = 16 * 1000;
 
 // You can run a second instance of the bot safely with polling: false
@@ -1608,14 +1432,32 @@ function getRawNpFlag(numberStr, countryName) {
 }
 
 function solveRawNpCaptcha(html) {
-    const match = html.match(/(\d+)\s*([\+\-\*\/])\s*(\d+)\s*=\s*\?/);
+    const raw = String(html || '');
+    const attributeText = [...raw.matchAll(/(?:value|placeholder|data-captcha|aria-label)\s*=\s*["']([^"']+)["']/gi)]
+        .map(match => match[1])
+        .join(' ');
+    const text = `${raw} ${attributeText}`
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;|&#160;/gi, ' ')
+        .replace(/&plus;|&#43;/gi, '+')
+        .replace(/&minus;|&#45;/gi, '-')
+        .replace(/&times;|&#215;|&#42;/gi, '*')
+        .replace(/&divide;|&#247;/gi, '/')
+        .replace(/[×xX]/g, '*')
+        .replace(/[÷]/g, '/')
+        .replace(/[−–—]/g, '-')
+        .replace(/\s+/g, ' ');
+    const match = text.match(/(\d{1,9})\s*([+\-*\/])\s*(\d{1,9})(?:\s*=\s*\?)?/);
     if (!match) return null;
-    const a = parseInt(match[1]), op = match[2], b = parseInt(match[3]);
-    
-    if (op === '+') return (a + b).toString();
-    if (op === '-') return (a - b).toString();
-    if (op === '*') return (a * b).toString();
-    if (op === '/' && b !== 0) return Math.floor(a / b).toString();
+    const a = Number.parseInt(match[1], 10);
+    const b = Number.parseInt(match[3], 10);
+    if (!Number.isSafeInteger(a) || !Number.isSafeInteger(b)) return null;
+    if (match[2] === '+') return String(a + b);
+    if (match[2] === '-') return String(a - b);
+    if (match[2] === '*') return String(a * b);
+    if (match[2] === '/' && b !== 0) return String(Math.floor(a / b));
     return null;
 }
 
@@ -1661,11 +1503,25 @@ async function loginRawNumPanel(username, password, force = false) {
     };
 
     try {
-        let res1 = await axios.get(`${RAW_NP_BASE_URL}/login`, { headers, validateStatus: () => true });
-        updateRawCookies(res1.headers, cookies);
-        
-        const cap = solveRawNpCaptcha(res1.data);
-        if (!cap) throw new Error("Captcha solve failed.");
+        let res1 = null;
+        let cap = null;
+        for (let captchaAttempt = 1; captchaAttempt <= 3 && !cap; captchaAttempt++) {
+            res1 = await axios.get(`${RAW_NP_BASE_URL}/login?captcha_refresh=${Date.now()}`, {
+                headers,
+                validateStatus: () => true,
+                timeout: 20000
+            });
+            if (res1.status >= 400) {
+                throw new Error(`NumberPanel login endpoint returned HTTP ${res1.status}. Set RAW_NP_BASE_URL to the current panel URL.`);
+            }
+            updateRawCookies(res1.headers, cookies);
+            cap = solveRawNpCaptcha(res1.data);
+            if (!cap) {
+                console.warn(`[RAW NP SYSTEM] Captcha parse failed on attempt ${captchaAttempt}/3; refreshing login page.`);
+                await delay(400);
+            }
+        }
+        if (!cap) throw new Error('Captcha solve failed after 3 fresh login-page attempts.');
 
         headers['Cookie'] = getRawCookieString(cookies);
         headers['Content-Type'] = 'application/x-www-form-urlencoded';
@@ -3788,11 +3644,12 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
             try {
                 await bot.editMessageText('[SYSTEM] Public adult video site detected. Downloading available media...', { chat_id: chatId, message_id: statusMsg.message_id });
                 await downloadPublicVideo(url, videoPath);
-                await sendTelegramVideo(bot, chatId, videoPath, '[SUCCESS] Public adult video downloaded');
+                const delivery = await deliverPublicAdultVideo(bot, chatId, videoPath, '[SUCCESS] Public adult video downloaded');
                 await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+                if (delivery.temporaryUrl) return;
                 return;
             } finally {
-                if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
+                if (fs.existsSync(videoPath) && !isTemporaryDownloadPath(videoPath)) fs.unlinkSync(videoPath);
             }
         }
 
@@ -3934,8 +3791,9 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
         const tempPath = path.join(__dirname, `dl_${Date.now()}.mp4`);
         // We use regex to clean up any leftover video files matching the pattern
         fs.readdirSync(__dirname).forEach(file => {
-            if (file.startsWith('dl_') && file.endsWith('.mp4')) {
-                try { fs.unlinkSync(path.join(__dirname, file)); } catch (e) {}
+            const filePath = path.join(__dirname, file);
+            if (file.startsWith('dl_') && file.endsWith('.mp4') && !isTemporaryDownloadPath(filePath)) {
+                try { fs.unlinkSync(filePath); } catch (e) {}
             }
         });
     }
