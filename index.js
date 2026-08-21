@@ -126,6 +126,38 @@ function isYouTubeUrl(rawUrl) {
     }
 }
 
+const ADULT_VIDEO_HOSTS = new Set([
+    'pornhub.com', 'xvideos.com', 'xnxx.com', 'xhamster.com', 'redtube.com',
+    'spankbang.com', 'tube8.com', 'eporner.com', 'txxx.com', 'youporn.com'
+]);
+
+function isPublicAdultVideoUrl(rawUrl) {
+    try {
+        const hostname = new URL(rawUrl).hostname.toLowerCase().replace(/^www\./, '');
+        return [...ADULT_VIDEO_HOSTS].some((domain) => hostname === domain || hostname.endsWith(`.${domain}`));
+    } catch {
+        return false;
+    }
+}
+
+async function downloadPublicVideo(sourceUrl, outputPath) {
+    await youtubedl(sourceUrl, {
+        output: outputPath,
+        format: 'bv*[height<=480]+ba/b[height<=480]/b',
+        mergeOutputFormat: 'mp4',
+        recodeVideo: 'mp4',
+        noPlaylist: true,
+        noWarnings: true,
+        ...(fs.existsSync(BGUTIL_SERVER_HOME) ? {
+            pluginDirs: BGUTIL_PLUGIN_DIR,
+            extractorArgs: `youtubepot-bgutilscript:server_home=${BGUTIL_SERVER_HOME}`
+        } : {})
+    });
+    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1024) {
+        throw new Error('The site returned no valid video file. The URL may be private, age-gated, paywalled, DRM-protected, or unavailable.');
+    }
+}
+
 function getYouTubeCookiePath() {
     const candidates = [
         process.env.YOUTUBE_COOKIES_PATH,
@@ -135,7 +167,7 @@ function getYouTubeCookiePath() {
     return candidates.find(candidate => fs.existsSync(candidate)) || null;
 }
 
-function buildYouTubeDownloadOptions(outputPath, format = 'bv*[height<=480]+ba/b[height<=480]/b', cookies = null, ignoreCookies = false) {
+function buildYouTubeDownloadOptions(outputPath, format = 'bv*[height<=480]+ba/b[height<=480]/b', cookies = null, ignoreCookies = false, client = 'android_music') {
     return {
         output: outputPath,
         format,
@@ -145,10 +177,11 @@ function buildYouTubeDownloadOptions(outputPath, format = 'bv*[height<=480]+ba/b
         noWarnings: true,
         jsRuntimes: 'nodejs',
         remoteComponents: 'ejs:github',
-        ...(fs.existsSync(BGUTIL_SERVER_HOME) ? {
-            pluginDirs: BGUTIL_PLUGIN_DIR,
-            extractorArgs: `youtubepot-bgutilscript:server_home=${BGUTIL_SERVER_HOME}`
-        } : {}),
+        extractorArgs: [
+            `youtube:player_client=${client}`,
+            ...(fs.existsSync(BGUTIL_SERVER_HOME) ? [`youtubepot-bgutilscript:server_home=${BGUTIL_SERVER_HOME}`] : [])
+        ],
+        ...(fs.existsSync(BGUTIL_SERVER_HOME) ? { pluginDirs: BGUTIL_PLUGIN_DIR } : {}),
         ...(ignoreCookies ? { noCookies: true } : {}),
         ...(cookies ? { cookies } : {})
     };
@@ -161,9 +194,10 @@ async function downloadYouTubeVideo(sourceUrl, outputPath) {
         'b[height<=480]/b',
         'bv*[height<=360]+ba/b[height<=360]/b'
     ];
-    const attempts = formats.map(format => buildYouTubeDownloadOptions(outputPath, format, null, true));
+    const clients = ['android_music', 'web'];
+    const attempts = clients.flatMap(client => formats.map(format => buildYouTubeDownloadOptions(outputPath, format, null, true, client)));
     if (cookies) {
-        attempts.push(...formats.map(format => buildYouTubeDownloadOptions(outputPath, format, cookies, false)));
+        attempts.push(...clients.flatMap(client => formats.map(format => buildYouTubeDownloadOptions(outputPath, format, cookies, false, client))));
     }
     let lastError = null;
     for (const options of attempts) {
@@ -3679,7 +3713,26 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
             return;
         }
 
-        // --- 3. YOUTUBE VIDEO / SHORTS ---
+        // --- 3. PUBLIC ADULT VIDEO SITES ---
+        if (isPublicAdultVideoUrl(url)) {
+            const videoPath = path.join(__dirname, `dl_${Date.now()}.mp4`);
+            try {
+                await bot.editMessageText('[SYSTEM] Public adult video site detected. Downloading available media...', { chat_id: chatId, message_id: statusMsg.message_id });
+                await downloadPublicVideo(url, videoPath);
+                const fileSizeMB = fs.statSync(videoPath).size / (1024 * 1024);
+                if (fileSizeMB > 49.5) {
+                    await bot.editMessageText(`[ERROR] File is too large (${fileSizeMB.toFixed(1)}MB). Telegram bots can only send up to 50MB.`, { chat_id: chatId, message_id: statusMsg.message_id });
+                } else {
+                    await bot.sendVideo(chatId, videoPath, { caption: `[SUCCESS] Public adult video downloaded\\nSize: ${fileSizeMB.toFixed(2)}MB` });
+                    await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+                }
+                return;
+            } finally {
+                if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
+            }
+        }
+
+        // --- 4. YOUTUBE VIDEO / SHORTS ---
         if (isYouTubeUrl(url)) {
             const videoPath = path.join(__dirname, `dl_${Date.now()}.mp4`);
             const cookies = getYouTubeCookiePath();
@@ -3708,9 +3761,8 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
         try {
             await youtubedl(url, {
                 output: videoPath,
-                format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                format: 'bv*[height<=480]+ba/b[height<=480]/b',
                 mergeOutputFormat: 'mp4',
-                cookies: cookiePath,
                 jsRuntimes: 'nodejs', 
                 noWarnings: true
             });
