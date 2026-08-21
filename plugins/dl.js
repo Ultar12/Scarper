@@ -66,6 +66,20 @@ async function sendVideoResponse(message, targetUrl, buffer, caption) {
     });
 }
 
+async function deleteSuccessfulGroupLink(message) {
+    if (!message.isGroup) return;
+    try {
+        if (typeof message.delete === 'function') {
+            await message.delete();
+            return;
+        }
+        const messageKey = message.key || message.data?.key;
+        if (messageKey && message.client && typeof message.client.sendMessage === 'function') {
+            await message.client.sendMessage(message.jid, { delete: messageKey });
+        }
+    } catch {}
+}
+
 async function performDownload(message, targetUrl, options = {}) {
     const silent = Boolean(options.silent);
     const baseUrl = config.PAIRING_URL;
@@ -114,6 +128,7 @@ async function performDownload(message, targetUrl, options = {}) {
             if (slideshowCaption && slideshowCaption.trim()) {
                 await message.sendReply(slideshowCaption.trim());
             }
+            await deleteSuccessfulGroupLink(message);
             return;
         }
 
@@ -121,6 +136,7 @@ async function performDownload(message, targetUrl, options = {}) {
         if (!mediaBuffer.length) throw new Error('The engine returned an empty media response.');
         if (!silent) await message.edit('_[Ultar Sync] Success_', message.jid, sent.key);
         await sendVideoResponse(message, targetUrl, mediaBuffer, headerCaption);
+        await deleteSuccessfulGroupLink(message);
     } catch (error) {
         if (silent) return;
         await message.edit(`_Network error:_ could not reach the engine.\n${error.message}`, message.jid, sent.key);

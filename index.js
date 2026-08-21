@@ -280,6 +280,76 @@ function getYouTubeCookiePath() {
     return candidates.find(candidate => fs.existsSync(candidate)) || null;
 }
 
+function getYouTubeVideoId(sourceUrl) {
+    const parsed = new URL(sourceUrl);
+    const queryId = parsed.searchParams.get('v');
+    if (queryId) return queryId;
+    if (parsed.hostname.replace(/^www\./, '') === 'youtu.be') return parsed.pathname.split('/').filter(Boolean)[0] || null;
+    return parsed.pathname.match(/\/(?:shorts|embed|live)\/([^/?]+)/i)?.[1] || null;
+}
+
+const PIPED_API_INSTANCES = [
+    process.env.PIPED_API_URL,
+    'https://pipedapi.kavin.rocks',
+    'https://pipedapi.leptons.xyz',
+    'https://pipedapi.adminforge.de',
+    'https://api.piped.yt',
+    'https://pipedapi.drgns.space'
+].filter((value, index, values) => value && values.indexOf(value) === index).map(value => value.replace(/\/+$/, ''));
+
+async function downloadYouTubeViaPiped(sourceUrl, outputPath) {
+    const videoId = getYouTubeVideoId(sourceUrl);
+    if (!videoId) throw new Error('Could not parse a YouTube video ID for the alternate stream fallback.');
+
+    let lastError = null;
+    for (const instance of PIPED_API_INSTANCES) {
+        try {
+            const metadata = await axios.get(`${instance}/streams/${encodeURIComponent(videoId)}`, {
+                timeout: 20000,
+                headers: { 'User-Agent': process.env.YOUTUBE_USER_AGENT || MEDIA_USER_AGENT }
+            });
+            const streams = (metadata.data?.videoStreams || [])
+                .filter(stream => stream?.url && stream.mimeType?.toLowerCase().startsWith('video/mp4') && stream.videoOnly === false)
+                .sort((a, b) => {
+                    const aPreferred = a.height <= 1080 ? 1 : 0;
+                    const bPreferred = b.height <= 1080 ? 1 : 0;
+                    return bPreferred - aPreferred || (b.height || 0) - (a.height || 0) || (b.bitrate || 0) - (a.bitrate || 0);
+                });
+            const stream = streams[0];
+            if (!stream) throw new Error('Piped returned no combined MP4 stream.');
+
+            const response = await axios.get(stream.url, {
+                responseType: 'stream',
+                timeout: 120000,
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity,
+                headers: {
+                    'User-Agent': process.env.YOUTUBE_USER_AGENT || MEDIA_USER_AGENT,
+                    'Referer': 'https://www.youtube.com/'
+                }
+            });
+            await new Promise((resolve, reject) => {
+                const output = fs.createWriteStream(outputPath);
+                const fail = error => {
+                    output.destroy();
+                    reject(error);
+                };
+                response.data.once('error', fail);
+                output.once('error', fail);
+                output.once('finish', resolve);
+                response.data.pipe(output);
+            });
+            if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1024) return;
+            throw new Error('Piped returned an empty video stream.');
+        } catch (error) {
+            lastError = error;
+            if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+            console.log(`[YOUTUBE PIPED] ${instance} failed: ${error.message}`);
+        }
+    }
+    throw lastError || new Error('No Piped instance returned a usable YouTube stream.');
+}
+
 function buildYouTubeDownloadOptions(outputPath, format = null, cookies = null, ignoreCookies = false, client = 'android_music') {
     return {
         output: outputPath,
@@ -330,7 +400,14 @@ async function downloadYouTubeVideo(sourceUrl, outputPath) {
             if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
         }
     }
-    throw lastError || new Error('yt-dlp produced no YouTube video file after all authentication and format retries.');
+    try {
+        console.log('[YOUTUBE] yt-dlp attempts exhausted; trying alternate Piped stream fallback.');
+        await downloadYouTubeViaPiped(sourceUrl, outputPath);
+        return;
+    } catch (alternateError) {
+        lastError = alternateError;
+    }
+    throw lastError || new Error('No YouTube downloader path returned a video file.');
 }
 
 function normalizeMediaUrl(rawUrl, baseUrl) {
@@ -2444,10 +2521,26 @@ app.get('/api/download', async (req, res) => {
             return videoStream.data.pipe(res);
         }
 
-        // --- 3. YOUTUBE TERMUX WORKER LOGIC ---
-        if (url.includes('youtube.com') || url.includes('youtu.be')) {
+        // --- 3. YOUTUBE LOCAL AUTHENTICATED DOWNLOADER ---
+        if (isYouTubeUrl(url)) {
+            const ytPath = path.join(__dirname, `api_yt_${Date.now()}.mp4`);
+            let localDownloadSucceeded = false;
+            try {
+                await downloadYouTubeVideo(url, ytPath);
+                localDownloadSucceeded = true;
+                return res.download(ytPath, 'youtube-video.mp4', (error) => {
+                    if (fs.existsSync(ytPath)) fs.unlinkSync(ytPath);
+                    if (error && !res.headersSent) res.status(500).json({ error: error.message });
+                });
+            } catch (localError) {
+                console.log(`[API YOUTUBE] Local downloader failed: ${localError.message}`);
+            } finally {
+                if (!localDownloadSucceeded && fs.existsSync(ytPath)) fs.unlinkSync(ytPath);
+            }
+
+            // Keep the phone worker as a secondary fallback only if it is connected.
             if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
-                return res.status(503).json({ error: "Termux Worker is offline" });
+                return res.status(502).json({ error: 'YouTube download failed on the local and phone-worker paths.' });
             }
 
             const reqId = 'req_' + Date.now();
@@ -2483,7 +2576,23 @@ app.get('/api/download', async (req, res) => {
             return;
         }
 
-        // --- 3. THE FRONTLINE: YT-DLP ---
+        // --- 4. PUBLIC ADULT VIDEO SITES ---
+        if (isPublicAdultVideoUrl(url)) {
+            const adultPath = path.join(__dirname, `api_adult_${Date.now()}.mp4`);
+            let responseHandedOff = false;
+            try {
+                await downloadPublicVideo(url, adultPath);
+                responseHandedOff = true;
+                return res.download(adultPath, 'adult-video-1080p.mp4', (error) => {
+                    if (fs.existsSync(adultPath)) fs.unlinkSync(adultPath);
+                    if (error && !res.headersSent) res.status(500).json({ error: error.message });
+                });
+            } finally {
+                if (!responseHandedOff && fs.existsSync(adultPath)) fs.unlinkSync(adultPath);
+            }
+        }
+
+        // --- 5. THE FRONTLINE: YT-DLP ---
         const videoPath = path.join(__dirname, `api_dl_${Date.now()}.mp4`);
         let ytdlpSuccess = false;
 
@@ -3590,6 +3699,7 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
 
     const url = match[1].trim();
     let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Analyzing link and bypassing security...');
+    const requestTempPaths = new Set();
 
     try {
         // --- 1. TIKTOK SPECIFIC LOGIC (VIDEOS & IMAGES) ---
@@ -3637,6 +3747,7 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
 
             if (mediaData.type === 'video') {
                 const videoPath = path.join(__dirname, `pin_${Date.now()}.mp4`);
+                requestTempPaths.add(videoPath);
                 try {
                     await downloadPinterestVideo(mediaData.url, videoPath);
                     await sendTelegramVideo(bot, chatId, videoPath, '[SUCCESS] Pinterest video downloaded');
@@ -3657,6 +3768,7 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
         // --- 3. PUBLIC ADULT VIDEO SITES ---
         if (isPublicAdultVideoUrl(url)) {
             const videoPath = path.join(__dirname, `dl_${Date.now()}.mp4`);
+            requestTempPaths.add(videoPath);
             try {
                 await bot.editMessageText('[SYSTEM] Public adult video site detected. Downloading available media...', { chat_id: chatId, message_id: statusMsg.message_id });
                 await downloadPublicVideo(url, videoPath);
@@ -3672,6 +3784,7 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
         // --- 4. YOUTUBE VIDEO / SHORTS ---
         if (isYouTubeUrl(url)) {
             const videoPath = path.join(__dirname, `dl_${Date.now()}.mp4`);
+            requestTempPaths.add(videoPath);
             const cookies = getYouTubeCookiePath();
             try {
                 await bot.editMessageText(`[SYSTEM] YouTube link detected. Downloading${cookies ? ' with session loaded' : ''}...`, { chat_id: chatId, message_id: statusMsg.message_id });
@@ -3688,6 +3801,7 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
         await bot.editMessageText('[SYSTEM] Standard link detected. Engaging yt-dlp for maximum native quality...', { chat_id: chatId, message_id: statusMsg.message_id });
         
         const videoPath = path.join(__dirname, `dl_${Date.now()}.mp4`);
+        requestTempPaths.add(videoPath);
         let ytdlpSuccess = false;
 
         try {
@@ -3804,14 +3918,11 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
     } catch (err) {
         bot.editMessageText(`[ERROR] Final Engine Failure: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
     } finally {
-        const tempPath = path.join(__dirname, `dl_${Date.now()}.mp4`);
-        // We use regex to clean up any leftover video files matching the pattern
-        fs.readdirSync(__dirname).forEach(file => {
-            const filePath = path.join(__dirname, file);
-            if (file.startsWith('dl_') && file.endsWith('.mp4')) {
-                try { fs.unlinkSync(filePath); } catch (e) {}
+        for (const tempPath of requestTempPaths) {
+            if (fs.existsSync(tempPath)) {
+                try { fs.unlinkSync(tempPath); } catch (e) {}
             }
-        });
+        }
     }
 });
 
