@@ -108,6 +108,7 @@ function getChromePath() {
 }
 
 const MEDIA_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+const MAX_MEDIA_HEIGHT = 2160;
 
 function isPinterestUrl(rawUrl) {
     try {
@@ -219,7 +220,7 @@ async function sendTelegramVideo(bot, chatId, videoPath, caption) {
 async function downloadPublicVideo(sourceUrl, outputPath) {
     await youtubedl(sourceUrl, {
         output: outputPath,
-        format: 'bestvideo[height<=480]+bestaudio/best[height<=480]/best',
+        format: 'bestvideo[height<=2160]+bestaudio/best[height<=2160]/best',
         mergeOutputFormat: 'mp4',
         recodeVideo: 'mp4',
         noPlaylist: true,
@@ -239,7 +240,7 @@ async function deliverPublicAdultVideo(bot, chatId, videoPath, caption) {
     const fileSize = fs.statSync(videoPath).size;
     if (fileSize > TELEGRAM_MAX_VIDEO_BYTES) {
         await bot.sendDocument(chatId, videoPath, {
-            caption: `${caption}\nOriginal 480p file — full file attached`
+            caption: `${caption}\nOriginal quality up to 4K — full file attached`
         }, {
             filename: `adult-video-${Date.now()}.mp4`,
             contentType: 'video/mp4'
@@ -288,54 +289,114 @@ const PIPED_API_INSTANCES = [
     'https://pipedapi.drgns.space'
 ].filter((value, index, values) => value && values.indexOf(value) === index).map(value => value.replace(/\/+$/, ''));
 
+function sortByBestMediaHeight(a, b) {
+    const aHeight = Number(a.height) || 0;
+    const bHeight = Number(b.height) || 0;
+    const aWithinCap = aHeight > 0 && aHeight <= MAX_MEDIA_HEIGHT ? 1 : 0;
+    const bWithinCap = bHeight > 0 && bHeight <= MAX_MEDIA_HEIGHT ? 1 : 0;
+    return bWithinCap - aWithinCap || bHeight - aHeight || (Number(b.bitrate) || 0) - (Number(a.bitrate) || 0);
+}
+
+async function downloadRemoteStreamToFile(url, outputPath, headers = {}) {
+    const response = await axios.get(url, {
+        responseType: 'stream',
+        timeout: 120000,
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+        headers
+    });
+    await new Promise((resolve, reject) => {
+        const output = fs.createWriteStream(outputPath);
+        let settled = false;
+        const fail = error => {
+            if (settled) return;
+            settled = true;
+            output.destroy();
+            reject(error);
+        };
+        response.data.once('error', fail);
+        output.once('error', fail);
+        output.once('finish', () => {
+            if (settled) return;
+            settled = true;
+            resolve();
+        });
+        response.data.pipe(output);
+    });
+}
+
+async function normalizeVideoToMp4(inputPath, outputPath) {
+    await execFilePromise('ffmpeg', [
+        '-y', '-i', inputPath,
+        '-map', '0:v:0', '-map', '0:a:0?',
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
+        '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
+        '-movflags', '+faststart', outputPath
+    ], { timeout: 600000 });
+    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1024) {
+        throw new Error('FFmpeg produced no valid MP4 output.');
+    }
+}
+
 async function downloadYouTubeViaPiped(sourceUrl, outputPath) {
     const videoId = getYouTubeVideoId(sourceUrl);
     if (!videoId) throw new Error('Could not parse a YouTube video ID for the alternate stream fallback.');
 
     let lastError = null;
     for (const instance of PIPED_API_INSTANCES) {
+        const videoTempPath = `${outputPath}.piped-video`;
+        const audioTempPath = `${outputPath}.piped-audio`;
+        let downloaded = false;
         try {
             const metadata = await axios.get(`${instance}/streams/${encodeURIComponent(videoId)}`, {
                 timeout: 20000,
                 headers: { 'User-Agent': process.env.YOUTUBE_USER_AGENT || MEDIA_USER_AGENT }
             });
-            const streams = (metadata.data?.videoStreams || [])
-                .filter(stream => stream?.url && stream.mimeType?.toLowerCase().startsWith('video/mp4') && stream.videoOnly === false)
-                .sort((a, b) => {
-                    const aPreferred = a.height <= 1080 ? 1 : 0;
-                    const bPreferred = b.height <= 1080 ? 1 : 0;
-                    return bPreferred - aPreferred || (b.height || 0) - (a.height || 0) || (b.bitrate || 0) - (a.bitrate || 0);
-                });
-            const stream = streams[0];
-            if (!stream) throw new Error('Piped returned no combined MP4 stream.');
+            const headers = {
+                'User-Agent': process.env.YOUTUBE_USER_AGENT || MEDIA_USER_AGENT,
+                'Referer': 'https://www.youtube.com/'
+            };
+            const videoStreams = (metadata.data?.videoStreams || [])
+                .filter(stream => stream?.url && stream.mimeType?.toLowerCase().startsWith('video/'))
+                .sort(sortByBestMediaHeight);
+            const audioStreams = (metadata.data?.audioStreams || [])
+                .filter(stream => stream?.url && (stream.mimeType?.toLowerCase().startsWith('audio/mp4') || stream.format === 'M4A'))
+                .sort((a, b) => (Number(b.bitrate) || 0) - (Number(a.bitrate) || 0));
+            const combinedStream = videoStreams.find(stream => stream.videoOnly !== true);
+            const videoStream = videoStreams[0];
+            if (!videoStream) throw new Error('Piped returned no MP4 video stream.');
 
-            const response = await axios.get(stream.url, {
-                responseType: 'stream',
-                timeout: 120000,
-                maxContentLength: Infinity,
-                maxBodyLength: Infinity,
-                headers: {
-                    'User-Agent': process.env.YOUTUBE_USER_AGENT || MEDIA_USER_AGENT,
-                    'Referer': 'https://www.youtube.com/'
-                }
-            });
-            await new Promise((resolve, reject) => {
-                const output = fs.createWriteStream(outputPath);
-                const fail = error => {
-                    output.destroy();
-                    reject(error);
-                };
-                response.data.once('error', fail);
-                output.once('error', fail);
-                output.once('finish', resolve);
-                response.data.pipe(output);
-            });
-            if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1024) return;
+            if (combinedStream) {
+                await downloadRemoteStreamToFile(combinedStream.url, videoTempPath, headers);
+                await normalizeVideoToMp4(videoTempPath, outputPath);
+            } else {
+                const audioStream = audioStreams[0];
+                if (!audioStream) throw new Error('Piped returned separate video but no MP4 audio stream.');
+                await Promise.all([
+                    downloadRemoteStreamToFile(videoStream.url, videoTempPath, headers),
+                    downloadRemoteStreamToFile(audioStream.url, audioTempPath, headers)
+                ]);
+                await execFilePromise('ffmpeg', [
+                    '-y', '-i', videoTempPath, '-i', audioTempPath,
+                    '-map', '0:v:0', '-map', '1:a:0',
+                    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
+                    '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
+                    '-movflags', '+faststart', outputPath
+                ], { timeout: 180000 });
+            }
+            if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1024) {
+                downloaded = true;
+                return;
+            }
             throw new Error('Piped returned an empty video stream.');
         } catch (error) {
             lastError = error;
-            if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
             console.log(`[YOUTUBE PIPED] ${instance} failed: ${error.message}`);
+        } finally {
+            for (const tempPath of [videoTempPath, audioTempPath]) {
+                if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+            }
+            if (!downloaded && fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
         }
     }
     throw lastError || new Error('No Piped instance returned a usable YouTube stream.');
@@ -512,22 +573,27 @@ async function fetchRemoteMediaBuffer(mediaUrl) {
 }
 
 async function downloadPinterestVideo(mediaUrl, outputPath) {
-    const isHls = /\.m3u8(?:[?#]|$)/i.test(mediaUrl);
-    if (isHls) {
-        await youtubedl(mediaUrl, {
-            output: outputPath,
-            format: 'best',
-            mergeOutputFormat: 'mp4',
-            recodeVideo: 'mp4',
-            noWarnings: true,
-            addHeader: ['Referer: https://www.pinterest.com/', `User-Agent: ${MEDIA_USER_AGENT}`]
-        });
-    } else {
-        const buffer = await fetchRemoteMediaBuffer(mediaUrl);
-        fs.writeFileSync(outputPath, buffer);
-    }
-    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1024) {
-        throw new Error('Pinterest returned an empty or invalid video file.');
+    const sourcePath = `${outputPath}.source`;
+    try {
+        const isHls = /\.m3u8(?:[?#]|$)/i.test(mediaUrl);
+        if (isHls) {
+            await youtubedl(mediaUrl, {
+                output: sourcePath,
+                format: 'best',
+                mergeOutputFormat: 'mp4',
+                noWarnings: true,
+                addHeader: ['Referer: https://www.pinterest.com/', `User-Agent: ${MEDIA_USER_AGENT}`]
+            });
+        } else {
+            const buffer = await fetchRemoteMediaBuffer(mediaUrl);
+            fs.writeFileSync(sourcePath, buffer);
+        }
+        if (!fs.existsSync(sourcePath) || fs.statSync(sourcePath).size < 1024) {
+            throw new Error('Pinterest returned an empty or invalid video file.');
+        }
+        await normalizeVideoToMp4(sourcePath, outputPath);
+    } finally {
+        if (fs.existsSync(sourcePath)) fs.unlinkSync(sourcePath);
     }
 }
 
@@ -2457,18 +2523,18 @@ app.get('/api/download', async (req, res) => {
                 return res.status(200).json({ type: 'images', urls: mediaData.urls });
             }
 
-            const videoStream = await axios({
-                method: 'GET',
-                url: mediaData.url,
-                responseType: 'stream',
-                timeout: 60000,
-                headers: {
-                    'User-Agent': MEDIA_USER_AGENT,
-                    'Referer': 'https://www.pinterest.com/'
-                }
-            });
-            res.setHeader('Content-Type', videoStream.headers['content-type'] || 'video/mp4');
-            return videoStream.data.pipe(res);
+            const pinterestPath = path.join(__dirname, `api_pin_${Date.now()}.mp4`);
+            let responseHandedOff = false;
+            try {
+                await downloadPinterestVideo(mediaData.url, pinterestPath);
+                responseHandedOff = true;
+                return res.download(pinterestPath, 'pinterest-video.mp4', (error) => {
+                    if (fs.existsSync(pinterestPath)) fs.unlinkSync(pinterestPath);
+                    if (error && !res.headersSent) res.status(500).json({ error: error.message });
+                });
+            } finally {
+                if (!responseHandedOff && fs.existsSync(pinterestPath)) fs.unlinkSync(pinterestPath);
+            }
         }
 
         // --- 3. YOUTUBE LOCAL AUTHENTICATED DOWNLOADER ---
@@ -2550,7 +2616,7 @@ app.get('/api/download', async (req, res) => {
             // FORCE yt-dlp to grab a pre-merged, standard MP4
             await youtubedl(url, {
                 output: videoPath,
-                format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                format: 'bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160][ext=mp4]/best[height<=2160]/best',
                 mergeOutputFormat: 'mp4',
                 noWarnings: true
             });
@@ -3756,7 +3822,7 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
         try {
             await youtubedl(url, {
                 output: videoPath,
-                format: 'bv*[height<=480]+ba/b[height<=480]/b',
+                format: 'bv*[height<=2160]+ba/b[height<=2160]/b',
                 mergeOutputFormat: 'mp4',
                 jsRuntimes: 'nodejs', 
                 noWarnings: true
