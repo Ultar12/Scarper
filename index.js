@@ -143,11 +143,19 @@ function isPublicAdultVideoUrl(rawUrl) {
 
 const TELEGRAM_MAX_VIDEO_BYTES = 49 * 1024 * 1024;
 
-async function prepareTelegramVideo(videoPath) {
-    if (!fs.existsSync(videoPath)) throw new Error('The downloader produced no video file.');
-    if (fs.statSync(videoPath).size <= TELEGRAM_MAX_VIDEO_BYTES) return fs.statSync(videoPath).size;
+function telegramPartPaths(videoPath) {
+    const directory = path.dirname(videoPath);
+    const prefix = `${path.basename(videoPath)}.part-`;
+    return fs.readdirSync(directory)
+        .filter((name) => name.startsWith(prefix) && name.endsWith('.mp4'))
+        .map((name) => path.join(directory, name))
+        .sort();
+}
 
-    const compressedPath = `${videoPath}.telegram.mp4`;
+async function prepareTelegramVideoFiles(videoPath) {
+    if (!fs.existsSync(videoPath)) throw new Error('The downloader produced no video file.');
+    if (fs.statSync(videoPath).size <= TELEGRAM_MAX_VIDEO_BYTES) return [videoPath];
+
     const ffmpegPath = process.env.FFMPEG_PATH || process.env.HEROKU_FFMPEG_BIN || 'ffmpeg';
     const ffprobePath = process.env.FFPROBE_PATH || 'ffprobe';
     let duration = 0;
@@ -156,36 +164,62 @@ async function prepareTelegramVideo(videoPath) {
         duration = Number.parseFloat(String(probe.stdout).trim()) || 0;
     } catch {}
 
-    const attempts = [
-        { height: 480, maxVideoKbps: 2200 },
-        { height: 360, maxVideoKbps: 1400 },
-        { height: 240, maxVideoKbps: 800 }
-    ];
-    for (const attempt of attempts) {
-        const calculated = duration > 0 ? Math.floor((46 * 1024 * 8 / duration) - 96) : attempt.maxVideoKbps;
-        const videoKbps = Math.max(250, Math.min(attempt.maxVideoKbps, calculated));
+    const originalBytes = fs.statSync(videoPath).size;
+    let segmentSeconds = duration > 0
+        ? Math.max(10, duration * (TELEGRAM_MAX_VIDEO_BYTES / originalBytes) * 0.82)
+        : 60;
+    const outputPattern = path.join(path.dirname(videoPath), `${path.basename(videoPath)}.part-%03d.mp4`);
+
+    for (let attempt = 0; attempt < 6; attempt++) {
+        for (const part of telegramPartPaths(videoPath)) {
+            try { fs.unlinkSync(part); } catch {}
+        }
         try {
             await execFilePromise(ffmpegPath, [
-                '-y', '-i', videoPath,
-                '-vf', `scale=-2:${attempt.height}`,
-                '-c:v', 'libx264', '-preset', 'veryfast', '-b:v', `${videoKbps}k`,
-                '-maxrate', `${videoKbps}k`, '-bufsize', `${videoKbps * 2}k`,
-                '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', compressedPath
+                '-y', '-i', videoPath, '-map', '0', '-c', 'copy',
+                '-f', 'segment', '-segment_time', String(Math.floor(segmentSeconds)),
+                '-reset_timestamps', '1', '-break_non_keyframes', '1', '-segment_format', 'mp4', outputPattern
             ], { maxBuffer: 1024 * 1024 });
-            if (fs.existsSync(compressedPath) && fs.statSync(compressedPath).size <= TELEGRAM_MAX_VIDEO_BYTES) {
-                fs.renameSync(compressedPath, videoPath);
-                return fs.statSync(videoPath).size;
-            }
         } catch {}
-        if (fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
+
+        const parts = telegramPartPaths(videoPath);
+        if (parts.length > 1 && parts.every((part) => fs.statSync(part).size <= TELEGRAM_MAX_VIDEO_BYTES)) {
+            return parts;
+        }
+        for (const part of parts) {
+            try { fs.unlinkSync(part); } catch {}
+        }
+        segmentSeconds = Math.max(5, segmentSeconds * 0.68);
     }
-    throw new Error('The video is too large for Telegram even after compression.');
+    throw new Error('The 1080p video could not be split into Telegram-sized MP4 parts.');
+}
+
+async function sendTelegramVideo(bot, chatId, videoPath, caption) {
+    const files = await prepareTelegramVideoFiles(videoPath);
+    try {
+        if (files.length === 1) {
+            await bot.sendVideo(chatId, files[0], { caption });
+        } else {
+            for (let index = 0; index < files.length; index++) {
+                await bot.sendDocument(chatId, files[index], {
+                    caption: `${caption}\nPart ${index + 1}/${files.length} — original quality preserved`
+                });
+            }
+        }
+        return { count: files.length, bytes: files.reduce((total, file) => total + fs.statSync(file).size, 0) };
+    } finally {
+        for (const file of files) {
+            if (file !== videoPath && fs.existsSync(file)) {
+                try { fs.unlinkSync(file); } catch {}
+            }
+        }
+    }
 }
 
 async function downloadPublicVideo(sourceUrl, outputPath) {
     await youtubedl(sourceUrl, {
         output: outputPath,
-        format: 'bv*[height<=480]+ba/b[height<=480]/b',
+        format: 'bestvideo[height<=1080]+bestaudio/bestvideo+bestaudio/best',
         mergeOutputFormat: 'mp4',
         recodeVideo: 'mp4',
         noPlaylist: true,
@@ -242,19 +276,17 @@ async function downloadYouTubeVideo(sourceUrl, outputPath) {
     if (cookies) {
         attempts.push(...clients.flatMap(client => formats.map(format => buildYouTubeDownloadOptions(outputPath, format, cookies, false, client))));
     }
-    let firstError = null;
     let lastError = null;
     for (const options of attempts) {
         try {
             await youtubedl(sourceUrl, options);
             if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) return;
         } catch (error) {
-            firstError ||= error;
             lastError = error;
             if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
         }
     }
-    throw firstError || lastError || new Error('yt-dlp produced no YouTube video file.');
+    throw lastError || new Error('yt-dlp produced no YouTube video file after all authentication and format retries.');
 }
 
 function normalizeMediaUrl(rawUrl, baseUrl) {
@@ -3668,17 +3700,8 @@ bot.onText(/\/yt\s+(.+)/, async (msg, match) => {
         await bot.editMessageText(`[SYSTEM] Downloading YouTube video${cookies ? ' with session loaded' : ''}...`, { chat_id: chatId, message_id: statusMsg.message_id });
         await downloadYouTubeVideo(url, videoPath);
 
-        const finalSize = await prepareTelegramVideo(videoPath);
-        const fileSizeMB = finalSize / (1024 * 1024);
-        if (fileSizeMB > 49.5) {
-            await bot.editMessageText(`[ERROR] File is too large (${fileSizeMB.toFixed(1)}MB). Telegram bots can only send up to 50MB.`, { chat_id: chatId, message_id: statusMsg.message_id });
-            return;
-        }
-
-        await bot.editMessageText('[SYSTEM] Uploading YouTube video...', { chat_id: chatId, message_id: statusMsg.message_id });
-        await bot.sendVideo(chatId, videoPath, {
-            caption: `[SUCCESS] YouTube video downloaded\nSize: ${fileSizeMB.toFixed(2)}MB`
-        });
+        await bot.editMessageText('[SYSTEM] Preparing original-quality YouTube video for Telegram...', { chat_id: chatId, message_id: statusMsg.message_id });
+        await sendTelegramVideo(bot, chatId, videoPath, '[SUCCESS] YouTube video downloaded');
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
     } catch (err) {
         await bot.editMessageText(`[ERROR] YouTube download failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
@@ -3744,8 +3767,7 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
                 const videoPath = path.join(__dirname, `pin_${Date.now()}.mp4`);
                 try {
                     await downloadPinterestVideo(mediaData.url, videoPath);
-                    await prepareTelegramVideo(videoPath);
-                    await bot.sendVideo(chatId, videoPath, { caption: '[SUCCESS] Pinterest video downloaded' });
+                    await sendTelegramVideo(bot, chatId, videoPath, '[SUCCESS] Pinterest video downloaded');
                 } finally {
                     if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
                 }
@@ -3766,14 +3788,8 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
             try {
                 await bot.editMessageText('[SYSTEM] Public adult video site detected. Downloading available media...', { chat_id: chatId, message_id: statusMsg.message_id });
                 await downloadPublicVideo(url, videoPath);
-                const finalSize = await prepareTelegramVideo(videoPath);
-                const fileSizeMB = finalSize / (1024 * 1024);
-                if (fileSizeMB > 49.5) {
-                    await bot.editMessageText(`[ERROR] File is too large (${fileSizeMB.toFixed(1)}MB). Telegram bots can only send up to 50MB.`, { chat_id: chatId, message_id: statusMsg.message_id });
-                } else {
-                    await bot.sendVideo(chatId, videoPath, { caption: `[SUCCESS] Public adult video downloaded\\nSize: ${fileSizeMB.toFixed(2)}MB` });
-                    await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-                }
+                await sendTelegramVideo(bot, chatId, videoPath, '[SUCCESS] Public adult video downloaded');
+                await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
                 return;
             } finally {
                 if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
@@ -3787,14 +3803,8 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
             try {
                 await bot.editMessageText(`[SYSTEM] YouTube link detected. Downloading${cookies ? ' with session loaded' : ''}...`, { chat_id: chatId, message_id: statusMsg.message_id });
                 await downloadYouTubeVideo(url, videoPath);
-                const finalSize = await prepareTelegramVideo(videoPath);
-                const fileSizeMB = finalSize / (1024 * 1024);
-                if (fileSizeMB > 49.5) {
-                    await bot.editMessageText(`[ERROR] File is too large (${fileSizeMB.toFixed(1)}MB). Telegram bots can only send up to 50MB.`, { chat_id: chatId, message_id: statusMsg.message_id });
-                } else {
-                    await bot.sendVideo(chatId, videoPath, { caption: `[SUCCESS] YouTube video downloaded\nSize: ${fileSizeMB.toFixed(2)}MB` });
-                    await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-                }
+                await sendTelegramVideo(bot, chatId, videoPath, '[SUCCESS] YouTube video downloaded');
+                await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
                 return;
             } finally {
                 if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
@@ -3913,18 +3923,9 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
         // --- 5. YT-DLP DELIVERY ---
         // If yt-dlp successfully grabs the file, execution drops here to deliver it
         if (ytdlpSuccess) {
-            const finalSize = await prepareTelegramVideo(videoPath);
-            const fileSizeMB = finalSize / (1024 * 1024);
-
-            if (fileSizeMB > 49.5) {
-                await bot.editMessageText(`[ERROR] File is too large (${fileSizeMB.toFixed(1)}MB). Telegram bots can only send up to 50MB.`, { chat_id: chatId, message_id: statusMsg.message_id });
-            } else {
-                await bot.editMessageText('[SYSTEM] yt-dlp Extraction complete. Uploading...', { chat_id: chatId, message_id: statusMsg.message_id });
-                await bot.sendVideo(chatId, videoPath, { 
-                    caption: `[SUCCESS] Max Native Quality Downloaded\nSize: ${fileSizeMB.toFixed(2)}MB` 
-                });
-                await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
-            }
+            await bot.editMessageText('[SYSTEM] yt-dlp Extraction complete. Preparing original-quality video for Telegram...', { chat_id: chatId, message_id: statusMsg.message_id });
+            await sendTelegramVideo(bot, chatId, videoPath, '[SUCCESS] Max Native Quality Downloaded');
+            await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
         }
 
     } catch (err) {
