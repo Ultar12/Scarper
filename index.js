@@ -135,7 +135,7 @@ function getYouTubeCookiePath() {
     return candidates.find(candidate => fs.existsSync(candidate)) || null;
 }
 
-function buildYouTubeDownloadOptions(outputPath, format = 'bv*[ext=mp4][height<=720]+ba[ext=m4a]/bv*[height<=720]+ba/b[ext=mp4][height<=720]/b[ext=mp4]/b', cookies = null) {
+function buildYouTubeDownloadOptions(outputPath, format = 'bv*[height<=480]+ba/b[height<=480]/b', cookies = null, ignoreCookies = false) {
     return {
         output: outputPath,
         format,
@@ -149,6 +149,7 @@ function buildYouTubeDownloadOptions(outputPath, format = 'bv*[ext=mp4][height<=
             pluginDirs: BGUTIL_PLUGIN_DIR,
             extractorArgs: `youtubepot-bgutilscript:server_home=${BGUTIL_SERVER_HOME}`
         } : {}),
+        ...(ignoreCookies ? { noCookies: true } : {}),
         ...(cookies ? { cookies } : {})
     };
 }
@@ -160,9 +161,9 @@ async function downloadYouTubeVideo(sourceUrl, outputPath) {
         'b[height<=480]/b',
         'bv*[height<=360]+ba/b[height<=360]/b'
     ];
-    const attempts = formats.map(format => buildYouTubeDownloadOptions(outputPath, format));
+    const attempts = formats.map(format => buildYouTubeDownloadOptions(outputPath, format, null, true));
     if (cookies) {
-        attempts.push(...formats.map(format => buildYouTubeDownloadOptions(outputPath, format, cookies)));
+        attempts.push(...formats.map(format => buildYouTubeDownloadOptions(outputPath, format, cookies, false)));
     }
     let lastError = null;
     for (const options of attempts) {
