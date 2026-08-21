@@ -111,10 +111,70 @@ const MEDIA_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 function isPinterestUrl(rawUrl) {
     try {
         const hostname = new URL(rawUrl).hostname.toLowerCase();
-        return hostname === 'pin.it' || hostname === 'pinterest.com' || hostname.endsWith('.pinterest.com');
+        return hostname === 'pin.it' || hostname === 'www.pin.it' || hostname === 'pinterest.com' || hostname.endsWith('.pinterest.com') || hostname.endsWith('.pinterest.co.uk') || hostname.endsWith('.pinterest.ca');
     } catch {
         return false;
     }
+}
+
+function isYouTubeUrl(rawUrl) {
+    try {
+        const hostname = new URL(rawUrl).hostname.toLowerCase().replace(/^www\./, '');
+        return hostname === 'youtube.com' || hostname.endsWith('.youtube.com') || hostname === 'youtu.be';
+    } catch {
+        return false;
+    }
+}
+
+function getYouTubeCookiePath() {
+    const candidates = [
+        process.env.YOUTUBE_COOKIES_PATH,
+        cookiePath,
+        path.join(__dirname, 'cookies.txt')
+    ].filter(Boolean);
+    return candidates.find(candidate => fs.existsSync(candidate)) || null;
+}
+
+function buildYouTubeDownloadOptions(outputPath, format = 'bv*[ext=mp4][height<=720]+ba[ext=m4a]/bv*[height<=720]+ba/b[ext=mp4][height<=720]/b[ext=mp4]/b', cookies = null) {
+    return {
+        output: outputPath,
+        format,
+        mergeOutputFormat: 'mp4',
+        recodeVideo: 'mp4',
+        noPlaylist: true,
+        noWarnings: true,
+        jsRuntimes: 'nodejs',
+        remoteComponents: 'ejs:github',
+        ...(fs.existsSync(BGUTIL_SERVER_HOME) ? {
+            pluginDirs: BGUTIL_PLUGIN_DIR,
+            extractorArgs: `youtubepot-bgutilscript:server_home=${BGUTIL_SERVER_HOME}`
+        } : {}),
+        ...(cookies ? { cookies } : {})
+    };
+}
+
+async function downloadYouTubeVideo(sourceUrl, outputPath) {
+    const cookies = getYouTubeCookiePath();
+    const formats = [
+        'bv*[height<=480]+ba/b[height<=480]/b',
+        'b[height<=480]/b',
+        'bv*[height<=360]+ba/b[height<=360]/b'
+    ];
+    const attempts = formats.map(format => buildYouTubeDownloadOptions(outputPath, format));
+    if (cookies) {
+        attempts.push(...formats.map(format => buildYouTubeDownloadOptions(outputPath, format, cookies)));
+    }
+    let lastError = null;
+    for (const options of attempts) {
+        try {
+            await youtubedl(sourceUrl, options);
+            if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) return;
+        } catch (error) {
+            lastError = error;
+            if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+        }
+    }
+    throw lastError || new Error('yt-dlp produced no YouTube video file.');
 }
 
 function normalizeMediaUrl(rawUrl, baseUrl) {
@@ -184,7 +244,9 @@ async function extractPinterestMedia(page) {
         });
 
         // Pinterest frequently stores the original media in serialized page state rather than visible DOM.
-        const pageState = Array.from(document.scripts).map((script) => script.textContent || '').join('\\n');
+        const pageState = Array.from(document.scripts).map((script) => script.textContent || '').join('\\n')
+            .replaceAll('\\u002F', '/')
+            .replaceAll('\\/', '/');
         const pinimgPattern = /https?:\/\/(?:i|v1)\.pinimg\.com\/[^"'\\\s<>),;}\]]+/gi;
         for (const match of pageState.matchAll(pinimgPattern)) {
             const decoded = match[0].replaceAll('\\u002F', '/').replaceAll('\\/', '/');
@@ -225,11 +287,38 @@ async function fetchRemoteMediaBuffer(mediaUrl) {
     return Buffer.from(response.data);
 }
 
+async function downloadPinterestVideo(mediaUrl, outputPath) {
+    const isHls = /\.m3u8(?:[?#]|$)/i.test(mediaUrl);
+    if (isHls) {
+        await youtubedl(mediaUrl, {
+            output: outputPath,
+            format: 'best',
+            mergeOutputFormat: 'mp4',
+            recodeVideo: 'mp4',
+            noWarnings: true,
+            addHeader: ['Referer: https://www.pinterest.com/', `User-Agent: ${MEDIA_USER_AGENT}`]
+        });
+    } else {
+        const buffer = await fetchRemoteMediaBuffer(mediaUrl);
+        fs.writeFileSync(outputPath, buffer);
+    }
+    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1024) {
+        throw new Error('Pinterest returned an empty or invalid video file.');
+    }
+}
+
 async function resolvePinterestMedia(sourceUrl) {
     let browser = null;
     try {
         browser = await launchScraperBrowser();
         const page = await browser.newPage();
+        const networkMedia = new Set();
+        page.on('response', (response) => {
+            const responseUrl = response.url();
+            if (/^https?:\/\/(?:i|v1)\.pinimg\.com\//i.test(responseUrl) && /\.(?:mp4|m3u8|jpg|jpeg|png|webp)(?:[?#]|$)/i.test(responseUrl)) {
+                networkMedia.add(responseUrl);
+            }
+        });
         await page.setUserAgent(MEDIA_USER_AGENT);
         await page.setExtraHTTPHeaders({
             'Accept-Language': 'en-US,en;q=0.9',
@@ -239,10 +328,20 @@ async function resolvePinterestMedia(sourceUrl) {
         await delay(3500);
 
         let media = await extractPinterestMedia(page);
+        if (!media && networkMedia.size) {
+            const videos = [...networkMedia].filter((candidate) => /\.(?:mp4|m3u8)(?:[?#]|$)/i.test(candidate) || /\/videos\//i.test(candidate));
+            const images = [...networkMedia].filter((candidate) => !videos.includes(candidate)).map(normalizePinterestImageUrl);
+            media = videos.length ? { type: 'video', url: videos[0] } : (images.length ? { type: 'images', urls: [...new Set(images)] } : null);
+        }
         if (!media) {
             await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
             await delay(2000);
             media = await extractPinterestMedia(page);
+            if (!media && networkMedia.size) {
+                const videos = [...networkMedia].filter((candidate) => /\.(?:mp4|m3u8)(?:[?#]|$)/i.test(candidate) || /\/videos\//i.test(candidate));
+                const images = [...networkMedia].filter((candidate) => !videos.includes(candidate)).map(normalizePinterestImageUrl);
+                media = videos.length ? { type: 'video', url: videos[0] } : (images.length ? { type: 'images', urls: [...new Set(images)] } : null);
+            }
         }
         if (!media) throw new Error('Pinterest returned no public image or video URL. The pin may be private, deleted, or login-gated.');
         return media;
@@ -3472,792 +3571,40 @@ bot.onText(/\/play\s+(.+)/, async (msg, match) => {
 });
 
 
-const { YtDlp } = require('ytdlp-nodejs');
-const ytdlp = new YtDlp();
-
 bot.onText(/\/yt\s+(.+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
     const url = match[1].trim();
-    if (!url.includes('youtube.com') && !url.includes('youtu.be')) {
+    if (!isYouTubeUrl(url)) {
         return bot.sendMessage(chatId, '[ERROR] That is not a YouTube link.');
     }
 
-    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Fetching video info...');
+    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Fetching YouTube video...');
     const videoPath = path.join(__dirname, `yt_${Date.now()}.mp4`);
-    const hasCookies = fs.existsSync(cookiePath);
+    const cookies = getYouTubeCookiePath();
 
     try {
-        await bot.editMessageText(`[SYSTEM] Downloading via yt-dlp${hasCookies ? ' (cookies loaded)' : ''}...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        await bot.editMessageText(`[SYSTEM] Downloading YouTube video${cookies ? ' with session loaded' : ''}...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        await downloadYouTubeVideo(url, videoPath);
 
-        await ytdlp.downloadAsync(url, {
-    format: 'bv*+ba/b',
-    output: videoPath,
-    rawArgs: [
-    '--merge-output-format', 'mp4',
-    ...(hasCookies ? ['--cookies', cookiePath] : []),
-    ...POT_ARGS
-]
-});
-
-        const stats = fs.statSync(videoPath);
-        const fileSizeMB = stats.size / (1024 * 1024);
-
+        const fileSizeMB = fs.statSync(videoPath).size / (1024 * 1024);
         if (fileSizeMB > 49.5) {
             await bot.editMessageText(`[ERROR] File is too large (${fileSizeMB.toFixed(1)}MB). Telegram bots can only send up to 50MB.`, { chat_id: chatId, message_id: statusMsg.message_id });
-        } else {
-            await bot.editMessageText('[SYSTEM] Uploading...', { chat_id: chatId, message_id: statusMsg.message_id });
-            await bot.sendVideo(chatId, videoPath, {
-                caption: `[SUCCESS] Downloaded via yt-dlp\nSize: ${fileSizeMB.toFixed(2)}MB`
-            });
-            await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+            return;
         }
 
+        await bot.editMessageText('[SYSTEM] Uploading YouTube video...', { chat_id: chatId, message_id: statusMsg.message_id });
+        await bot.sendVideo(chatId, videoPath, {
+            caption: `[SUCCESS] YouTube video downloaded\nSize: ${fileSizeMB.toFixed(2)}MB`
+        });
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
     } catch (err) {
-        await bot.editMessageText(`[ERROR] yt-dlp download failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+        await bot.editMessageText(`[ERROR] YouTube download failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
     } finally {
         if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
     }
 });
-
-
-
-// Usage: /info (Shows the live status of all tracked coins instantly)
-bot.onText(/^\/info$/i, async (msg) => {
-    const chatId = msg.chat.id.toString();
-    const adminId = process.env.ADMIN_ID || '7710721646';
-    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
-
-    let statusMsg = await bot.sendMessage(chatId, "[SYSTEM] Generating on-demand roster report...");
-
-    try {
-        // Trigger the exact same Rick-style generator used for the 24h/48h auto-reports
-        const report = await generateTrenchReport('LIVE ROSTER STATUS');
-        
-        if (!report) {
-            return bot.editMessageText("[SYSTEM] The tracking engine is currently empty. No coins are being monitored.", { 
-                chat_id: chatId, 
-                message_id: statusMsg.message_id 
-            });
-        }
-
-        bot.editMessageText(report, { 
-            chat_id: chatId, 
-            message_id: statusMsg.message_id,
-            disable_web_page_preview: true
-        });
-
-    } catch (err) {
-        bot.editMessageText(`[ERROR] Failed to generate info report: ${err.message}`, { 
-            chat_id: chatId, 
-            message_id: statusMsg.message_id 
-        });
-    }
-});
-
-
-bot.onText(/\/book\s+(.+)/i, async (msg, match) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
-
-    const query = match[1].trim();
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Searching Shadow Library for: "${query}"...`);
-
-    const videoDir = path.join(__dirname, 'videos');
-    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
-
-    let browser = null;
-    let recorder = null;
-    let videoPath = null;
-
-    try {
-        browser = await puppeteer.launch({
-            headless: true,
-            executablePath: getChromePath(),
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-        });
-
-        const page = await browser.newPage();
-        await page.setViewport({ width: 1280, height: 800 }); // Desktop view for Libgen
-        
-        // Spoof a real desktop browser to bypass basic anti-bot blocks
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-
-        // --- START RECORDER ---
-        videoPath = path.join(videoDir, `book_search_${Date.now()}.mp4`);
-        recorder = new PuppeteerScreenRecorder(page, { fps: 30 });
-        await recorder.start(videoPath);
-
-        // Speed Hack: Block heavy resources, but keep HTML/Scripts for Cloudflare
-        await page.setRequestInterception(true);
-        page.on('request', (req) => {
-            if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
-                req.abort();
-            } else {
-                req.continue();
-            }
-        });
-
-        // 1. Search Libgen (Timeout doubled to 60 seconds)
-        await bot.editMessageText(`[SYSTEM] Connecting to Database...`, { chat_id: chatId, message_id: statusMsg.message_id });
-        const searchUrl = `https://libgen.is/search.php?req=${encodeURIComponent(query)}&res=25&view=simple&phrase=1&column=def`;
-        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-
-        // 2. Extract Result
-        const bookData = await page.evaluate(() => {
-            const rows = Array.from(document.querySelectorAll('table.c > tbody > tr')).slice(1); 
-            if (rows.length === 0) return null;
-
-            for (let row of rows) {
-                const cols = row.querySelectorAll('td');
-                if (cols.length < 10) continue;
-
-                const author = cols[1].innerText.trim();
-                const title = cols[2].innerText.replace(/\[.*?\]/g, '').trim(); 
-                const extension = cols[8].innerText.trim().toLowerCase();
-                const mirrorLink = cols[9].querySelector('a')?.href; 
-
-                if ((extension === 'pdf' || extension === 'epub') && mirrorLink) {
-                    return { author, title, extension, mirrorLink };
-                }
-            }
-            return null;
-        });
-
-        if (!bookData) throw new Error(`No PDF or EPUB found for "${query}".`);
-
-        await bot.editMessageText(`[SYSTEM] Match Found!\n\nTitle: ${bookData.title}\nFormat: ${bookData.extension.toUpperCase()}\n\nBypassing mirror site...`, { chat_id: chatId, message_id: statusMsg.message_id });
-
-        // 3. Go to the download mirror (library.lol) - Extended Timeout
-        await page.goto(bookData.mirrorLink, { waitUntil: 'domcontentloaded', timeout: 60000 });
-
-        // 4. Extract direct link
-        const downloadUrl = await page.evaluate(() => {
-            const getBtn = document.querySelector('#download h2 a');
-            return getBtn ? getBtn.href : null;
-        });
-
-        if (!downloadUrl) throw new Error("Security blocked the mirror. Could not extract the final download link.");
-
-        await bot.editMessageText(`[SYSTEM] Direct link secured. Downloading file to RAM...`, { chat_id: chatId, message_id: statusMsg.message_id });
-
-        // We can stop the video here because the visual part is done
-        await recorder.stop();
-
-        // 5. Download the file via Axios (Extended Timeout)
-        const response = await axios.get(downloadUrl, { responseType: 'arraybuffer', timeout: 60000 });
-        const buffer = Buffer.from(response.data, 'binary');
-
-        const fileSizeMB = buffer.length / (1024 * 1024);
-        if (fileSizeMB > 49.5) {
-            throw new Error(`File is too massive for Telegram (${fileSizeMB.toFixed(1)}MB). Direct Link: ${downloadUrl}`);
-        }
-
-        await bot.editMessageText(`[SYSTEM] Download complete. Uploading ${fileSizeMB.toFixed(1)}MB to Telegram...`, { chat_id: chatId, message_id: statusMsg.message_id });
-
-        const safeTitle = bookData.title.replace(/[^a-zA-Z0-9 ]/g, "").substring(0, 50);
-
-        // 6. Deliver the document
-        await bot.sendDocument(chatId, buffer, {
-            caption: `📚 *${bookData.title}*\n👤 Author: ${bookData.author}\n📄 Format: ${bookData.extension.toUpperCase()}`,
-            parse_mode: 'Markdown'
-        }, {
-            filename: `${safeTitle}.${bookData.extension}`,
-            contentType: bookData.extension === 'pdf' ? 'application/pdf' : 'application/epub+zip'
-        });
-
-        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-
-        // Optional: Send the success video just so you can see how fast it scraped
-        if (fs.existsSync(videoPath)) {
-            await bot.sendVideo(chatId, videoPath, { caption: `[DIAGNOSTIC] Libgen Search Sequence` });
-        }
-
-    } catch (err) {
-        if (recorder) await recorder.stop().catch(() => {});
-        bot.editMessageText(`[ERROR] Book Engine: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
-        
-        // Send the crash video so we can see if it was a Cloudflare block or just a slow load
-        if (fs.existsSync(videoPath)) {
-            await bot.sendVideo(chatId, videoPath, { caption: `Error Video: ${err.message}` });
-        }
-    } finally {
-        if (browser) await browser.close().catch(()=>{});
-        if (fs.existsSync(videoPath)) setTimeout(() => fs.unlinkSync(videoPath), 5000);
-    }
-});
-
-
-
-// --- THE WSTASK TOGGLE COMMAND ---
-bot.onText(/^\/wstask$/i, async (msg) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
-
-    wsTaskMode = !wsTaskMode; 
-
-    if (wsTaskMode) {
-        if (wsTaskTimer) clearTimeout(wsTaskTimer);
-        wsTaskTimer = setTimeout(() => {
-            wsTaskMode = false;
-            bot.sendMessage(chatId, '[SYSTEM] WSTASK Mode automatically ended after 30 minutes of inactivity.', {
-                reply_markup: {
-                    keyboard: [[{ text: 'Withdraw' }, { text: 'Balance' }]],
-                    resize_keyboard: true, is_persistent: true
-                }
-            });
-        }, 30 * 60 * 1000);
-
-        await bot.sendMessage(chatId, `[WSTASK MODE: ENGAGED]\n\nSend me numbers one by one. I will instantly route them to the Message Server.\n\n[Daily Goal:] 200 numbers\n\nType Stop to end this mode.`, { 
-            parse_mode: 'Markdown',
-            reply_markup: { remove_keyboard: true }
-        });
-    } else {
-        if (wsTaskTimer) clearTimeout(wsTaskTimer);
-        await bot.sendMessage(chatId, `[WSTASK MODE: OFFLINE]`, { 
-            parse_mode: 'Markdown',
-            reply_markup: {
-                keyboard: [[{ text: 'Withdraw' }, { text: 'Balance' }]],
-                resize_keyboard: true, is_persistent: true
-            }
-        });
-    }
-});
-
-
-
-
-
-
-// --- HANDLE "WITHDRAW" BUTTON TAP ---
-bot.onText(/^(?:\/withdraw|Withdraw)$/i, (msg) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
-
-    bot.sendMessage(chatId, 'Select Platform to Withdraw From:', {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: 'Wsjob', callback_data: 'cmd_withdraw_wsjob' }],
-                [{ text: 'Cancel', callback_data: 'cmd_cancel' }]
-            ]
-        }
-    });
-});
-
-// --- UNIFIED CALLBACK ROUTER ---
-bot.on('callback_query', async (queryObj) => {
-    const chatId = queryObj.message.chat.id.toString();
-    const msgId = queryObj.message.message_id;
-    const data = queryObj.data;
-
-    const adminId = process.env.ADMIN_ID || '7710721646';
-    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
-
-    bot.answerCallbackQuery(queryObj.id).catch(()=>{});
-
-    // --- WITHDRAW COMMAND SIMULATOR ---
-    const simulateCommand = (cmdText) => {
-        bot.processUpdate({
-            update_id: Date.now(),
-            message: {
-                message_id: Date.now(),
-                from: { id: parseInt(chatId) },
-                chat: { id: parseInt(chatId), type: 'private' },
-                date: Math.floor(Date.now() / 1000),
-                text: cmdText
-            }
-        });
-    };
-
-    if (data === 'cmd_withdraw_wsjob') {
-        bot.deleteMessage(chatId, msgId).catch(()=>{});
-        simulateCommand('/withdraw task');
-        return;
-    }
-    else if (data === 'cmd_cancel') {
-        bot.deleteMessage(chatId, msgId).catch(()=>{});
-        return;
-    }
-
-
-        if (data === 'action_play_audio') {
-            const searchQuery = playCache[chatId];
-            if (!searchQuery) {
-                return bot.editMessageText(`[ERROR] Search memory expired. Run /play again.`, { chat_id: chatId, message_id: msgId });
-            }
-
-            await bot.editMessageText(`[SYSTEM] Searching for: "${searchQuery}"...`, { chat_id: chatId, message_id: msgId });
-
-            try {
-                // =============================================
-                // AUDIO ONLY: SoundCloud with Smart iTunes Resolver
-                // =============================================
-                const scdl = require('soundcloud-downloader').default;
-
-                // --- 🧠 SMART RESOLVER ENGINE ---
-                let enhancedQuery = searchQuery;
-                try {
-                    await bot.editMessageText(`[SYSTEM] Resolving track metadata...`, { chat_id: chatId, message_id: msgId }).catch(()=>{});
-                    
-                    const itunesRes = await axios.get(`https://itunes.apple.com/search?term=${encodeURIComponent(searchQuery)}&entity=song&limit=1`);
-                    
-                    if (itunesRes.data && itunesRes.data.results && itunesRes.data.results.length > 0) {
-                        const trackInfo = itunesRes.data.results[0];
-                        enhancedQuery = `${trackInfo.trackName} ${trackInfo.artistName}`;
-                        await bot.editMessageText(`[SYSTEM] Resolved to: "${enhancedQuery}"\nConnecting to SoundCloud...`, { chat_id: chatId, message_id: msgId }).catch(()=>{});
-                    } else {
-                        await bot.editMessageText(`[SYSTEM] Connecting to SoundCloud...`, { chat_id: chatId, message_id: msgId }).catch(()=>{});
-                    }
-                } catch (resolveErr) {
-                    await bot.editMessageText(`[SYSTEM] Connecting to SoundCloud...`, { chat_id: chatId, message_id: msgId }).catch(()=>{});
-                }
-                // --------------------------------
-
-                let clientId;
-                try {
-                    clientId = await scdl.getClientID();
-                } catch (e) {
-                    throw new Error('Could not connect to SoundCloud. Try again later.');
-                }
-
-                // Feed the SMART query to SoundCloud
-                const searchRes = await scdl.search({
-                    query: enhancedQuery, 
-                    resourceType: 'tracks',
-                    limit: 5,
-                    client_id: clientId
-                });
-
-                const tracks = searchRes?.collection;
-                if (!tracks || tracks.length === 0) throw new Error(`No results found on SoundCloud for "${enhancedQuery}".`);
-
-                let lastError = null;
-                let sent = false;
-
-                for (const track of tracks) {
-                    if (sent) break;
-                    try {
-                        const title = track.title || enhancedQuery;
-                        const artist = track.user?.username || 'Unknown Artist';
-                        const safeTitle = title.replace(/[^a-zA-Z0-9 ]/g, '').substring(0, 40);
-                        const trackUrl = track.permalink_url;
-                        const duration = track.duration ? Math.round(track.duration / 1000) : 0;
-
-                        await bot.editMessageText(
-                            `[SYSTEM] Found: "${title}" by ${artist}\nFetching stream...`,
-                            { chat_id: chatId, message_id: msgId }
-                        ).catch(() => {});
-
-                        // Re-fetch client ID fresh right before streaming
-                        const freshClientId = await scdl.getClientID();
-
-                        const trackInfo = await scdl.getInfo(trackUrl, freshClientId);
-                        const transcodings = trackInfo.media?.transcodings || [];
-
-                        if (transcodings.length === 0) {
-                            lastError = 'No audio streams available for this track.';
-                            continue;
-                        }
-
-                        const mp3Path = path.join(__dirname, `sc_audio_${Date.now()}.mp3`);
-
-                        const progressiveMp3 = transcodings.find(t =>
-                            t.format.protocol === 'progressive' &&
-                            t.format.mime_type === 'audio/mpeg'
-                        );
-
-                        if (progressiveMp3) {
-                            await bot.editMessageText(
-                                `[SYSTEM] Progressive MP3 found. Downloading...`,
-                                { chat_id: chatId, message_id: msgId }
-                            ).catch(() => {});
-
-                            const streamRes = await axios.get(
-                                `${progressiveMp3.url}?client_id=${freshClientId}`,
-                                { timeout: 15000, validateStatus: s => s < 500 }
-                            );
-
-                            if (streamRes.status === 404 || !streamRes.data?.url) {
-                                lastError = 'Stream URL expired (404). Trying next result...';
-                                continue;
-                            }
-
-                            const audioRes = await axios({
-                                method: 'GET',
-                                url: streamRes.data.url,
-                                responseType: 'stream',
-                                timeout: 120000
-                            });
-
-                            const writer = fs.createWriteStream(mp3Path);
-                            await new Promise((resolve, reject) => {
-                                audioRes.data.pipe(writer)
-                                    .on('finish', resolve)
-                                    .on('error', reject);
-                            });
-
-                        } else {
-                            // Fallback: HLS via ffmpeg
-                            const hlsTranscoding = transcodings.find(t => t.format.protocol === 'hls');
-                            if (!hlsTranscoding) {
-                                lastError = 'No compatible audio stream found for this track.';
-                                continue;
-                            }
-
-                            await bot.editMessageText(
-                                `[SYSTEM] HLS stream found. Converting to MP3...`,
-                                { chat_id: chatId, message_id: msgId }
-                            ).catch(() => {});
-
-                            const streamRes = await axios.get(
-                                `${hlsTranscoding.url}?client_id=${freshClientId}`,
-                                { timeout: 15000, validateStatus: s => s < 500 }
-                            );
-
-                            if (streamRes.status === 404 || !streamRes.data?.url) {
-                                lastError = 'HLS stream URL expired (404). Trying next result...';
-                                continue;
-                            }
-
-                            await execPromise(
-                                `ffmpeg -y -i "${streamRes.data.url}" -vn -codec:a libmp3lame -q:a 2 "${mp3Path}"`
-                            );
-                        }
-
-                        // Verify file isn't empty/corrupt
-                        const stats = fs.statSync(mp3Path);
-                        if (stats.size < 5000) {
-                            if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
-                            lastError = 'Downloaded file was empty or corrupt.';
-                            continue;
-                        }
-
-                        await bot.deleteMessage(chatId, msgId).catch(() => {});
-                        await bot.sendAudio(chatId, mp3Path, {
-                            caption: `🎵 ${title}\n👤 ${artist}\n(via SoundCloud)`,
-                            title: safeTitle,
-                            performer: artist,
-                            duration: duration
-                        });
-                        if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
-                        sent = true;
-
-                    } catch (trackErr) {
-                        lastError = trackErr.message;
-                        continue; // Try next track
-                    }
-                }
-
-                if (!sent) {
-                    throw new Error(`All tracks failed. Last error: ${lastError}`);
-                }
-
-            } catch (err) {
-                console.error('[PLAY ERROR]', err.message);
-                bot.editMessageText(`[ERROR] ${err.message}`, { chat_id: chatId, message_id: msgId }).catch(() => {});
-            }
-
-            playCache[chatId] = null;
-        } else if (data === 'action_play_cancel') {
-            playCache[chatId] = null;
-            await bot.deleteMessage(chatId, msgId).catch(() => {});
-        }
-  
-
-    
-});
-
-
-
-
-bot.on('message', async (msg) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
-
-    if (userState[chatId] === 'WAITING_FOR_NUMBER' && !msg.text.startsWith('/')) {
-        const phoneNumber = msg.text.replace(/[^0-9]/g, '');
-        if (phoneNumber.length < 7) {
-            bot.sendMessage(chatId, '[ERROR] Invalid phone number. Try again.');
-            return;
-        }
-
-        userState[chatId] = null; 
-        bot.sendMessage(chatId, `[SYSTEM] Initializing Pairing Code protocol for +${phoneNumber}...`);
-        initializeWhatsApp(chatId, phoneNumber);
-    }
-});
-
-
-
-
-
-bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
-
-    let targetUrl = match[1].trim();
-    if (!targetUrl.startsWith('http')) {
-        targetUrl = 'https://' + targetUrl;
-    }
-
-    const statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Initializing Firefox Snapshot...');
-
-    let browser = null;
-    try {
-        process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
-
-        browser = await launchPlaywrightBrowser({
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
-
-        const context = await browser.newContext({
-            viewport: { width: 1280, height: 800 },
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:115.0) Gecko/20100101 Firefox/115.0'
-        });
-
-        const page = await context.newPage();
-
-        // --- INTEGRATED SNIPER (Clears popups before screenshot) ---
-        await page.addInitScript(() => {
-            setInterval(() => {
-                const okBtn = Array.from(document.querySelectorAll('*'))
-                    .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
-                if (okBtn) {
-                    okBtn.click();
-                    document.body.style.setProperty('filter', 'none', 'important');
-                    document.body.style.setProperty('overflow', 'auto', 'important');
-                }
-            }, 300);
-        });
-
-        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        
-        // Give time for popups to trigger and sniper to kill them
-        await delay(4000);
-
-        // Get total height
-        const fullHeight = await page.evaluate(() => document.body.scrollHeight);
-
-        if (fullHeight < 2000) {
-            const buffer = await page.screenshot({ fullPage: true });
-            await bot.sendPhoto(chatId, buffer, { caption: `[SUCCESS] Captured: ${targetUrl}` });
-        } else {
-            await bot.editMessageText('[SYSTEM] Page is long. Slicing into readable chunks...', {
-                chat_id: chatId,
-                message_id: statusMsg.message_id
-            });
-
-            const sliceHeight = 1000;
-            const mediaGroup = [];
-            
-            for (let y = 0; y < fullHeight; y += sliceHeight) {
-                const currentHeight = Math.min(sliceHeight, fullHeight - y);
-                
-                const partBuffer = await page.screenshot({
-                    clip: { x: 0, y: y, width: 1280, height: currentHeight }
-                });
-
-                mediaGroup.push({
-                    type: 'photo',
-                    media: partBuffer,
-                    caption: y === 0 ? `[SUCCESS] Full page slices for: ${targetUrl}` : ''
-                });
-
-                if (mediaGroup.length === 10) break; 
-            }
-
-            await bot.sendMediaGroup(chatId, mediaGroup);
-        }
-
-        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-
-    } catch (err) {
-        await bot.editMessageText(`[ERROR] Screenshot failed: ${err.message}`, {
-            chat_id: chatId,
-            message_id: statusMsg.message_id
-        });
-    } finally {
-        if (browser) await browser.close();
-    }
-});
-
-
-
-
-
-// --- SMART LYRICS API (TYPO TOLERANT + DURATION SORTING) ---
-bot.onText(/^\/lyrics(?: +(.*))?$/, async (msg, match) => {
-    const chatId = msg.chat.id.toString();
-    const rawQuery = match[1] ? match[1].trim() : '';
-
-    // Authorization Check 
-    const adminId = process.env.ADMIN_ID || '7710721646';
-    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
-
-    if (!rawQuery) return bot.sendMessage(chatId, '_Provide a song name_', { parse_mode: 'Markdown' });
-
-    let statusMsg = await bot.sendMessage(chatId, `_Resolving track data for: ${rawQuery}..._`, { parse_mode: 'Markdown' });
-
-    try {
-        // 1. SMART RESOLVER: Use iTunes to figure out the exact song and artist
-        let searchTarget = rawQuery; 
-        
-        try {
-            const itunesRes = await axios.get(`https://itunes.apple.com/search?term=${encodeURIComponent(rawQuery)}&entity=song&limit=1`);
-            if (itunesRes.data && itunesRes.data.results && itunesRes.data.results.length > 0) {
-                const trackInfo = itunesRes.data.results[0];
-                searchTarget = `${trackInfo.trackName} ${trackInfo.artistName}`;
-            } else {
-                searchTarget = rawQuery.replace(/\b(by|lyrics)\b/gi, ' ').replace(/\s+/g, ' ').trim();
-            }
-        } catch (itunesErr) {
-            searchTarget = rawQuery.replace(/\b(by|lyrics)\b/gi, ' ').replace(/\s+/g, ' ').trim();
-        }
-
-        await bot.editMessageText(`_Searching lyrics for: ${searchTarget}..._`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
-
-        // 2. FETCH LYRICS: Hit the lyrics database
-        const response = await axios.get(`https://lrclib.net/api/search?q=${encodeURIComponent(searchTarget)}`);
-        const data = response.data;
-
-        if (!data || data.length === 0) {
-            return bot.editMessageText(`[FAILED] Could not find lyrics for "${rawQuery}".`, { chat_id: chatId, message_id: statusMsg.message_id });
-        }
-
-        // 3. FILTER & SORT: Keep only tracks with text, sort by longest duration first
-        const validTracks = data.filter(t => t.plainLyrics && t.plainLyrics.trim().length > 0);
-
-        if (validTracks.length === 0) {
-            return bot.editMessageText(`[FAILED] Found the song, but no text lyrics are available for it.`, { chat_id: chatId, message_id: statusMsg.message_id });
-        }
-
-        // Sort descending by duration (longest track gets position 0)
-        validTracks.sort((a, b) => (b.duration || 0) - (a.duration || 0));
-
-        // Pick the longest valid track
-        const track = validTracks[0];
-
-        // 4. DELIVER
-        const result = `*${track.trackName} - ${track.artistName}*\n\n${track.plainLyrics}`;
-
-        if (result.length > 4000) {
-            await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-            const chunks = result.match(/[\s\S]{1,4000}/g);
-            for (let chunk of chunks) {
-                await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' });
-            }
-        } else {
-            await bot.editMessageText(result, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
-        }
-
-    } catch (err) {
-        bot.editMessageText(`_API Error: ${err.message}_`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
-    }
-});
-
-
-
-
-
-
-
-// --- TOGGLE COMMAND: /spy on | /spy off ---
-bot.onText(/^\/spy\s+(on|off)$/i, async (msg, match) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
-
-    const command = match[1].toLowerCase();
-
-    if (command === 'on') {
-        if (isSpying) {
-            return bot.sendMessage(chatId, '[SYSTEM] Spy Mode is already running in the background.');
-        }
-
-        isSpying = true;
-        bot.sendMessage(chatId, '[ACTIVE] Spy Mode Initiated. Scraping TimeSMS every 30 minutes.');
-
-        // Trigger the first sweep immediately
-        scrapeRecentOTPNumbers();
-
-        // Lock in the 30-minute repeating cycle
-        spyIntervalTimer = setInterval(() => {
-            scrapeRecentOTPNumbers();
-        }, 30 * 60 * 1000); 
-
-    } else if (command === 'off') {
-        if (!isSpying) {
-            return bot.sendMessage(chatId, '[SYSTEM] Spy Mode is already inactive.');
-        }
-
-        isSpying = false;
-        if (spyIntervalTimer) clearInterval(spyIntervalTimer);
-        spyIntervalTimer = null;
-        
-        bot.sendMessage(chatId, '[INACTIVE] Spy Mode Deactivated. Background engine stopped.');
-    }
-});
-
-
-// Usage: /record
-bot.onText(/\/record/i, async (msg) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
-
-    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Booting video recorder...');
-    let browser = null;
-
-    try {
-        browser = await puppeteer.launch({
-            headless: true,
-            executablePath: getChromePath(),
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-        });
-
-        const page = await browser.newPage();
-        await page.setViewport({ width: 412, height: 915 });
-
-        // 1. INITIALIZE THE RECORDER
-        const recorder = new PuppeteerScreenRecorder(page, {
-            fps: 30,
-            videoFrame: { width: 412, height: 915 },
-            aspectRatio: '9:16' // Mobile format
-        });
-
-        // 2. START RECORDING
-        const videoPath = path.join(__dirname, `bot_recording_${Date.now()}.mp4`);
-        await recorder.start(videoPath);
-        await bot.editMessageText('[SYSTEM] 🔴 Recording started...', { chat_id: chatId, message_id: statusMsg.message_id });
-
-        // --- DO YOUR PUPPETEER STUFF HERE ---
-        await page.goto('https://www.wsjobs-ng.com/', { waitUntil: 'networkidle2' });
-        await new Promise(r => setTimeout(r, 3000));
-        
-        // Let's pretend we click a button or type something so the video captures movement
-        await page.evaluate(() => window.scrollBy(0, 500)); 
-        await new Promise(r => setTimeout(r, 2000));
-        await page.evaluate(() => window.scrollBy(0, -500));
-        await new Promise(r => setTimeout(r, 2000));
-        // ------------------------------------
-
-        // 3. STOP RECORDING
-        await recorder.stop();
-        await bot.editMessageText('[SYSTEM] Recording saved! Uploading to Telegram...', { chat_id: chatId, message_id: statusMsg.message_id });
-
-        // 4. SEND THE VIDEO TO TELEGRAM
-        await bot.sendVideo(chatId, videoPath, { caption: '[DIAGNOSTIC] Session Video' });
-
-        // 5. CLEAN UP HEROKU STORAGE
-        fs.unlinkSync(videoPath);
-
-    } catch (err) {
-        bot.sendMessage(chatId, `[ERROR] Video capture failed: ${err.message}`);
-    } finally {
-        if (browser) await browser.close().catch(()=>{});
-    }
-});
-
 
 
 // Usage: /dl https://www.tiktok.com/@user/video/123456789 or YouTube or ANY Link
@@ -4313,8 +3660,13 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
             const mediaData = await resolvePinterestMedia(url);
 
             if (mediaData.type === 'video') {
-                const video = await fetchRemoteMediaBuffer(mediaData.url);
-                await bot.sendVideo(chatId, video, { caption: '[SUCCESS] Pinterest video downloaded' });
+                const videoPath = path.join(__dirname, `pin_${Date.now()}.mp4`);
+                try {
+                    await downloadPinterestVideo(mediaData.url, videoPath);
+                    await bot.sendVideo(chatId, videoPath, { caption: '[SUCCESS] Pinterest video downloaded' });
+                } finally {
+                    if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
+                }
             } else {
                 for (let i = 0; i < mediaData.urls.length; i++) {
                     const image = await fetchRemoteMediaBuffer(mediaData.urls[i]);
@@ -4326,22 +3678,24 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
             return;
         }
 
-        // --- 3. YOUTUBE TERMINAL ROUTING ---
-        if (url.includes('youtube.com') || url.includes('youtu.be')) {
-            if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
-                return bot.editMessageText('[ERROR] Termux Node is offline. Start the worker script on your phone.', { chat_id: chatId, message_id: statusMsg.message_id });
+        // --- 3. YOUTUBE VIDEO / SHORTS ---
+        if (isYouTubeUrl(url)) {
+            const videoPath = path.join(__dirname, `dl_${Date.now()}.mp4`);
+            const cookies = getYouTubeCookiePath();
+            try {
+                await bot.editMessageText(`[SYSTEM] YouTube link detected. Downloading${cookies ? ' with session loaded' : ''}...`, { chat_id: chatId, message_id: statusMsg.message_id });
+                await downloadYouTubeVideo(url, videoPath);
+                const fileSizeMB = fs.statSync(videoPath).size / (1024 * 1024);
+                if (fileSizeMB > 49.5) {
+                    await bot.editMessageText(`[ERROR] File is too large (${fileSizeMB.toFixed(1)}MB). Telegram bots can only send up to 50MB.`, { chat_id: chatId, message_id: statusMsg.message_id });
+                } else {
+                    await bot.sendVideo(chatId, videoPath, { caption: `[SUCCESS] YouTube video downloaded\nSize: ${fileSizeMB.toFixed(2)}MB` });
+                    await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+                }
+                return;
+            } finally {
+                if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
             }
-
-            await bot.editMessageText('[SYSTEM] YouTube link detected. Routing extraction order to Termux Hardware...', { chat_id: chatId, message_id: statusMsg.message_id });
-
-            global.termuxSocket.send(JSON.stringify({
-                action: 'download',
-                url: url,
-                isVideo: true,
-                chatId: chatId,
-                msgId: statusMsg.message_id.toString() 
-            }));
-            return;
         }
 
         // --- 3. THE FRONTLINE: YT-DLP ---
