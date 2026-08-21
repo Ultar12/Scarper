@@ -40,6 +40,7 @@ const { parsePhoneNumberFromString } = require('libphonenumber-js');
 const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
+const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 
 const multer = require('multer');
@@ -235,12 +236,12 @@ async function resolvePinterestMedia(sourceUrl) {
             'Referer': 'https://www.pinterest.com/'
         });
         await page.goto(sourceUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-        await page.waitForTimeout(3500);
+        await delay(3500);
 
         let media = await extractPinterestMedia(page);
         if (!media) {
             await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-            await page.waitForTimeout(2000);
+            await delay(2000);
             media = await extractPinterestMedia(page);
         }
         if (!media) throw new Error('Pinterest returned no public image or video URL. The pin may be private, deleted, or login-gated.');
@@ -858,7 +859,7 @@ async function runAutoTaskScanner(chatId) {
         // --- 2. THE INCOGNITO LOGIN FIX ---
         // The radar must log in quickly so the site actually shows it the tasks
         await scanPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await scanPage.waitForTimeout(3000);
+        await delay(3000);
         
         if (await scanPage.$('input[type="password"]')) {
             await scanPage.fill('input[type="text"], input[type="tel"]', '09163916500'); 
@@ -870,7 +871,7 @@ async function runAutoTaskScanner(chatId) {
 
         // Now teleport to the task board as an authenticated user
         await scanPage.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await scanPage.waitForTimeout(4000); 
+        await delay(4000);
 
         // --- 3. DOM FREQUENCY ANALYZER ---
         const counts = await scanPage.evaluate(() => {
@@ -2435,7 +2436,7 @@ app.get('/api/download', async (req, res) => {
                 
                 // Scroll to force lazy-loaded images/videos to render
                 await rescuePage.evaluate(() => window.scrollBy(0, 500));
-                await rescuePage.waitForTimeout(2000);
+                await delay(2000);
 
                 // Execute the Universal DOM Hunter
                 const mediaData = await rescuePage.evaluate(() => {
@@ -4265,7 +4266,7 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
         await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
         
         // Give time for popups to trigger and sniper to kill them
-        await page.waitForTimeout(4000);
+        await delay(4000);
 
         // Get total height
         const fullHeight = await page.evaluate(() => document.body.scrollHeight);
@@ -4649,7 +4650,7 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
                 
                 // Scroll to force lazy-loaded images/videos to render
                 await rescuePage.evaluate(() => window.scrollBy(0, 500));
-                await rescuePage.waitForTimeout(2000); 
+                await delay(2000);
 
                 // Execute the Universal DOM Hunter
                 const mediaData = await rescuePage.evaluate(() => {
@@ -5202,7 +5203,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
         });
 
         await wPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-        await wPage.waitForTimeout(4000);
+        await delay(4000);
 
         // LOGIN LOGIC
         const loginInput = await wPage.$('input[type="text"], input[type="tel"]');
@@ -5217,7 +5218,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
 
         // TELEPORT (This fixed your withdraw, so it stays here too)
         await wPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-        await wPage.waitForTimeout(5000);
+        await delay(5000);
 
         // --- PRECISION BALANCE SCRAPER (The fix for "639" issues) ---
         wsjobsBal = await wPage.evaluate(() => {
@@ -5398,7 +5399,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
         await bot.editMessageText('[SYSTEM] Navigating to Account...', { chat_id: chatId, message_id: statusMsg.message_id });
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-        await masterPage.waitForTimeout(4000);
+        await delay(4000);
 
         const loginInput = await masterPage.$('input[type="text"], input[type="tel"]');
         if (loginInput) {
@@ -5410,7 +5411,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         }
 
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-        await masterPage.waitForTimeout(5000); 
+        await delay(5000);
 
         // --- 2. PRECISION BALANCE SCRAPER ---
         const rawBalance = await masterPage.evaluate(() => {
@@ -5482,7 +5483,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             console.log(`[TAB ${i + 1}] Processing...`);
 
             await p.goto('https://www.wsjobs-ng.com/account/withdraw', { waitUntil: 'domcontentloaded' });
-            await p.waitForTimeout(4000);
+            await delay(4000);
 
             // 1. Click the Amount Chip
             await p.evaluate((amt) => {
@@ -5494,7 +5495,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                 }
             }, targetAmount);
 
-            await p.waitForTimeout(3000);
+            await delay(3000);
 
             // 2. NUCLEAR BUTTON STRIKE (WITHDRAW NOW)
             await p.evaluate(() => {
@@ -5529,7 +5530,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             });
 
             await p.mouse.click(206, 320).catch(() => {}); 
-            await p.waitForTimeout(3000);
+            await delay(3000);
 
             // 3. PASSWORD ENTRY & LOCK IN
             const passInput = p.locator('input[type="password"], .modal-body input, [placeholder*="password"], [placeholder*="senha"]').last();
@@ -5538,7 +5539,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             await p.evaluate(el => el.value = '', await passInput.elementHandle()); 
             await passInput.type('111111', { delay: 100 }); 
             await p.keyboard.press('Tab'); 
-            await p.waitForTimeout(1500);
+            await delay(1500);
 
             console.log(`[TAB ${i + 1}] Sitting at Confirm Modal.`);
         }
@@ -5600,7 +5601,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             }
         }));
 
-        await masterPage.waitForTimeout(5000);
+        await delay(5000);
 
         // ==========================================
         // 5. SUCCESS REFRESH, CAPTURE & DELIVERY
@@ -5608,7 +5609,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await bot.editMessageText(`[SYSTEM] Strike complete. Refreshing account page...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
 
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-        await masterPage.waitForTimeout(5000); 
+        await delay(5000);
 
         const finalSnap = await masterPage.screenshot({ type: 'png' });
         
@@ -5756,7 +5757,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         // --- 2. FAST REFRESH LOGIC ---
         await updateStatus('[SYSTEM] Synchronizing Account State...');
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-        await masterPage.waitForTimeout(3000);
+        await delay(3000);
 
         // Check if login is needed
         if (await masterPage.$('input[type="password"]')) {
@@ -5790,7 +5791,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
         await updateStatus(`[SYSTEM] Teleporting to Task Page...`);
         await masterPage.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
-        await masterPage.waitForTimeout(4000);
+        await delay(4000);
 
         // --- 4. TARGET SCAN & TAB SPAWNING ---
         const targetCount = await masterPage.evaluate((suffix) => {
@@ -5831,7 +5832,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
             }, { suffix: targetSuffix, index: targetIdx });
         }));
 
-        await masterPage.waitForTimeout(3500);
+        await delay(3500);
 
                 // --- 6. COORDINATED "MODAL-AWARE" CONFIRM ---
         await updateStatus('[SYSTEM] COORDINATED CONFIRM');
@@ -5876,7 +5877,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         })));
 
 
-        await masterPage.waitForTimeout(20000);
+        await delay(20000);
 
         // FIX: Changed 'page' to 'masterPage' to resolve undefined crash
         const finalTaskSnap = await masterPage.screenshot({ type: 'png' });
@@ -5886,19 +5887,19 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         
         // Initial navigation to the account page
         await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-        await masterPage.waitForTimeout(2000);
+        await delay(2000);
         
         // Force Refresh 1
         await updateStatus('[SYSTEM] Refreshing page (1/2)...');
         await masterPage.reload({ waitUntil: 'domcontentloaded' });
-        await masterPage.waitForTimeout(2000);
+        await delay(2000);
 
         // Force Refresh 2
         await updateStatus('[SYSTEM] Refreshing page (2/2)...');
         await masterPage.reload({ waitUntil: 'domcontentloaded' });
         
         // Final wait to let the server fully update the visual balance
-        await masterPage.waitForTimeout(5000);
+        await delay(5000);
 
         const finalBalanceNum = await masterPage.evaluate(() => {
             const allText = document.body.innerText;
@@ -6222,7 +6223,7 @@ bot.on('message', async (msg) => {
                     // Dynamic Login
                     await updateStatus('[WT BURNER] Injecting credentials into Wsjobs...');
                     await page1.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-                    await page1.waitForTimeout(3000);
+                    await delay(3000);
 
                     if (await page1.$('input[type="password"]')) {
                         await page1.fill('input[type="text"], input[type="tel"]', session.username);
@@ -6240,7 +6241,7 @@ bot.on('message', async (msg) => {
 
                 // --- 2. PRECISION BALANCE SCRAPER ---
                 await masterTab.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-                await masterTab.waitForTimeout(3000);
+                await delay(3000);
                 
                 initialBalanceNum = await masterTab.evaluate(() => {
                     const allText = document.body.innerText;
@@ -6258,7 +6259,7 @@ bot.on('message', async (msg) => {
                 // --- 3. TARGET SCANNING ---
                 await updateStatus('[WT BURNER] Teleporting to Task Board...');
                 await masterTab.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
-                await masterTab.waitForTimeout(4000);
+                await delay(4000);
 
                 let targetCount = await masterTab.evaluate((suffix) => {
                     const btns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText?.trim() === 'SEND');
@@ -6299,7 +6300,7 @@ bot.on('message', async (msg) => {
                     }, { suffix: session.target, index: targetIdx });
                 }));
 
-                await masterTab.waitForTimeout(3500);
+                await delay(3500);
 
                 // --- 5. MODAL-AWARE COORDINATED CONFIRM ---
                 await updateStatus('[WT BURNER] COORDINATED CONFIRM...');
@@ -6339,15 +6340,15 @@ bot.on('message', async (msg) => {
                     }
                 })));
 
-                await masterTab.waitForTimeout(20000);
+                await delay(20000);
                 const finalTaskSnap = await masterTab.screenshot({ type: 'png' });
 
                 // --- 6. FINAL BALANCE CALCULATION ---
                 await updateStatus('[WT BURNER] Fetching Final Balance...');
                 await masterTab.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
-                await masterTab.waitForTimeout(2000);
+                await delay(2000);
                 await masterTab.reload({ waitUntil: 'domcontentloaded' });
-                await masterTab.waitForTimeout(5000);
+                await delay(5000);
 
                 const finalBalanceNum = await masterTab.evaluate(() => {
                     const allText = document.body.innerText;
