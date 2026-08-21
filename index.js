@@ -22,7 +22,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const { Client, RemoteAuth } = require('whatsapp-web.js');
 const { PostgresStore } = require('wwebjs-postgres');
 const { Pool } = require('pg');
-const { firefox } = require('playwright');
+const { chromium } = require('playwright-core');
 const sharp = require('sharp');
 const puppeteer = require('puppeteer-extra');
 const QRCode = require('qrcode');
@@ -78,7 +78,11 @@ function getChromePath() {
         process.env.GOOGLE_CHROME_BIN,
         process.env.CHROME_BIN,
         process.env.GOOGLE_CHROME_SHIM,
-        '/app/.chrome-for-testing/chrome-linux64/chrome', // The exact path from your Heroku build log
+        process.env.PUPPETEER_EXECUTABLE_PATH,
+        process.env.CHROME_PATH,
+        path.join(__dirname, '.chrome-for-testing/chrome-linux64/chrome'),
+        path.join(process.env.HOME || '', '.chrome-for-testing/chrome-linux64/chrome'),
+        '/app/.chrome-for-testing/chrome-linux64/chrome',
         '/usr/bin/google-chrome',
         '/usr/bin/chromium',
         '/usr/bin/chromium-browser'
@@ -135,6 +139,14 @@ function normalizePinterestImageUrl(rawUrl) {
     const url = normalizeMediaUrl(rawUrl, 'https://www.pinterest.com/');
     if (!url || !url.includes('pinimg.com')) return url;
     return url.replace(/\/(?:\d+x\d*|originals)\//i, '/originals/');
+}
+
+function launchPlaywrightBrowser(options = {}) {
+    const executablePath = getChromePath();
+    return chromium.launch({
+        ...options,
+        ...(executablePath ? { executablePath } : {})
+    });
 }
 
 function launchScraperBrowser() {
@@ -830,7 +842,7 @@ async function runAutoTaskScanner(chatId) {
         if (!globalTaskBrowser || !globalTaskBrowser.isConnected()) {
             console.log('[RADAR] Cold Boot: Launching Master Task Browser...');
             process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
-            globalTaskBrowser = await firefox.launch({
+            globalTaskBrowser = await launchPlaywrightBrowser({
                 headless: true,
                 args: ['--no-sandbox', '--disable-setuid-sandbox']
             });
@@ -4225,7 +4237,7 @@ bot.onText(/\/screenshot\s+(.+)/, async (msg, match) => {
     try {
         process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
 
-        browser = await firefox.launch({
+        browser = await launchPlaywrightBrowser({
             headless: true,
             args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
@@ -5152,7 +5164,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             wBrowser = globalTaskBrowser;
         } else {
             process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
-            wBrowser = await firefox.launch({
+            wBrowser = await launchPlaywrightBrowser({
                 headless: true,
                 args: ['--no-sandbox', '--disable-setuid-sandbox']
             });
@@ -5343,7 +5355,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
     try {
         process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
 
-        browser = await firefox.launch({ 
+        browser = await launchPlaywrightBrowser({
             headless: true,
             args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
@@ -5711,7 +5723,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         // --- 1. SMART ENGINE RECOVERY ---
         if (!browser || !browser.isConnected()) {
             process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
-            browser = await firefox.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+            browser = await launchPlaywrightBrowser({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
             globalTaskBrowser = browser;
         }
 
@@ -6176,7 +6188,7 @@ bot.on('message', async (msg) => {
                     await updateStatus('[WT BURNER] Launching clean Firefox Burner Engine...');
                     process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
                     
-                    session.browser = await firefox.launch({
+                    session.browser = await launchPlaywrightBrowser({
                         headless: true,
                         args: ['--no-sandbox', '--disable-setuid-sandbox']
                     });
