@@ -37,9 +37,10 @@ const { parsePhoneNumberFromString } = require('libphonenumber-js');
 
 
 
-const { exec } = require('child_process');
+const { exec, execFile } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
+const execFilePromise = util.promisify(execFile);
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 
@@ -140,6 +141,47 @@ function isPublicAdultVideoUrl(rawUrl) {
     }
 }
 
+const TELEGRAM_MAX_VIDEO_BYTES = 49 * 1024 * 1024;
+
+async function prepareTelegramVideo(videoPath) {
+    if (!fs.existsSync(videoPath)) throw new Error('The downloader produced no video file.');
+    if (fs.statSync(videoPath).size <= TELEGRAM_MAX_VIDEO_BYTES) return fs.statSync(videoPath).size;
+
+    const compressedPath = `${videoPath}.telegram.mp4`;
+    const ffmpegPath = process.env.FFMPEG_PATH || process.env.HEROKU_FFMPEG_BIN || 'ffmpeg';
+    const ffprobePath = process.env.FFPROBE_PATH || 'ffprobe';
+    let duration = 0;
+    try {
+        const probe = await execFilePromise(ffprobePath, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', videoPath]);
+        duration = Number.parseFloat(String(probe.stdout).trim()) || 0;
+    } catch {}
+
+    const attempts = [
+        { height: 480, maxVideoKbps: 2200 },
+        { height: 360, maxVideoKbps: 1400 },
+        { height: 240, maxVideoKbps: 800 }
+    ];
+    for (const attempt of attempts) {
+        const calculated = duration > 0 ? Math.floor((46 * 1024 * 8 / duration) - 96) : attempt.maxVideoKbps;
+        const videoKbps = Math.max(250, Math.min(attempt.maxVideoKbps, calculated));
+        try {
+            await execFilePromise(ffmpegPath, [
+                '-y', '-i', videoPath,
+                '-vf', `scale=-2:${attempt.height}`,
+                '-c:v', 'libx264', '-preset', 'veryfast', '-b:v', `${videoKbps}k`,
+                '-maxrate', `${videoKbps}k`, '-bufsize', `${videoKbps * 2}k`,
+                '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', compressedPath
+            ], { maxBuffer: 1024 * 1024 });
+            if (fs.existsSync(compressedPath) && fs.statSync(compressedPath).size <= TELEGRAM_MAX_VIDEO_BYTES) {
+                fs.renameSync(compressedPath, videoPath);
+                return fs.statSync(videoPath).size;
+            }
+        } catch {}
+        if (fs.existsSync(compressedPath)) fs.unlinkSync(compressedPath);
+    }
+    throw new Error('The video is too large for Telegram even after compression.');
+}
+
 async function downloadPublicVideo(sourceUrl, outputPath) {
     await youtubedl(sourceUrl, {
         output: outputPath,
@@ -167,7 +209,7 @@ function getYouTubeCookiePath() {
     return candidates.find(candidate => fs.existsSync(candidate)) || null;
 }
 
-function buildYouTubeDownloadOptions(outputPath, format = 'bv*[height<=480]+ba/b[height<=480]/b', cookies = null, ignoreCookies = false, client = 'android_music') {
+function buildYouTubeDownloadOptions(outputPath, format = 'bv*+ba/b', cookies = null, ignoreCookies = false, client = 'android_music') {
     return {
         output: outputPath,
         format,
@@ -190,26 +232,29 @@ function buildYouTubeDownloadOptions(outputPath, format = 'bv*[height<=480]+ba/b
 async function downloadYouTubeVideo(sourceUrl, outputPath) {
     const cookies = getYouTubeCookiePath();
     const formats = [
-        'bv*[height<=480]+ba/b[height<=480]/b',
-        'b[height<=480]/b',
-        'bv*[height<=360]+ba/b[height<=360]/b'
+        'bv*+ba/best',
+        'bestvideo*+bestaudio/best',
+        'best',
+        'b'
     ];
     const clients = ['android_music', 'web'];
     const attempts = clients.flatMap(client => formats.map(format => buildYouTubeDownloadOptions(outputPath, format, null, true, client)));
     if (cookies) {
         attempts.push(...clients.flatMap(client => formats.map(format => buildYouTubeDownloadOptions(outputPath, format, cookies, false, client))));
     }
+    let firstError = null;
     let lastError = null;
     for (const options of attempts) {
         try {
             await youtubedl(sourceUrl, options);
             if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) return;
         } catch (error) {
+            firstError ||= error;
             lastError = error;
             if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
         }
     }
-    throw lastError || new Error('yt-dlp produced no YouTube video file.');
+    throw firstError || lastError || new Error('yt-dlp produced no YouTube video file.');
 }
 
 function normalizeMediaUrl(rawUrl, baseUrl) {
@@ -3623,7 +3668,8 @@ bot.onText(/\/yt\s+(.+)/, async (msg, match) => {
         await bot.editMessageText(`[SYSTEM] Downloading YouTube video${cookies ? ' with session loaded' : ''}...`, { chat_id: chatId, message_id: statusMsg.message_id });
         await downloadYouTubeVideo(url, videoPath);
 
-        const fileSizeMB = fs.statSync(videoPath).size / (1024 * 1024);
+        const finalSize = await prepareTelegramVideo(videoPath);
+        const fileSizeMB = finalSize / (1024 * 1024);
         if (fileSizeMB > 49.5) {
             await bot.editMessageText(`[ERROR] File is too large (${fileSizeMB.toFixed(1)}MB). Telegram bots can only send up to 50MB.`, { chat_id: chatId, message_id: statusMsg.message_id });
             return;
@@ -3698,6 +3744,7 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
                 const videoPath = path.join(__dirname, `pin_${Date.now()}.mp4`);
                 try {
                     await downloadPinterestVideo(mediaData.url, videoPath);
+                    await prepareTelegramVideo(videoPath);
                     await bot.sendVideo(chatId, videoPath, { caption: '[SUCCESS] Pinterest video downloaded' });
                 } finally {
                     if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
@@ -3719,7 +3766,8 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
             try {
                 await bot.editMessageText('[SYSTEM] Public adult video site detected. Downloading available media...', { chat_id: chatId, message_id: statusMsg.message_id });
                 await downloadPublicVideo(url, videoPath);
-                const fileSizeMB = fs.statSync(videoPath).size / (1024 * 1024);
+                const finalSize = await prepareTelegramVideo(videoPath);
+                const fileSizeMB = finalSize / (1024 * 1024);
                 if (fileSizeMB > 49.5) {
                     await bot.editMessageText(`[ERROR] File is too large (${fileSizeMB.toFixed(1)}MB). Telegram bots can only send up to 50MB.`, { chat_id: chatId, message_id: statusMsg.message_id });
                 } else {
@@ -3739,7 +3787,8 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
             try {
                 await bot.editMessageText(`[SYSTEM] YouTube link detected. Downloading${cookies ? ' with session loaded' : ''}...`, { chat_id: chatId, message_id: statusMsg.message_id });
                 await downloadYouTubeVideo(url, videoPath);
-                const fileSizeMB = fs.statSync(videoPath).size / (1024 * 1024);
+                const finalSize = await prepareTelegramVideo(videoPath);
+                const fileSizeMB = finalSize / (1024 * 1024);
                 if (fileSizeMB > 49.5) {
                     await bot.editMessageText(`[ERROR] File is too large (${fileSizeMB.toFixed(1)}MB). Telegram bots can only send up to 50MB.`, { chat_id: chatId, message_id: statusMsg.message_id });
                 } else {
@@ -3864,8 +3913,8 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
         // --- 5. YT-DLP DELIVERY ---
         // If yt-dlp successfully grabs the file, execution drops here to deliver it
         if (ytdlpSuccess) {
-            const stats = fs.statSync(videoPath);
-            const fileSizeMB = stats.size / (1024 * 1024);
+            const finalSize = await prepareTelegramVideo(videoPath);
+            const fileSizeMB = finalSize / (1024 * 1024);
 
             if (fileSizeMB > 49.5) {
                 await bot.editMessageText(`[ERROR] File is too large (${fileSizeMB.toFixed(1)}MB). Telegram bots can only send up to 50MB.`, { chat_id: chatId, message_id: statusMsg.message_id });
