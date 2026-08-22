@@ -9,6 +9,8 @@ const require = createRequire(import.meta.url);
 // 2. Bring back '__dirname' and '__filename'
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const dotenv = require('dotenv');
+dotenv.config({ path: path.join(__dirname, '.env.local'), override: false });
 
 process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
 

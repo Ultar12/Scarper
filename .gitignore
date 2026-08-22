@@ -1,0 +1,7 @@
+node_modules/
+.env.local
+*.tmp
+find_*.media
+find_*.mp3
+api_audio_*.mp3
+api_youtube_audio_*.mp3
