@@ -34,6 +34,8 @@ async function setAutodl(on) {
     await setVar('AUTODL_ENABLED', on ? 'true' : 'false');
 }
 
+const MAX_WHATSAPP_FILE_BYTES = 2 * 1024 * 1024 * 1024;
+
 function getHeaderCaption(headers) {
     const value = headers['x-media-caption'];
     if (!value) return '';
@@ -84,15 +86,16 @@ async function performDownload(message, targetUrl, options = {}) {
     const silent = Boolean(options.silent);
     const baseUrl = config.PAIRING_URL;
     if (!baseUrl) {
-        if (!silent) await message.sendReply('_Error: download engine URL is not configured._');
+        await message.sendReply('_Error._');
         return;
     }
 
     const engineUrl = `${baseUrl.replace(/\/+$/, '')}/api/download`;
+    const quality = isPublicAdultVideoUrl(targetUrl) ? '&quality=480' : '';
     const sent = silent ? null : await message.sendReply('_Processing..._');
 
     try {
-        const response = await axios.get(`${engineUrl}?url=${encodeURIComponent(targetUrl)}`, {
+        const response = await axios.get(`${engineUrl}?url=${encodeURIComponent(targetUrl)}${quality}`, {
             responseType: 'arraybuffer',
             validateStatus: () => true,
             timeout: 600000,
@@ -101,12 +104,15 @@ async function performDownload(message, targetUrl, options = {}) {
         });
 
         if (response.status >= 400) {
-            if (silent) return;
-            let errorMessage = 'Extraction failed.';
-            try {
-                errorMessage = JSON.parse(Buffer.from(response.data).toString('utf8')).error || errorMessage;
-            } catch {}
-            await message.edit(`_Engine error:_ ${errorMessage}`, message.jid, sent.key);
+            if (silent) await message.sendReply('_Error._');
+            else await message.edit('_Error._', message.jid, sent.key);
+            return;
+        }
+
+        const contentLength = Number(response.headers['content-length'] || 0);
+        if (contentLength > MAX_WHATSAPP_FILE_BYTES) {
+            if (!silent) await message.edit('_File is too large to send._', message.jid, sent.key);
+            else await message.sendReply('_File is too large to send._');
             return;
         }
 
@@ -116,7 +122,8 @@ async function performDownload(message, targetUrl, options = {}) {
         if (contentType.includes('application/json')) {
             const data = JSON.parse(Buffer.from(response.data).toString('utf8'));
             if (data.type !== 'images' || !Array.isArray(data.urls) || data.urls.length === 0) {
-                if (!silent) await message.edit('_Unrecognized response from the engine._', message.jid, sent.key);
+                if (silent) await message.sendReply('_Error._');
+                else await message.edit('_Error._', message.jid, sent.key);
                 return;
             }
 
@@ -134,12 +141,21 @@ async function performDownload(message, targetUrl, options = {}) {
 
         const mediaBuffer = getVideoBuffer(response);
         if (!mediaBuffer.length) throw new Error('The engine returned an empty media response.');
-        if (!silent) await message.edit('_[Ultar Sync] Success_', message.jid, sent.key);
+        if (mediaBuffer.length > MAX_WHATSAPP_FILE_BYTES) {
+            if (!silent) await message.edit('_File is too large to send._', message.jid, sent.key);
+            else await message.sendReply('_File is too large to send._');
+            return;
+        }
         await sendVideoResponse(message, targetUrl, mediaBuffer, headerCaption);
+        if (!silent) await message.edit('_[Ultar Sync] Success_', message.jid, sent.key);
         await deleteSuccessfulGroupLink(message);
     } catch (error) {
-        if (silent) return;
-        await message.edit(`_Network error:_ could not reach the engine.\n${error.message}`, message.jid, sent.key);
+        const tooLarge = /too large|size limit|payload too large|413|request entity/i.test(String(error?.message || ''));
+        if (silent) {
+            await message.sendReply(tooLarge ? '_File is too large to send._' : '_Error._');
+            return;
+        }
+        await message.edit(tooLarge ? '_File is too large to send._' : '_Error._', message.jid, sent.key);
     }
 }
 

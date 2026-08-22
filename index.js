@@ -217,10 +217,11 @@ async function sendTelegramVideo(bot, chatId, videoPath, caption) {
     }
 }
 
-async function downloadPublicVideo(sourceUrl, outputPath) {
+async function downloadPublicVideo(sourceUrl, outputPath, requestedHeight = MAX_MEDIA_HEIGHT) {
+    const maxHeight = Math.max(144, Math.min(MAX_MEDIA_HEIGHT, Number(requestedHeight) || MAX_MEDIA_HEIGHT));
     await youtubedl(sourceUrl, {
         output: outputPath,
-        format: 'bestvideo[height<=2160]+bestaudio/best[height<=2160]/best',
+        format: `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/best`,
         mergeOutputFormat: 'mp4',
         recodeVideo: 'mp4',
         noPlaylist: true,
@@ -2597,7 +2598,8 @@ app.get('/api/download', async (req, res) => {
             const adultPath = path.join(__dirname, `api_adult_${Date.now()}.mp4`);
             let responseHandedOff = false;
             try {
-                await downloadPublicVideo(url, adultPath);
+                const requestedHeight = Number(req.query.quality);
+                await downloadPublicVideo(url, adultPath, Number.isFinite(requestedHeight) && requestedHeight > 0 ? requestedHeight : MAX_MEDIA_HEIGHT);
                 responseHandedOff = true;
                 return res.download(adultPath, 'adult-video-1080p.mp4', (error) => {
                     if (fs.existsSync(adultPath)) fs.unlinkSync(adultPath);
