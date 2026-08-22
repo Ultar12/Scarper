@@ -2982,6 +2982,153 @@ bot.onText(/\/start/i, (msg) => {
 });
 
 
+// MUSIC FINDER — reply to a Telegram audio, voice note, or video with /find.
+// AudD performs audio fingerprint recognition. Set AUDD_API_TOKEN in the runtime environment.
+const TELEGRAM_FIND_MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;
+const MUSIC_RECOGNITION_CLIP_SECONDS = 20;
+
+function getTelegramMediaFileId(reply) {
+    if (!reply) return null;
+    if (reply.audio?.file_id) return reply.audio.file_id;
+    if (reply.voice?.file_id) return reply.voice.file_id;
+    if (reply.video?.file_id) return reply.video.file_id;
+    if (reply.video_note?.file_id) return reply.video_note.file_id;
+
+    const document = reply.document;
+    const mimeType = String(document?.mime_type || '').toLowerCase();
+    const fileName = String(document?.file_name || '').toLowerCase();
+    if (document?.file_id && (
+        mimeType.startsWith('audio/') ||
+        mimeType.startsWith('video/') ||
+        /\.(?:aac|flac|m4a|m4v|mkv|mov|mp3|mp4|mpeg|ogg|opus|wav|webm)$/i.test(fileName)
+    )) return document.file_id;
+
+    return null;
+}
+
+async function downloadTelegramMedia(fileId, outputPath) {
+    const fileLink = await bot.getFileLink(fileId);
+    const response = await axios.get(fileLink, {
+        responseType: 'arraybuffer',
+        timeout: 120000,
+        maxContentLength: TELEGRAM_FIND_MAX_DOWNLOAD_BYTES,
+        maxBodyLength: TELEGRAM_FIND_MAX_DOWNLOAD_BYTES
+    });
+    const buffer = Buffer.from(response.data || []);
+    if (!buffer.length) throw new Error('Telegram returned an empty media file.');
+    if (buffer.length > TELEGRAM_FIND_MAX_DOWNLOAD_BYTES) throw new Error('The media file is larger than the 25 MB Telegram finder limit.');
+    fs.writeFileSync(outputPath, buffer);
+}
+
+async function createMusicRecognitionClip(inputPath, outputPath) {
+    const ffmpegPath = process.env.FFMPEG_PATH || process.env.HEROKU_FFMPEG_BIN || 'ffmpeg';
+    await execFilePromise(ffmpegPath, [
+        '-y', '-i', inputPath,
+        '-t', String(MUSIC_RECOGNITION_CLIP_SECONDS),
+        '-vn', '-ac', '1', '-ar', '44100',
+        '-codec:a', 'libmp3lame', '-b:a', '128k',
+        outputPath
+    ], { timeout: 180000, maxBuffer: 1024 * 1024 });
+    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
+        throw new Error('The media contains no usable audio track.');
+    }
+}
+
+async function recognizeMusicWithAudD(clipPath) {
+    const apiToken = process.env.AUDD_API_TOKEN || process.env.AUDD_TOKEN;
+    if (!apiToken) {
+        throw new Error('Music recognition is not configured. Add AUDD_API_TOKEN to the deployment environment.');
+    }
+
+    const form = new FormData();
+    form.append('api_token', apiToken);
+    form.append('return', 'apple_music,spotify');
+    form.append('file', new Blob([fs.readFileSync(clipPath)], { type: 'audio/mpeg' }), 'music-find.mp3');
+
+    const response = await fetch('https://api.audd.io/', {
+        method: 'POST',
+        body: form,
+        signal: AbortSignal.timeout(120000)
+    });
+    let payload;
+    try {
+        payload = await response.json();
+    } catch {
+        throw new Error(`AudD returned HTTP ${response.status} without valid JSON.`);
+    }
+
+    if (!response.ok || payload?.status === 'error') {
+        throw new Error(payload?.error?.error_message || payload?.error || `AudD recognition failed with HTTP ${response.status}.`);
+    }
+    return payload?.result || null;
+}
+
+function formatMusicRecognitionResult(result) {
+    const lines = [
+        '[FOUND]',
+        `Title: ${result.title || 'Unknown'}`,
+        `Artist: ${result.artist || 'Unknown'}`
+    ];
+    if (result.album) lines.push(`Album: ${result.album}`);
+    if (result.release_date) lines.push(`Release date: ${result.release_date}`);
+    if (result.timecode) lines.push(`Matched at: ${result.timecode}`);
+    if (result.song_link) lines.push(`Song link: ${result.song_link}`);
+    if (result.apple_music?.url) lines.push(`Apple Music: ${result.apple_music.url}`);
+    if (result.spotify?.external_urls?.spotify) lines.push(`Spotify: ${result.spotify.external_urls.spotify}`);
+    lines.push('', 'Recognition is fingerprint-based; remixes, live versions, noise, and short clips may produce no match or a different version.');
+    return lines.join('\\n');
+}
+
+bot.onText(/^\/find(?:@\\w+)?$/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID && !AUTHORIZED.includes(chatId)) return;
+
+    const fileId = getTelegramMediaFileId(msg.reply_to_message);
+    if (!fileId) {
+        return bot.sendMessage(chatId, '[ERROR] Reply to an audio file, voice note, video, video note, or audio/video document with /find.');
+    }
+
+    const uid = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const rawPath = path.join(__dirname, `find_${uid}.media`);
+    const clipPath = path.join(__dirname, `find_${uid}.mp3`);
+    let statusMsg = null;
+
+    try {
+        statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Downloading the replied media...');
+        await downloadTelegramMedia(fileId, rawPath);
+        await bot.editMessageText('[SYSTEM] Extracting a clean audio fingerprint sample...', {
+            chat_id: chatId,
+            message_id: statusMsg.message_id
+        }).catch(() => {});
+        await createMusicRecognitionClip(rawPath, clipPath);
+
+        await bot.editMessageText('[SYSTEM] Identifying the music...', {
+            chat_id: chatId,
+            message_id: statusMsg.message_id
+        }).catch(() => {});
+        const result = await recognizeMusicWithAudD(clipPath);
+        if (!result) throw new Error('No confident music match was returned. Try a clearer 10–20 second section.');
+
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+        await bot.sendMessage(chatId, formatMusicRecognitionResult(result), { disable_web_page_preview: true });
+    } catch (error) {
+        const errorText = error?.message || 'Music recognition failed.';
+        if (statusMsg) {
+            await bot.editMessageText(`[ERROR] ${errorText}`, {
+                chat_id: chatId,
+                message_id: statusMsg.message_id
+            }).catch(() => {});
+        } else {
+            await bot.sendMessage(chatId, `[ERROR] ${errorText}`).catch(() => {});
+        }
+    } finally {
+        for (const filePath of [rawPath, clipPath]) {
+            try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch {}
+        }
+    }
+});
+
+
 // TRANSCRIPT — voice/audio/video → text via Python SpeechRecognition (Google backend, free)
 // Usage: Reply to any voice note, audio, or video with /transcript
 bot.onText(/^\/transcript$/i, async (msg) => {
