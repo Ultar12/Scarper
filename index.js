@@ -2182,6 +2182,52 @@ async function resolveYouTubeTrack(query) {
     };
 }
 
+async function downloadYouTubeAudio(sourceUrl, outputPath) {
+    const cookies = getYouTubeCookiePath();
+    const attempts = [
+        { format: 'bestaudio[ext=m4a]/bestaudio/best', client: 'android_music' },
+        { format: 'bestaudio/best', client: 'web' },
+        { format: 'bestaudio/best', client: null }
+    ];
+    let lastError = null;
+
+    for (const attempt of attempts) {
+        try {
+            const outputTemplate = outputPath.replace(/\.mp3$/i, '.%(ext)s');
+            await youtubedl(sourceUrl, {
+                output: outputTemplate,
+                format: attempt.format,
+                extractAudio: true,
+                audioFormat: 'mp3',
+                audioQuality: '0',
+                noPlaylist: true,
+                noWarnings: true,
+                jsRuntimes: 'nodejs',
+                remoteComponents: 'ejs:github',
+                userAgent: process.env.YOUTUBE_USER_AGENT || MEDIA_USER_AGENT,
+                ...(attempt.client ? { extractorArgs: [`youtube:player_client=${attempt.client}`] } : {}),
+                ...(cookies ? { cookies } : {})
+            });
+
+            const candidates = [
+                outputPath,
+                `${outputPath}.mp3`,
+                outputPath.replace(/\.mp3$/i, '.mp3')
+            ];
+            const actualPath = candidates.find(candidate => fs.existsSync(candidate) && fs.statSync(candidate).size >= 5000);
+            if (actualPath && actualPath !== outputPath) fs.renameSync(actualPath, outputPath);
+            if (fs.existsSync(outputPath) && fs.statSync(outputPath).size >= 5000) return;
+            throw new Error('YouTube returned no usable audio file.');
+        } catch (error) {
+            lastError = error;
+            if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+            console.warn(`[PLAY] YouTube audio attempt failed: ${error.message}`);
+        }
+    }
+
+    throw lastError || new Error('YouTube audio download failed.');
+}
+
 
       app.post('/api/play-hook', async (req, res) => {
     const rawQuery = cleanTrackSearchText(req.body?.query);
@@ -2327,8 +2373,40 @@ async function resolveYouTubeTrack(query) {
             }
         }
 
+        // SoundCloud does not contain every release. Use the already-resolved
+        // YouTube result as a broader fallback when SoundCloud has no usable track.
+        if (youtubeTrack?.url) {
+            const youtubeAudioPath = path.join(__dirname, `api_youtube_audio_${Date.now()}.mp3`);
+            try {
+                await downloadYouTubeAudio(youtubeTrack.url, youtubeAudioPath);
+                const stats = fs.statSync(youtubeAudioPath);
+                res.setHeader('Content-Type', 'audio/mpeg');
+                res.setHeader('Content-Disposition', 'attachment; filename="audio.mp3"');
+                res.setHeader('X-Track-Title', encodeURIComponent(youtubeTrack.title || rawQuery));
+                res.setHeader('X-Track-Artist', encodeURIComponent(youtubeTrack.artist || ''));
+                res.setHeader('X-Track-Source', 'youtube-fallback');
+                res.setHeader('Content-Length', stats.size);
+
+                const readStream = fs.createReadStream(youtubeAudioPath);
+                readStream.pipe(res);
+                readStream.on('close', () => {
+                    if (fs.existsSync(youtubeAudioPath)) fs.unlinkSync(youtubeAudioPath);
+                });
+                readStream.on('error', (streamError) => {
+                    console.error('[API YOUTUBE AUDIO STREAM ERROR]', streamError.message);
+                    if (fs.existsSync(youtubeAudioPath)) fs.unlinkSync(youtubeAudioPath);
+                    if (!res.headersSent) res.status(500).json({ error: streamError.message });
+                    else res.end();
+                });
+                return;
+            } catch (youtubeError) {
+                if (fs.existsSync(youtubeAudioPath)) fs.unlinkSync(youtubeAudioPath);
+                lastError = `SoundCloud and YouTube failed: ${youtubeError.message}`;
+            }
+        }
+
         if (!res.headersSent) {
-            res.status(500).json({ error: `All tracks failed. Last error: ${lastError}` });
+            res.status(500).json({ error: `All music sources failed. Last error: ${lastError}` });
         }
 
     } catch (err) {
