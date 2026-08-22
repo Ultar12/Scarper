@@ -29,6 +29,7 @@ const QRCode = require('qrcode');
 const { remote } = require('webdriverio');
 const axios = require('axios');
 const cheerio = require('cheerio');
+const ytSearch = require('yt-search');
 const pdf = require('pdf-parse');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
@@ -2132,15 +2133,76 @@ app.post('/api/raganork-hook', async (req, res) => {
 
 global.waitingClients = new Map();
 
+const PLAY_CACHE_TTL_MS = 10 * 60 * 1000;
+const PLAY_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
+
+function cleanTrackSearchText(value) {
+    return String(value || '')
+        .replace(/[\u0000-\u001f\u007f]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 300);
+}
+
+function decodeTelegramHeader(value, fallback = '') {
+    if (!value) return fallback;
+    try {
+        return decodeURIComponent(String(value));
+    } catch {
+        return String(value);
+    }
+}
+
+function safeAudioFilename(value) {
+    const cleaned = cleanTrackSearchText(value)
+        .replace(/[<>:"/\\|?*]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 100);
+    return `${cleaned || 'audio'}.mp3`;
+}
+
+async function resolveYouTubeTrack(query) {
+    const normalizedQuery = cleanTrackSearchText(query);
+    if (!normalizedQuery) throw new Error('Enter a song name or artist first.');
+
+    const searchResult = await ytSearch(normalizedQuery);
+    const video = (searchResult?.videos || []).find(candidate => candidate?.videoId && candidate?.title);
+    if (!video) throw new Error(`YouTube returned no music result for "${normalizedQuery}".`);
+
+    const title = cleanTrackSearchText(video.title);
+    const artist = cleanTrackSearchText(video.author?.name || video.author?.username || '');
+    const searchQuery = cleanTrackSearchText([artist, title].filter(Boolean).join(' '));
+
+    return {
+        title,
+        artist,
+        url: video.url,
+        searchQuery: searchQuery || normalizedQuery
+    };
+}
+
 
       app.post('/api/play-hook', async (req, res) => {
-    const { query } = req.body;
+    const rawQuery = cleanTrackSearchText(req.body?.query);
 
-    if (!query) {
+    if (!rawQuery) {
         return res.status(400).json({ error: "Missing query." });
     }
 
     try {
+        let youtubeTrack;
+        try {
+            // Resolve the user's request against YouTube first so SoundCloud receives
+            // the real title and artist instead of an ambiguous shorthand query.
+            youtubeTrack = await resolveYouTubeTrack(rawQuery);
+            console.log(`[PLAY] YouTube resolved "${rawQuery}" -> "${youtubeTrack.searchQuery}"`);
+        } catch (youtubeError) {
+            // Keep the command usable when YouTube is temporarily unavailable.
+            console.warn(`[PLAY] YouTube resolution failed; using original query: ${youtubeError.message}`);
+            youtubeTrack = { title: rawQuery, artist: '', searchQuery: rawQuery };
+        }
+
         const scdl = require('soundcloud-downloader').default;
 
         let clientId;
@@ -2151,7 +2213,7 @@ global.waitingClients = new Map();
         }
 
         const searchRes = await scdl.search({
-            query: query,
+            query: youtubeTrack.searchQuery,
             resourceType: 'tracks',
             limit: 5,
             client_id: clientId
@@ -2239,6 +2301,8 @@ global.waitingClients = new Map();
 
                 res.setHeader('Content-Type', 'audio/mpeg');
                 res.setHeader('Content-Disposition', 'attachment; filename="audio.mp3"');
+                res.setHeader('X-Track-Title', encodeURIComponent(youtubeTrack.title || track.title || 'audio'));
+                res.setHeader('X-Track-Artist', encodeURIComponent(youtubeTrack.artist || track.user?.username || ''));
                 res.setHeader('Content-Length', stats.size);
 
                 const readStream = fs.createReadStream(mp3Path);
@@ -3665,7 +3729,7 @@ bot.onText(/\/play\s+(.+)/, async (msg, match) => {
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
 
     const query = match[1].trim();
-    playCache[chatId] = query; // Save the search term in memory
+    playCache[chatId] = { query, createdAt: Date.now(), processing: false };
 
     await bot.sendMessage(chatId, `[SYSTEM] Target Acquired: "${query}"\n\nClick below to extract:`, {
         reply_markup: {
@@ -3679,6 +3743,96 @@ bot.onText(/\/play\s+(.+)/, async (msg, match) => {
             ]
         }
     });
+});
+
+// Telegram sends button presses as callback_query updates. This listener was
+// missing, so the /play audio button could render but never do any work.
+bot.on('callback_query', async (callbackQuery) => {
+    const action = callbackQuery?.data;
+    const message = callbackQuery?.message;
+    if (!action || !message || !action.startsWith('action_play_')) return;
+
+    const chatId = String(message.chat.id);
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && !AUTHORIZED.includes(chatId)) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Not authorized.' }).catch(() => {});
+        return;
+    }
+
+    await bot.answerCallbackQuery(callbackQuery.id, { text: 'Working…' }).catch(() => {});
+
+    if (action === 'action_play_cancel') {
+        delete playCache[chatId];
+        await bot.editMessageText('[CANCELLED] Audio request cancelled.', {
+            chat_id: chatId,
+            message_id: message.message_id
+        }).catch(() => {});
+        return;
+    }
+
+    if (action !== 'action_play_audio') return;
+
+    const cached = playCache[chatId];
+    const query = typeof cached === 'string' ? cached : cached?.query;
+    if (!query || (cached?.createdAt && Date.now() - cached.createdAt > PLAY_CACHE_TTL_MS)) {
+        delete playCache[chatId];
+        await bot.editMessageText('[ERROR] This audio request expired. Send /play again.', {
+            chat_id: chatId,
+            message_id: message.message_id
+        }).catch(() => {});
+        return;
+    }
+
+    if (cached && typeof cached === 'object' && cached.processing) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'This request is already processing.' }).catch(() => {});
+        return;
+    }
+    if (cached && typeof cached === 'object') cached.processing = true;
+
+    try {
+        await bot.editMessageText(`[SYSTEM] Searching YouTube for the real track name, then checking SoundCloud…`, {
+            chat_id: chatId,
+            message_id: message.message_id
+        }).catch(() => {});
+
+        const response = await axios.post(`http://127.0.0.1:${PORT}/api/play-hook`, { query }, {
+            responseType: 'arraybuffer',
+            timeout: PLAY_REQUEST_TIMEOUT_MS,
+            validateStatus: () => true
+        });
+
+        if (response.status >= 400) {
+            let errorText = 'Audio download failed.';
+            try {
+                const body = JSON.parse(Buffer.from(response.data).toString('utf8'));
+                if (body?.error) errorText = body.error;
+            } catch {}
+            throw new Error(errorText);
+        }
+
+        const audioBuffer = Buffer.from(response.data || []);
+        if (audioBuffer.length < 5000) throw new Error('SoundCloud returned an empty audio file.');
+
+        const title = decodeTelegramHeader(response.headers['x-track-title'], query);
+        const artist = decodeTelegramHeader(response.headers['x-track-artist'], '');
+        await bot.sendAudio(chatId, audioBuffer, {
+            title: title.slice(0, 255),
+            performer: artist.slice(0, 255),
+            caption: `[SUCCESS] ${title}`
+        }, {
+            filename: safeAudioFilename(title),
+            contentType: 'audio/mpeg'
+        });
+
+        await bot.deleteMessage(chatId, message.message_id).catch(() => {});
+    } catch (error) {
+        await bot.editMessageText(`[ERROR] ${error.message || 'Audio download failed.'}`, {
+            chat_id: chatId,
+            message_id: message.message_id
+        }).catch(() => {});
+    } finally {
+        delete playCache[chatId];
+    }
 });
 
 
