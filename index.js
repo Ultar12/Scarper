@@ -3141,21 +3141,96 @@ async function recognizeMusicWithAudD(clipPath) {
     return payload?.result || null;
 }
 
+function escapeTelegramHtml(value) {
+    return String(value || '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+}
+
+function safeHttpUrl(value) {
+    try {
+        const url = new URL(String(value));
+        return ['http:', 'https:'].includes(url.protocol) ? url.href : null;
+    } catch {
+        return null;
+    }
+}
+
+function getMusicRecognitionButtons(result) {
+    const buttons = [];
+    const songLink = safeHttpUrl(result.song_link);
+    const appleMusicUrl = safeHttpUrl(result.apple_music?.url);
+    const spotifyUrl = safeHttpUrl(result.spotify?.external_urls?.spotify);
+    if (songLink) buttons.push([{ text: 'Open song link', url: songLink }]);
+    if (appleMusicUrl || spotifyUrl) {
+        buttons.push([
+            ...(appleMusicUrl ? [{ text: 'Apple Music', url: appleMusicUrl }] : []),
+            ...(spotifyUrl ? [{ text: 'Spotify', url: spotifyUrl }] : [])
+        ]);
+    }
+    return buttons;
+}
+
 function formatMusicRecognitionResult(result) {
     const lines = [
-        '[FOUND]',
-        `Title: ${result.title || 'Unknown'}`,
-        `Artist: ${result.artist || 'Unknown'}`
+        '<b>Music Found</b>',
+        '',
+        `<b>Title:</b> ${escapeTelegramHtml(result.title || 'Unknown')}`,
+        `<b>Artist:</b> ${escapeTelegramHtml(result.artist || 'Unknown')}`
     ];
-    if (result.album) lines.push(`Album: ${result.album}`);
-    if (result.release_date) lines.push(`Release date: ${result.release_date}`);
-    if (result.timecode) lines.push(`Matched at: ${result.timecode}`);
-    if (result.song_link) lines.push(`Song link: ${result.song_link}`);
-    if (result.apple_music?.url) lines.push(`Apple Music: ${result.apple_music.url}`);
-    if (result.spotify?.external_urls?.spotify) lines.push(`Spotify: ${result.spotify.external_urls.spotify}`);
-    lines.push('', 'Recognition is fingerprint-based; remixes, live versions, noise, and short clips may produce no match or a different version.');
+    if (result.album) lines.push(`<b>Album:</b> ${escapeTelegramHtml(result.album)}`);
+    if (result.release_date) lines.push(`<b>Release date:</b> ${escapeTelegramHtml(result.release_date)}`);
+    if (result.timecode) lines.push(`<b>Matched at:</b> ${escapeTelegramHtml(result.timecode)}`);
+    lines.push('', '<i>Identified by audio fingerprint. Remixes, live versions, noise, and short clips may return a different version or no match.</i>');
     return lines.join('\\n');
 }
+
+async function recognizeMusicFromBuffer(buffer, fileName = 'music-find.bin') {
+    if (!Buffer.isBuffer(buffer) || buffer.length === 0) throw new Error('The uploaded media is empty.');
+    if (buffer.length > TELEGRAM_FIND_MAX_DOWNLOAD_BYTES) throw new Error('The media file is larger than the 25 MB finder limit.');
+
+    const uid = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const rawPath = path.join(__dirname, `find_api_${uid}.media`);
+    const clipPath = path.join(__dirname, `find_api_${uid}.mp3`);
+    try {
+        fs.writeFileSync(rawPath, buffer);
+        await createMusicRecognitionClip(rawPath, clipPath);
+        const result = await recognizeMusicWithAudD(clipPath);
+        if (!result) throw new Error('No confident music match was returned. Try a clearer 10–20 second section.');
+        return {
+            result,
+            text: formatMusicRecognitionResult(result),
+            buttons: getMusicRecognitionButtons(result),
+            fileName
+        };
+    } finally {
+        for (const filePath of [rawPath, clipPath]) {
+            try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch {}
+        }
+    }
+}
+
+function isFindApiAuthorized(req) {
+    const expectedToken = process.env.FIND_API_TOKEN;
+    if (!expectedToken) return true;
+    const bearer = String(req.get('authorization') || '').replace(/^Bearer\\s+/i, '').trim();
+    const apiKey = String(req.get('x-api-key') || '').trim();
+    return bearer === expectedToken || apiKey === expectedToken;
+}
+
+app.post('/api/find', upload.single('file'), async (req, res) => {
+    if (!isFindApiAuthorized(req)) return res.status(401).json({ success: false, error: 'Invalid finder API token.' });
+    if (!req.file?.buffer) return res.status(400).json({ success: false, error: 'Upload an audio or video file in the file field.' });
+    try {
+        const recognition = await recognizeMusicFromBuffer(req.file.buffer, req.file.originalname);
+        return res.json({ success: true, ...recognition });
+    } catch (error) {
+        console.error('[API FIND ERROR]', error.message);
+        return res.status(422).json({ success: false, error: error.message });
+    }
+});
 
 bot.onText(/^\/find(?:@\\w+)?$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
@@ -3188,7 +3263,11 @@ bot.onText(/^\/find(?:@\\w+)?$/i, async (msg) => {
         if (!result) throw new Error('No confident music match was returned. Try a clearer 10–20 second section.');
 
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-        await bot.sendMessage(chatId, formatMusicRecognitionResult(result), { disable_web_page_preview: true });
+        await bot.sendMessage(chatId, formatMusicRecognitionResult(result), {
+            parse_mode: 'HTML',
+            disable_web_page_preview: true,
+            reply_markup: { inline_keyboard: getMusicRecognitionButtons(result) }
+        });
     } catch (error) {
         const errorText = error?.message || 'Music recognition failed.';
         if (statusMsg) {
