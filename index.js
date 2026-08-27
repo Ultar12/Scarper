@@ -35,14 +35,26 @@ async function loginToWsjobs(page, credentials = {}) {
     }
 
     const passwordField = page.locator('#password');
-    if (await passwordField.count()) {
-        await page.fill('#account', username);
+    if (await passwordField.isVisible().catch(() => false)) {
+        await page.locator('#account').fill(username);
         await passwordField.fill(password);
         await page.getByRole('button', { name: /^login$/i }).last().click();
-        await page.waitForURL(url => !new URL(url).pathname.endsWith(WSJOBS_LOGIN_PATH), { timeout: 15000 }).catch(() => {});
+
+        // The new site is a client-side app and may not change the URL immediately.
+        // Wait for the visible login form to disappear, then reopen /account.
+        await page.waitForFunction(() => {
+            const field = document.querySelector('#password');
+            return !field || field.offsetParent === null;
+        }, { timeout: 15000 }).catch(() => {});
+        await page.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
+        });
+        await page.waitForTimeout(2000);
     }
 
-    if (new URL(page.url()).pathname.endsWith(WSJOBS_LOGIN_PATH)) {
+    const loginStillVisible = await page.locator('#password').isVisible().catch(() => false);
+    if (new URL(page.url()).pathname.endsWith(WSJOBS_LOGIN_PATH) || loginStillVisible) {
         throw new Error('Wsjobs login did not complete. Check the account, password, and site response.');
     }
 }
@@ -4809,6 +4821,8 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
     let wBrowser = null;
     let wContext = null;
     let wPage = null; // Defined outside for safety
+    let balanceVideo = null;
+    let balanceErrorScreenshot = null;
 
     try {
         if (globalTaskBrowser && globalTaskBrowser.isConnected()) {
@@ -4822,9 +4836,13 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             globalTaskBrowser = wBrowser;
         }
 
+        const balanceVideoDir = path.join(__dirname, 'videos');
+        if (!fs.existsSync(balanceVideoDir)) fs.mkdirSync(balanceVideoDir, { recursive: true });
+
         wContext = await wBrowser.newContext({
             userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
-            viewport: { width: 412, height: 915 }
+            viewport: { width: 412, height: 915 },
+            recordVideo: { dir: balanceVideoDir, size: { width: 412, height: 915 } }
         });
 
         wPage = await wContext.newPage();
@@ -4889,16 +4907,51 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             return '0.00';
         });
 
-        await wContext.close().catch(() => {});
     } catch(e) {
         console.log(`[BALANCE ERROR]: ${e.message}`);
         wsjobsBal = 'Error';
+        balanceErrorScreenshot = wPage
+            ? await wPage.screenshot({ type: 'png' }).catch(() => null)
+            : null;
+    } finally {
+        // Playwright makes the recorded file available after the context closes.
+        balanceVideo = wPage?.video?.() || null;
         if (wContext) await wContext.close().catch(() => {});
     }
 
-    // --- 2. FINAL CLEAN OUTPUT ---
-    bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
-    bot.sendMessage(chatId, `Wsjobs: ${wsjobsBal}`);
+    // --- 2. DIAGNOSTIC DELIVERY ---
+    if (wsjobsBal === 'Error') {
+        if (balanceErrorScreenshot) {
+            await bot.sendPhoto(chatId, balanceErrorScreenshot, {
+                caption: '[BALANCE ERROR] Screen state captured before cleanup.'
+            }, { filename: 'wsjobs_balance_error.png' }).catch(() => {});
+        }
+
+        if (balanceVideo) {
+            const videoPath = await balanceVideo.path().catch(() => null);
+            if (videoPath && fs.existsSync(videoPath)) {
+                await bot.sendDocument(chatId, videoPath, {
+                    caption: '[BALANCE ERROR] Recorded browser session.'
+                }, {
+                    filename: 'wsjobs_balance_error.webm',
+                    contentType: 'video/webm'
+                }).catch(() => {});
+                try { fs.unlinkSync(videoPath); } catch {}
+            }
+        }
+    }
+
+    // Successful runs do not need to retain the recording on disk.
+    if (wsjobsBal !== 'Error' && balanceVideo) {
+        const videoPath = await balanceVideo.path().catch(() => null);
+        if (videoPath && fs.existsSync(videoPath)) {
+            try { fs.unlinkSync(videoPath); } catch {}
+        }
+    }
+
+    // --- 3. FINAL CLEAN OUTPUT ---
+    await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+    await bot.sendMessage(chatId, `Wsjobs: ${wsjobsBal}`).catch(() => {});
 });
 
 

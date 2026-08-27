@@ -5,6 +5,7 @@ node_modules/
 cookies.json
 cookies.txt
 google_cookies.json
+videos/
 
 *.tmp
 find_*.media
