@@ -10,7 +10,9 @@ const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const dotenv = require('dotenv');
+// Runtime environment variables win first; local .env.local values win over .env.
 dotenv.config({ path: path.join(__dirname, '.env.local'), override: false });
+dotenv.config({ path: path.join(__dirname, '.env'), override: false });
 
 // --- WSJOBS SITE CONFIGURATION ---
 // Keep credentials outside source control. Set these in the runtime environment.
