@@ -10,8 +10,7 @@ const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const dotenv = require('dotenv');
-// Runtime environment variables win first; local .env.local values win over .env.
-dotenv.config({ path: path.join(__dirname, '.env.local'), override: false });
+// Runtime environment variables win over values loaded from the repository .env file.
 dotenv.config({ path: path.join(__dirname, '.env'), override: false });
 
 // --- WSJOBS SITE CONFIGURATION ---
