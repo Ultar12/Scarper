@@ -1,5 +1,11 @@
 node_modules/
-.env.local
+.env
+.env.*
+!.env.example
+cookies.json
+cookies.txt
+google_cookies.json
+
 *.tmp
 find_*.media
 find_*.mp3

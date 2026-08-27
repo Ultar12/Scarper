@@ -12,6 +12,41 @@ const __dirname = path.dirname(__filename);
 const dotenv = require('dotenv');
 dotenv.config({ path: path.join(__dirname, '.env.local'), override: false });
 
+// --- WSJOBS SITE CONFIGURATION ---
+// Keep credentials outside source control. Set these in the runtime environment.
+const WSJOBS_BASE_URL = (process.env.WSJOBS_BASE_URL || 'https://ws.g.pro').replace(/\/+$/, '');
+const WSJOBS_LOGIN_PATH = '/login';
+const WSJOBS_ACCOUNT_PATH = '/account';
+const WSJOBS_TASK_PATH = '/task';
+const WSJOBS_WITHDRAW_PATH = '/withdraw';
+const WSJOBS_USERNAME = process.env.WSJOBS_USERNAME || '';
+const WSJOBS_PASSWORD = process.env.WSJOBS_PASSWORD || '';
+const WSJOBS_WITHDRAW_PIN = process.env.WSJOBS_WITHDRAW_PIN || '';
+
+function wsjobsUrl(pathname) {
+    return `${WSJOBS_BASE_URL}${pathname.startsWith('/') ? pathname : `/${pathname}`}`;
+}
+
+async function loginToWsjobs(page, credentials = {}) {
+    const username = credentials.username || WSJOBS_USERNAME;
+    const password = credentials.password || WSJOBS_PASSWORD;
+    if (!username || !password) {
+        throw new Error('Missing WSJOBS_USERNAME/WSJOBS_PASSWORD configuration.');
+    }
+
+    const passwordField = page.locator('#password');
+    if (await passwordField.count()) {
+        await page.fill('#account', username);
+        await passwordField.fill(password);
+        await page.getByRole('button', { name: /^login$/i }).last().click();
+        await page.waitForURL(url => !new URL(url).pathname.endsWith(WSJOBS_LOGIN_PATH), { timeout: 15000 }).catch(() => {});
+    }
+
+    if (new URL(page.url()).pathname.endsWith(WSJOBS_LOGIN_PATH)) {
+        throw new Error('Wsjobs login did not complete. Check the account, password, and site response.');
+    }
+}
+
 process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
 
 
@@ -1135,19 +1170,13 @@ async function runAutoTaskScanner(chatId) {
 
         // --- 2. THE INCOGNITO LOGIN FIX ---
         // The radar must log in quickly so the site actually shows it the tasks
-        await scanPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await scanPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded', timeout: 30000 });
         await delay(3000);
         
-        if (await scanPage.$('input[type="password"]')) {
-            await scanPage.fill('input[type="text"], input[type="tel"]', '09163916500'); 
-            await scanPage.fill('input[type="password"]', 'Emmamama');
-            const loginBtn = scanPage.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last();
-            await loginBtn.dispatchEvent('click');
-            await scanPage.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
-        }
+        await loginToWsjobs(scanPage);
 
         // Now teleport to the task board as an authenticated user
-        await scanPage.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await scanPage.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded', timeout: 30000 });
         await delay(4000);
 
         // --- 3. DOM FREQUENCY ANALYZER ---
@@ -4823,22 +4852,14 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             }, 300);
         });
 
-        await wPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        await wPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
         await delay(4000);
 
         // LOGIN LOGIC
-        const loginInput = await wPage.$('input[type="text"], input[type="tel"]');
-        if (loginInput) {
-            await wPage.fill('input[type="text"], input[type="tel"]', '09163916500');
-            await wPage.fill('input[type="password"]', 'Emmamama');
-            const loginBtn = wPage.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last();
-            await loginBtn.dispatchEvent('click');
-            
-            await wPage.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
-        }
+        await loginToWsjobs(wPage);
 
         // TELEPORT (This fixed your withdraw, so it stays here too)
-        await wPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        await wPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
         await delay(5000);
 
         // --- PRECISION BALANCE SCRAPER (The fix for "639" issues) ---
@@ -4948,19 +4969,12 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         });
 
         await bot.editMessageText('[SYSTEM] Navigating to Account...', { chat_id: chatId, message_id: statusMsg.message_id });
-        await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
         await delay(4000);
 
-        const loginInput = await masterPage.$('input[type="text"], input[type="tel"]');
-        if (loginInput) {
-            await masterPage.fill('input[type="text"], input[type="tel"]', '09163916500');
-            await masterPage.fill('input[type="password"]', 'Emmamama');
-            const loginBtn = masterPage.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last();
-            await loginBtn.dispatchEvent('click');
-            await masterPage.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
-        }
+        await loginToWsjobs(masterPage);
 
-        await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
         await delay(5000);
 
         // --- 2. PRECISION BALANCE SCRAPER ---
@@ -5032,7 +5046,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
             console.log(`[TAB ${i + 1}] Processing...`);
 
-            await p.goto('https://www.wsjobs-ng.com/account/withdraw', { waitUntil: 'domcontentloaded' });
+            await p.goto(wsjobsUrl(WSJOBS_WITHDRAW_PATH), { waitUntil: 'domcontentloaded' });
             await delay(4000);
 
             // 1. Click the Amount Chip
@@ -5087,7 +5101,10 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             await passInput.waitFor({ state: 'visible', timeout: 15000 });
             await passInput.click();
             await p.evaluate(el => el.value = '', await passInput.elementHandle()); 
-            await passInput.type('111111', { delay: 100 }); 
+            if (!WSJOBS_WITHDRAW_PIN) {
+                throw new Error('Missing WSJOBS_WITHDRAW_PIN configuration.');
+            }
+            await passInput.type(WSJOBS_WITHDRAW_PIN, { delay: 100 });
             await p.keyboard.press('Tab'); 
             await delay(1500);
 
@@ -5158,7 +5175,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         // ==========================================
         await bot.editMessageText(`[SYSTEM] Strike complete. Refreshing account page...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
 
-        await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
         await delay(5000);
 
         const finalSnap = await masterPage.screenshot({ type: 'png' });
@@ -5306,17 +5323,11 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
 
         // --- 2. FAST REFRESH LOGIC ---
         await updateStatus('[SYSTEM] Synchronizing Account State...');
-        await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
         await delay(3000);
 
         // Check if login is needed
-        if (await masterPage.$('input[type="password"]')) {
-            await masterPage.fill('input[type="text"]', '09163916500');
-            await masterPage.fill('input[type="password"]', 'Emmamama');
-            await masterPage.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last().click();
-            await masterPage.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
-            await masterPage.goto('https://www.wsjobs-ng.com/account');
-        }
+        await loginToWsjobs(masterPage);
 
 
                 // --- 3. PRECISION BALANCE SCRAPER (INITIAL) ---
@@ -5340,7 +5351,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         });
 
         await updateStatus(`[SYSTEM] Teleporting to Task Page...`);
-        await masterPage.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
+        await masterPage.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded' });
         await delay(4000);
 
         // --- 4. TARGET SCAN & TAB SPAWNING ---
@@ -5361,7 +5372,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         for (let i = 1; i < totalTabs; i++) {
             const p = await context.newPage();
             pages.push(p);
-            await p.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
+            await p.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded' });
         }
 
         // --- 5. SYNCHRONIZED STRIKE ---
@@ -5436,7 +5447,7 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await updateStatus('[SYSTEM] Fetching Final Balance...');
         
         // Initial navigation to the account page
-        await masterPage.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+        await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
         await delay(2000);
         
         // Force Refresh 1
@@ -5575,16 +5586,10 @@ bot.on('message', async (msg) => {
 
                     // Dynamic Login
                     await updateStatus('[WT BURNER] Injecting credentials into Wsjobs...');
-                    await page1.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+                    await page1.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
                     await delay(3000);
 
-                    if (await page1.$('input[type="password"]')) {
-                        await page1.fill('input[type="text"], input[type="tel"]', session.username);
-                        await page1.fill('input[type="password"]', session.password);
-                        await page1.locator('text=/LOGIN|SIGN IN|SHIGA|ENTRAR/i').last().click();
-                        await page1.waitForURL('**/account', { timeout: 10000 }).catch(() => {});
-                        await page1.goto('https://www.wsjobs-ng.com/account');
-                    }
+                    await loginToWsjobs(page1, { username: session.username, password: session.password });
                 } else {
                     await updateStatus('[WT BURNER] Using warm Burner session...');
                     pages.push(session.masterPage); // Grab the master page from memory
@@ -5593,7 +5598,7 @@ bot.on('message', async (msg) => {
                 const masterTab = pages[0];
 
                 // --- 2. PRECISION BALANCE SCRAPER ---
-                await masterTab.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+                await masterTab.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
                 await delay(3000);
                 
                 initialBalanceNum = await masterTab.evaluate(() => {
@@ -5611,7 +5616,7 @@ bot.on('message', async (msg) => {
 
                 // --- 3. TARGET SCANNING ---
                 await updateStatus('[WT BURNER] Teleporting to Task Board...');
-                await masterTab.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
+                await masterTab.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded' });
                 await delay(4000);
 
                 let targetCount = await masterTab.evaluate((suffix) => {
@@ -5632,7 +5637,7 @@ bot.on('message', async (msg) => {
                 for (let i = 1; i < totalTabs; i++) {
                     const p = await session.context.newPage();
                     pages.push(p);
-                    await p.goto('https://www.wsjobs-ng.com/task/whatsapp', { waitUntil: 'domcontentloaded' });
+                    await p.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded' });
                 }
 
                 // --- 4. SYNCHRONIZED SEND STRIKE ---
@@ -5698,7 +5703,7 @@ bot.on('message', async (msg) => {
 
                 // --- 6. FINAL BALANCE CALCULATION ---
                 await updateStatus('[WT BURNER] Fetching Final Balance...');
-                await masterTab.goto('https://www.wsjobs-ng.com/account', { waitUntil: 'domcontentloaded' });
+                await masterTab.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
                 await delay(2000);
                 await masterTab.reload({ waitUntil: 'domcontentloaded' });
                 await delay(5000);
