@@ -4497,53 +4497,38 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
 
 
 
-
+// Matches exactly: /task <number>
 bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    // match[1] holds your <number> (the 2 or 3 digit suffix)
     const targetSuffix = match[1]; 
     let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Strike Protocol: ${targetSuffix} ⚡\nInitializing tabs...`);
     const msgId = statusMsg.message_id;
 
-    
     const updateStatus = async (text) => {
         await bot.editMessageText(text, { chat_id: chatId, message_id: msgId }).catch(() => {});
     };
 
     let browser = null;
-    let masterPage = null;
-    let taskRecorder = null;
-    let taskVideoPath = null;
-    let taskRecorderStopped = false;
     let pages = [];
     let totalPoints = 0;
     let totalSuccess = 0;
     let loopCount = 1;
 
-    const stopTaskRecorder = async () => {
-        if (taskRecorder && !taskRecorderStopped) {
-            await taskRecorder.stop().catch(() => {});
-            taskRecorderStopped = true;
-        }
-    };
-
     try {
         browser = await launchScraperBrowser();
-        const taskVideoDir = path.join(__dirname, 'videos');
-        if (!fs.existsSync(taskVideoDir)) fs.mkdirSync(taskVideoDir, { recursive: true });
 
         // Human Sniper to automatically kill random popups/modals
         const injectHumanSniper = async (page) => {
             await page.evaluateOnNewDocument(() => {
                 setInterval(() => {
-                    const okBtn = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
+                    const okBtn = Array.from(document.querySelectorAll('button, [class*="btn"]')).find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
                     if (okBtn) {
                         const rect = okBtn.getBoundingClientRect();
                         ['mousedown', 'mouseup', 'click'].forEach(t => okBtn.dispatchEvent(new MouseEvent(t, { view: window, bubbles: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 })));
                         setTimeout(() => {
-                            const modal = okBtn.closest('div[class*="modal"], div[class*="mask"]');
+                            const modal = okBtn.closest('div[class*="modal"], div[class*="mask"], .van-overlay');
                             if (modal) modal.remove();
                             document.body.style.filter = 'none';
                             document.body.style.overflow = 'auto';
@@ -4554,17 +4539,16 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
         };
 
         // Create Master Page & Login
-        masterPage = await browser.newPage();
+        const masterPage = await browser.newPage();
         pages.push(masterPage);
         await masterPage.setViewport({ width: 412, height: 915 });
-        taskVideoPath = path.join(taskVideoDir, `wsjobs_task_${Date.now()}.mp4`);
-        taskRecorder = new PuppeteerScreenRecorder(masterPage, { fps: 30 });
-        await taskRecorder.start(taskVideoPath);
         await injectHumanSniper(masterPage);
 
         await updateStatus('[SYSTEM] Synchronizing Account State...');
         await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
-        await delay(3000);
+        
+        // Smart Wait instead of fixed delay
+        await masterPage.waitForSelector('input, button, .account-card, .van-cell', { timeout: 15000 }).catch(()=>{});
         await loginToWsjobsPuppeteer(masterPage);
 
         let isLooping = true;
@@ -4574,25 +4558,38 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
             
             // Navigate master to task page to scan available targets
             await masterPage.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded' });
-            await delay(4000);
+            
+            // SMART WAIT: Wait until the Send Task buttons actually appear in the DOM
+            await masterPage.waitForFunction(() => {
+                return Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
+                    .some(el => /Send Task|SEND/i.test(el.innerText?.trim()));
+            }, { timeout: 15000 }).catch(()=>{});
+
+            await delay(1000); // Brief pause for animations
 
             // Scan how many numbers match the suffix
             const targetCount = await masterPage.evaluate((suffix) => {
-                const btns = Array.from(document.querySelectorAll('*')).filter(el => /Send Task|SEND/i.test(el.innerText?.trim()));
+                // Fix: Target ACTUAL buttons, not just any element
+                const allSendBtns = Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
+                    .filter(el => /Send Task|SEND/i.test(el.innerText?.trim()) && el.offsetHeight > 0);
+                
                 let found = 0;
-                for (let btn of btns) {
-                    if (btn.closest('div, .list-item, .account-card')?.innerText.includes(suffix)) found++;
+                for (let btn of allSendBtns) {
+                    // Check if its parent card container holds the target suffix
+                    if (btn.closest('div, .list-item, .account-card, .van-cell')?.innerText.includes(suffix)) {
+                        found++;
+                    }
                 }
                 return found;
             }, targetSuffix);
 
             if (targetCount === 0) {
-                if (loopCount === 1) throw new Error(`Target ${targetSuffix} not found on page.`);
+                if (loopCount === 1) throw new Error(`Target ${targetSuffix} not found or buttons failed to load.`);
                 await updateStatus(`[SYSTEM] No more valid targets found for ${targetSuffix}. Ending loop.`);
                 break;
             }
 
-            // Cap the tabs to 4 maximum per run (as requested)
+            // Cap the tabs to 4 maximum per run
             const activeTabsCount = Math.min(targetCount, 4);
             await updateStatus(`[SYSTEM] Loop ${loopCount}: Found targets. Preparing ${activeTabsCount} tab(s)...`);
 
@@ -4609,34 +4606,55 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
             
             // Synchronize all active tabs to the task board
             await Promise.all(activePages.map(p => p.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded' })));
-            await delay(4000); 
+            
+            // Wait for buttons to render on all tabs
+            await Promise.all(activePages.map(p => p.waitForFunction(() => {
+                return Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
+                    .some(el => /Send Task|SEND/i.test(el.innerText?.trim()));
+            }, { timeout: 15000 }).catch(()=>{})));
+            
+            await delay(1000); 
 
-            // Assign 1 specific number to each tab and click "Send Task"
+            // Assign 1 specific number to each tab and execute an aggressive click
             await updateStatus(`[SYSTEM] Loop ${loopCount}: Claiming 1 number per tab...`);
             await Promise.all(activePages.map(async (p, idx) => {
                 await p.evaluate((suffix, index) => {
-                    const btns = Array.from(document.querySelectorAll('*')).filter(el => 
-                        /Send Task|SEND/i.test(el.innerText?.trim()) && el.offsetHeight > 0
-                    );
+                    const btns = Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
+                        .filter(el => /Send Task|SEND/i.test(el.innerText?.trim()) && el.offsetHeight > 0);
+                    
                     let matches = 0;
                     for (let btn of btns) {
-                        if (btn.closest('div, .list-item, .account-card')?.innerText.includes(suffix)) {
-                            if (matches === index) { btn.click(); return; }
+                        if (btn.closest('div, .list-item, .account-card, .van-cell')?.innerText.includes(suffix)) {
+                            if (matches === index) { 
+                                // Aggressive robust click
+                                btn.click(); 
+                                btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                                return; 
+                            }
                             matches++;
                         }
                     }
                 }, targetSuffix, idx);
             }));
 
-            await delay(2000); // Wait for the "Confirm" modal to pop out
+            // Wait for the "Confirm" modal to pop out on all tabs
+            await Promise.all(activePages.map(p => p.waitForFunction(() => {
+                return Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
+                    .some(el => /confirm/i.test(el.innerText?.trim()));
+            }, { timeout: 8000 }).catch(()=>{})));
 
             // SIMULTANEOUS MICROSECOND STRIKE on the Confirm Button
             await updateStatus(`[SYSTEM] Loop ${loopCount}: Tabs ready! Clicking Confirm at exact microseconds...`);
             await Promise.all(activePages.map(p => p.evaluate(() => {
-                const btn = Array.from(document.querySelectorAll('button, div, span')).reverse().find(el => 
-                    /confirm/i.test(el.innerText) && el.offsetHeight > 0
-                );
-                if (btn) btn.click();
+                // Find the confirm button (reverse order to catch the top-most modal layer)
+                const btns = Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
+                    .filter(el => /confirm/i.test(el.innerText?.trim()) && el.offsetHeight > 0);
+                
+                const confirmBtn = btns.pop(); 
+                if (confirmBtn) {
+                    confirmBtn.click();
+                    confirmBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                }
             })));
 
             // Await site feedback by scanning DOM for success toast or error block
@@ -4681,8 +4699,6 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
             await updateStatus(`[SYSTEM] Loop ${loopCount} Result: ${loopSuccesses} out of ${activeTabsCount} sent successfully.`);
 
             // THE 1-SECOND LOOP LOGIC
-            // If ALL available tabs were successfully sent, wait 1 sec and run again!
-            // (If some failed, it breaks the loop to prevent spam-clicking a dead/blocked number)
             if (loopSuccesses === activeTabsCount && activeTabsCount > 0) {
                 await updateStatus(`[SYSTEM] All sent perfectly! Waiting 1 second and restarting action...`);
                 await delay(1000);
@@ -4696,14 +4712,7 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
         await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nTotal Sent: ${totalSuccess}\nTotal Points Earned: ${totalPoints}`);
         
         const finalSnap = await masterPage.screenshot({ type: 'png' });
-        await stopTaskRecorder();
-
-        if (taskVideoPath && fs.existsSync(taskVideoPath)) {
-            await bot.sendVideo(chatId, taskVideoPath, {
-                caption: `[TASK VIDEO] Suffix ${targetSuffix}: ${totalSuccess} successful, ${totalPoints} points.`
-            }).catch(() => {});
-        }
-
+        
         await bot.sendPhoto(chatId, finalSnap, { 
             caption: `*Strike Protocol Complete* ⚡\nSuffix: \`${targetSuffix}\`\nSuccesses: \`${totalSuccess}\`\nPoints Earned: \`${totalPoints}\``,
             parse_mode: 'Markdown'
@@ -4712,35 +4721,14 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
         await bot.deleteMessage(chatId, msgId).catch(() => {});
 
     } catch (err) {
-        const errorSnap = masterPage
-            ? await masterPage.screenshot({ type: 'png' }).catch(() => null)
-            : null;
-        await stopTaskRecorder();
         await bot.sendMessage(chatId, `[STRIKE FAILED]: ${err.message}`);
-        if (errorSnap) {
-            await bot.sendPhoto(chatId, errorSnap, {
-                caption: '[TASK DIAGNOSTIC] Screen state at failure.'
-            }).catch(() => {});
-        }
-        if (taskVideoPath && fs.existsSync(taskVideoPath)) {
-            await bot.sendVideo(chatId, taskVideoPath, {
-                caption: '[TASK DIAGNOSTIC] Recorded Chrome session at failure.'
-            }).catch(() => {});
-        }
     } finally {
-        await stopTaskRecorder();
         if (browser) {
             await browser.close().catch(() => {});
         }
-        if (taskVideoPath) {
-            setTimeout(() => {
-                try {
-                    if (fs.existsSync(taskVideoPath)) fs.unlinkSync(taskVideoPath);
-                } catch {}
-            }, 5000);
-        }
     }
 });
+
 
 
 
