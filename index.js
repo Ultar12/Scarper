@@ -4497,6 +4497,208 @@ bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
 
 
 
+
+bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    // match[1] holds your <number> (the 2 or 3 digit suffix)
+    const targetSuffix = match[1]; 
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Strike Protocol: ${targetSuffix} ⚡\nInitializing tabs...`);
+    const msgId = statusMsg.message_id;
+
+    
+    const updateStatus = async (text) => {
+        await bot.editMessageText(text, { chat_id: chatId, message_id: msgId }).catch(() => {});
+    };
+
+    let browser = null;
+    let pages = [];
+    let totalPoints = 0;
+    let totalSuccess = 0;
+    let loopCount = 1;
+
+    try {
+        browser = await launchScraperBrowser();
+
+        // Human Sniper to automatically kill random popups/modals
+        const injectHumanSniper = async (page) => {
+            await page.evaluateOnNewDocument(() => {
+                setInterval(() => {
+                    const okBtn = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
+                    if (okBtn) {
+                        const rect = okBtn.getBoundingClientRect();
+                        ['mousedown', 'mouseup', 'click'].forEach(t => okBtn.dispatchEvent(new MouseEvent(t, { view: window, bubbles: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 })));
+                        setTimeout(() => {
+                            const modal = okBtn.closest('div[class*="modal"], div[class*="mask"]');
+                            if (modal) modal.remove();
+                            document.body.style.filter = 'none';
+                            document.body.style.overflow = 'auto';
+                        }, 800);
+                    }
+                }, 300);
+            });
+        };
+
+        // Create Master Page & Login
+        const masterPage = await browser.newPage();
+        pages.push(masterPage);
+        await masterPage.setViewport({ width: 412, height: 915 });
+        await injectHumanSniper(masterPage);
+
+        await updateStatus('[SYSTEM] Synchronizing Account State...');
+        await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
+        await delay(3000);
+        await loginToWsjobs(masterPage);
+
+        let isLooping = true;
+
+        while (isLooping) {
+            await updateStatus(`[SYSTEM] Loop ${loopCount}: Scanning for target suffix ${targetSuffix}...`);
+            
+            // Navigate master to task page to scan available targets
+            await masterPage.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded' });
+            await delay(4000);
+
+            // Scan how many numbers match the suffix
+            const targetCount = await masterPage.evaluate((suffix) => {
+                const btns = Array.from(document.querySelectorAll('*')).filter(el => /Send Task|SEND/i.test(el.innerText?.trim()));
+                let found = 0;
+                for (let btn of btns) {
+                    if (btn.closest('div, .list-item, .account-card')?.innerText.includes(suffix)) found++;
+                }
+                return found;
+            }, targetSuffix);
+
+            if (targetCount === 0) {
+                if (loopCount === 1) throw new Error(`Target ${targetSuffix} not found on page.`);
+                await updateStatus(`[SYSTEM] No more valid targets found for ${targetSuffix}. Ending loop.`);
+                break;
+            }
+
+            // Cap the tabs to 4 maximum per run (as requested)
+            const activeTabsCount = Math.min(targetCount, 4);
+            await updateStatus(`[SYSTEM] Loop ${loopCount}: Found targets. Preparing ${activeTabsCount} tab(s)...`);
+
+            // Spawn tabs if we don't have enough yet
+            while (pages.length < activeTabsCount) {
+                const p = await browser.newPage();
+                await p.setViewport({ width: 412, height: 915 });
+                await injectHumanSniper(p);
+                pages.push(p);
+            }
+
+            // Select only the needed active tabs for this loop
+            const activePages = pages.slice(0, activeTabsCount);
+            
+            // Synchronize all active tabs to the task board
+            await Promise.all(activePages.map(p => p.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded' })));
+            await delay(4000); 
+
+            // Assign 1 specific number to each tab and click "Send Task"
+            await updateStatus(`[SYSTEM] Loop ${loopCount}: Claiming 1 number per tab...`);
+            await Promise.all(activePages.map(async (p, idx) => {
+                await p.evaluate((suffix, index) => {
+                    const btns = Array.from(document.querySelectorAll('*')).filter(el => 
+                        /Send Task|SEND/i.test(el.innerText?.trim()) && el.offsetHeight > 0
+                    );
+                    let matches = 0;
+                    for (let btn of btns) {
+                        if (btn.closest('div, .list-item, .account-card')?.innerText.includes(suffix)) {
+                            if (matches === index) { btn.click(); return; }
+                            matches++;
+                        }
+                    }
+                }, targetSuffix, idx);
+            }));
+
+            await delay(2000); // Wait for the "Confirm" modal to pop out
+
+            // SIMULTANEOUS MICROSECOND STRIKE on the Confirm Button
+            await updateStatus(`[SYSTEM] Loop ${loopCount}: Tabs ready! Clicking Confirm at exact microseconds...`);
+            await Promise.all(activePages.map(p => p.evaluate(() => {
+                const btn = Array.from(document.querySelectorAll('button, div, span')).reverse().find(el => 
+                    /confirm/i.test(el.innerText) && el.offsetHeight > 0
+                );
+                if (btn) btn.click();
+            })));
+
+            // Await site feedback by scanning DOM for success toast or error block
+            await updateStatus(`[SYSTEM] Loop ${loopCount}: Waiting for site feedback...`);
+            const feedbackResults = await Promise.all(activePages.map(p => p.evaluate(() => {
+                return new Promise(resolve => {
+                    let attempts = 0;
+                    const interval = setInterval(() => {
+                        attempts++;
+                        const text = document.body.innerText;
+                        
+                        // Site Error
+                        if (text.includes('temporarily unable to send')) {
+                            clearInterval(interval);
+                            resolve('error');
+                        } 
+                        // Site Success
+                        else if (text.includes('Send successful') || text.includes('Points have been credited')) {
+                            clearInterval(interval);
+                            resolve('success');
+                        } 
+                        // Timeout Safety (10 seconds)
+                        else if (attempts > 50) {
+                            clearInterval(interval);
+                            resolve('timeout');
+                        }
+                    }, 200);
+                });
+            })));
+
+            // Tally Results & Points
+            let loopSuccesses = 0;
+            let loopErrors = 0;
+            feedbackResults.forEach(res => {
+                if (res === 'success') loopSuccesses++;
+                else if (res === 'error') loopErrors++;
+            });
+
+            totalSuccess += loopSuccesses;
+            totalPoints += (loopSuccesses * 520); // 520 Points Per Send
+
+            await updateStatus(`[SYSTEM] Loop ${loopCount} Result: ${loopSuccesses} out of ${activeTabsCount} sent successfully.`);
+
+            // THE 1-SECOND LOOP LOGIC
+            // If ALL available tabs were successfully sent, wait 1 sec and run again!
+            // (If some failed, it breaks the loop to prevent spam-clicking a dead/blocked number)
+            if (loopSuccesses === activeTabsCount && activeTabsCount > 0) {
+                await updateStatus(`[SYSTEM] All sent perfectly! Waiting 1 second and restarting action...`);
+                await delay(1000);
+                loopCount++;
+            } else {
+                isLooping = false; // Break loop if we hit dead numbers or timeouts
+            }
+        }
+
+        // Final Reporting & Screenshot 
+        await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nTotal Sent: ${totalSuccess}\nTotal Points Earned: ${totalPoints}`);
+        
+        const finalSnap = await masterPage.screenshot({ type: 'png' });
+        
+        await bot.sendPhoto(chatId, finalSnap, { 
+            caption: `*Strike Protocol Complete* ⚡\nSuffix: \`${targetSuffix}\`\nSuccesses: \`${totalSuccess}\`\nPoints Earned: \`${totalPoints}\``,
+            parse_mode: 'Markdown'
+        });
+        
+        await bot.deleteMessage(chatId, msgId).catch(() => {});
+
+    } catch (err) {
+        await bot.sendMessage(chatId, `[STRIKE FAILED]: ${err.message}`);
+    } finally {
+        if (browser) {
+            await browser.close().catch(() => {});
+        }
+    }
+});
+
+
+
 // Initiation Command
 bot.onText(/^\/wt$/i, async (msg) => {
     const chatId = msg.chat.id.toString(); // Ensure this is a string
