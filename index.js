@@ -4513,13 +4513,26 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
     };
 
     let browser = null;
+    let masterPage = null;
+    let taskRecorder = null;
+    let taskVideoPath = null;
+    let taskRecorderStopped = false;
     let pages = [];
     let totalPoints = 0;
     let totalSuccess = 0;
     let loopCount = 1;
 
+    const stopTaskRecorder = async () => {
+        if (taskRecorder && !taskRecorderStopped) {
+            await taskRecorder.stop().catch(() => {});
+            taskRecorderStopped = true;
+        }
+    };
+
     try {
         browser = await launchScraperBrowser();
+        const taskVideoDir = path.join(__dirname, 'videos');
+        if (!fs.existsSync(taskVideoDir)) fs.mkdirSync(taskVideoDir, { recursive: true });
 
         // Human Sniper to automatically kill random popups/modals
         const injectHumanSniper = async (page) => {
@@ -4541,9 +4554,12 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
         };
 
         // Create Master Page & Login
-        const masterPage = await browser.newPage();
+        masterPage = await browser.newPage();
         pages.push(masterPage);
         await masterPage.setViewport({ width: 412, height: 915 });
+        taskVideoPath = path.join(taskVideoDir, `wsjobs_task_${Date.now()}.mp4`);
+        taskRecorder = new PuppeteerScreenRecorder(masterPage, { fps: 30 });
+        await taskRecorder.start(taskVideoPath);
         await injectHumanSniper(masterPage);
 
         await updateStatus('[SYSTEM] Synchronizing Account State...');
@@ -4680,7 +4696,14 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
         await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nTotal Sent: ${totalSuccess}\nTotal Points Earned: ${totalPoints}`);
         
         const finalSnap = await masterPage.screenshot({ type: 'png' });
-        
+        await stopTaskRecorder();
+
+        if (taskVideoPath && fs.existsSync(taskVideoPath)) {
+            await bot.sendVideo(chatId, taskVideoPath, {
+                caption: `[TASK VIDEO] Suffix ${targetSuffix}: ${totalSuccess} successful, ${totalPoints} points.`
+            }).catch(() => {});
+        }
+
         await bot.sendPhoto(chatId, finalSnap, { 
             caption: `*Strike Protocol Complete* ⚡\nSuffix: \`${targetSuffix}\`\nSuccesses: \`${totalSuccess}\`\nPoints Earned: \`${totalPoints}\``,
             parse_mode: 'Markdown'
@@ -4689,10 +4712,32 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
         await bot.deleteMessage(chatId, msgId).catch(() => {});
 
     } catch (err) {
+        const errorSnap = masterPage
+            ? await masterPage.screenshot({ type: 'png' }).catch(() => null)
+            : null;
+        await stopTaskRecorder();
         await bot.sendMessage(chatId, `[STRIKE FAILED]: ${err.message}`);
+        if (errorSnap) {
+            await bot.sendPhoto(chatId, errorSnap, {
+                caption: '[TASK DIAGNOSTIC] Screen state at failure.'
+            }).catch(() => {});
+        }
+        if (taskVideoPath && fs.existsSync(taskVideoPath)) {
+            await bot.sendVideo(chatId, taskVideoPath, {
+                caption: '[TASK DIAGNOSTIC] Recorded Chrome session at failure.'
+            }).catch(() => {});
+        }
     } finally {
+        await stopTaskRecorder();
         if (browser) {
             await browser.close().catch(() => {});
+        }
+        if (taskVideoPath) {
+            setTimeout(() => {
+                try {
+                    if (fs.existsSync(taskVideoPath)) fs.unlinkSync(taskVideoPath);
+                } catch {}
+            }, 5000);
         }
     }
 });
