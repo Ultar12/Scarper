@@ -4549,7 +4549,7 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
         await updateStatus('[SYSTEM] Synchronizing Account State...');
         await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
         await delay(3000);
-        await loginToWsjobs(masterPage);
+        await loginToWsjobsPuppeteer(masterPage);
 
         let isLooping = true;
 
