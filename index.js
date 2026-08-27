@@ -59,6 +59,56 @@ async function loginToWsjobs(page, credentials = {}) {
     }
 }
 
+async function loginToWsjobsPuppeteer(page, credentials = {}) {
+    const username = credentials.username || WSJOBS_USERNAME;
+    const password = credentials.password || WSJOBS_PASSWORD;
+    if (!username || !password) {
+        throw new Error('Missing WSJOBS_USERNAME/WSJOBS_PASSWORD configuration.');
+    }
+
+    const passwordField = await page.$('#password');
+    const loginVisible = passwordField
+        ? await page.evaluate((el) => {
+            const rect = el.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+        }, passwordField).catch(() => false)
+        : false;
+
+    if (loginVisible) {
+        await page.click('#account');
+        await page.type('#account', username, { delay: 20 });
+        await page.click('#password');
+        await page.type('#password', password, { delay: 20 });
+
+        const clicked = await page.evaluate(() => {
+            const buttons = Array.from(document.querySelectorAll('button'));
+            const submit = buttons.reverse().find((button) =>
+                /^login$/i.test((button.innerText || '').trim()) && button.getAttribute('role') !== 'tab'
+            );
+            if (!submit) return false;
+            submit.click();
+            return true;
+        });
+        if (!clicked) throw new Error('Wsjobs login button was not found.');
+
+        await delay(2000);
+        await page.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
+        });
+        await delay(2000);
+    }
+
+    const loginStillVisible = await page.$eval('#password', (el) => {
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+    }).catch(() => false);
+
+    if (new URL(page.url()).pathname.endsWith(WSJOBS_LOGIN_PATH) || loginStillVisible) {
+        throw new Error('Wsjobs login did not complete. Check the account, password, and site response.');
+    }
+}
+
 process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
 
 
@@ -4817,38 +4867,26 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
 
     let wsjobsBal = '0.00';
 
-    // --- 1. Wsjobs Balance Fetch (Firefox Engine - UPDATED) ---
+    // --- 1. Wsjobs Balance Fetch (Puppeteer Chrome) ---
     let wBrowser = null;
-    let wContext = null;
-    let wPage = null; // Defined outside for safety
-    let balanceVideo = null;
+    let wPage = null;
+    let balanceRecorder = null;
+    let balanceVideoPath = null;
     let balanceErrorScreenshot = null;
 
     try {
-        if (globalTaskBrowser && globalTaskBrowser.isConnected()) {
-            wBrowser = globalTaskBrowser;
-        } else {
-            process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
-            wBrowser = await launchPlaywrightBrowser({
-                headless: true,
-                args: ['--no-sandbox', '--disable-setuid-sandbox']
-            });
-            globalTaskBrowser = wBrowser;
-        }
-
+        wBrowser = await launchScraperBrowser();
         const balanceVideoDir = path.join(__dirname, 'videos');
         if (!fs.existsSync(balanceVideoDir)) fs.mkdirSync(balanceVideoDir, { recursive: true });
 
-        wContext = await wBrowser.newContext({
-            userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
-            viewport: { width: 412, height: 915 },
-            recordVideo: { dir: balanceVideoDir, size: { width: 412, height: 915 } }
-        });
+        wPage = await wBrowser.newPage();
+        await wPage.setViewport({ width: 412, height: 915 });
+        balanceVideoPath = path.join(balanceVideoDir, `wsjobs_balance_${Date.now()}.mp4`);
+        balanceRecorder = new PuppeteerScreenRecorder(wPage, { fps: 30 });
+        await balanceRecorder.start(balanceVideoPath);
 
-        wPage = await wContext.newPage();
-
-        // THE HUMAN SNIPER (Same as the working withdraw version)
-        await wPage.addInitScript(() => {
+        // THE HUMAN SNIPER (Same as the working Chrome flows)
+        await wPage.evaluateOnNewDocument(() => {
             setInterval(() => {
                 const okBtn = Array.from(document.querySelectorAll('*'))
                     .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
@@ -4874,7 +4912,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
         await delay(4000);
 
         // LOGIN LOGIC
-        await loginToWsjobs(wPage);
+        await loginToWsjobsPuppeteer(wPage);
 
         // TELEPORT (This fixed your withdraw, so it stays here too)
         await wPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
@@ -4914,39 +4952,32 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
             ? await wPage.screenshot({ type: 'png' }).catch(() => null)
             : null;
     } finally {
-        // Playwright makes the recorded file available after the context closes.
-        balanceVideo = wPage?.video?.() || null;
-        if (wContext) await wContext.close().catch(() => {});
+        if (balanceRecorder) await balanceRecorder.stop().catch(() => {});
+        if (wPage && !balanceVideoPath) {
+            balanceVideoPath = null;
+        }
+        if (wBrowser) await wBrowser.close().catch(() => {});
     }
 
     // --- 2. DIAGNOSTIC DELIVERY ---
-    if (wsjobsBal === 'Error') {
-        if (balanceErrorScreenshot) {
-            await bot.sendPhoto(chatId, balanceErrorScreenshot, {
-                caption: '[BALANCE ERROR] Screen state captured before cleanup.'
-            }, { filename: 'wsjobs_balance_error.png' }).catch(() => {});
-        }
-
-        if (balanceVideo) {
-            const videoPath = await balanceVideo.path().catch(() => null);
-            if (videoPath && fs.existsSync(videoPath)) {
-                await bot.sendDocument(chatId, videoPath, {
-                    caption: '[BALANCE ERROR] Recorded browser session.'
-                }, {
-                    filename: 'wsjobs_balance_error.webm',
-                    contentType: 'video/webm'
-                }).catch(() => {});
-                try { fs.unlinkSync(videoPath); } catch {}
-            }
-        }
+    if (balanceErrorScreenshot) {
+        await bot.sendPhoto(chatId, balanceErrorScreenshot, {
+            caption: wsjobsBal === 'Error'
+                ? '[BALANCE ERROR] Screen state captured before cleanup.'
+                : '[BALANCE] Account page screenshot.'
+        }, { filename: 'wsjobs_balance.png' }).catch(() => {});
     }
 
-    // Successful runs do not need to retain the recording on disk.
-    if (wsjobsBal !== 'Error' && balanceVideo) {
-        const videoPath = await balanceVideo.path().catch(() => null);
-        if (videoPath && fs.existsSync(videoPath)) {
-            try { fs.unlinkSync(videoPath); } catch {}
-        }
+    if (wsjobsBal === 'Error' && balanceVideoPath && fs.existsSync(balanceVideoPath)) {
+        await bot.sendVideo(chatId, balanceVideoPath, {
+            caption: '[BALANCE ERROR] Recorded Chrome browser session.'
+        }).catch(() => {});
+    }
+
+    if (balanceVideoPath && fs.existsSync(balanceVideoPath)) {
+        setTimeout(() => {
+            try { fs.unlinkSync(balanceVideoPath); } catch {}
+        }, 5000);
     }
 
     // --- 3. FINAL CLEAN OUTPUT ---
