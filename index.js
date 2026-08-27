@@ -5366,31 +5366,18 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await bot.editMessageText(text, { chat_id: chatId, message_id: msgId }).catch(() => {});
     };
 
-    let browser = globalTaskBrowser;
-    let context = null;
-    let masterPage = null; 
+    let browser = null;
+    let masterPage = null;
     let pages = [];
     let initialBalanceNum = 0;
 
     try {
-        // --- 1. SMART ENGINE RECOVERY ---
-        if (!browser || !browser.isConnected()) {
-            process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
-            browser = await launchPlaywrightBrowser({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
-            globalTaskBrowser = browser;
-        }
+        // --- 1. PUPPETEER / CHROME BOOT ---
+        // Use the same Chrome launcher as the working balance handler.
+        browser = await launchScraperBrowser();
 
-        // Reuse context if possible, or create fresh
-        context = await browser.newContext({
-            userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
-            viewport: { width: 412, height: 915 }
-        });
-
-        masterPage = await context.newPage();
-        pages.push(masterPage);
-
-        // --- THE HUMAN SNIPER ---
-        await masterPage.addInitScript(() => {
+        const injectHumanSniper = async (page) => {
+            await page.evaluateOnNewDocument(() => {
             setInterval(() => {
                 const okBtn = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
                 if (okBtn) {
@@ -5404,7 +5391,13 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
                     }, 800);
                 }
             }, 300);
-        });
+            });
+        };
+
+        masterPage = await browser.newPage();
+        pages.push(masterPage);
+        await masterPage.setViewport({ width: 412, height: 915 });
+        await injectHumanSniper(masterPage);
 
         // --- 2. FAST REFRESH LOGIC ---
         await updateStatus('[SYSTEM] Synchronizing Account State...');
@@ -5455,7 +5448,9 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
         await updateStatus(`[SYSTEM] Found ${targetCount} targets. Launching ${totalTabs} Strike Tabs...`);
         
         for (let i = 1; i < totalTabs; i++) {
-            const p = await context.newPage();
+            const p = await browser.newPage();
+            await p.setViewport({ width: 412, height: 915 });
+            await injectHumanSniper(p);
             pages.push(p);
             await p.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded' });
         }
@@ -5580,8 +5575,8 @@ bot.onText(/\/task\s+(\d+)/, async (msg, match) => {
     } catch (err) {
         await bot.sendMessage(chatId, `[STRIKE FAILED]: ${err.message}`);
     } finally {
-        if (context) {
-            await context.close().catch(() => {});
+        if (browser) {
+            await browser.close().catch(() => {});
         }
     }
 });
