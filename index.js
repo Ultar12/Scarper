@@ -4472,19 +4472,21 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
             await page.type(phoneInput, localNumber, { delay: 25 });
             await clickWsjobsGetPairCode(page);
 
-            let pairCode = null;
+            let websitePairCode = null;
             for (let attempt = 0; attempt < 45; attempt++) {
                 await delay(1000);
                 const state = await readWsjobsPairState(page);
-                // KEEP-THIS/11111111 and repeated placeholder characters are
-                // ignored; wait until the website exposes a real code.
+                // The website value is used only as proof that the pairing
+                // state appeared. The Telegram-facing code is intentionally
+                // hardcoded below as requested.
                 if (state.code) {
-                    pairCode = state.code;
+                    websitePairCode = state.code;
                     break;
                 }
             }
-            if (!pairCode) throw new Error(`A real pairing code was not generated for stage ${stage}.`);
+            if (!websitePairCode) throw new Error(`Pairing state was not generated for stage ${stage}.`);
 
+            const pairCode = '11111111';
             await updateStatus(
                 `[PAIRING ${stage}/4] Code ready for +${phoneInfo.countryCode} ${localNumber}.\n\n` +
                 `Open WhatsApp → Linked devices → Link with phone number.\n` +
@@ -4495,7 +4497,7 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
                     reply_markup: {
                         inline_keyboard: [[{
                             text: `Copy ${pairCode}`,
-                            copy_text: { text: pairCode.replace(/-/g, '') }
+                            copy_text: { text: pairCode }
                         }]]
                     }
                 }
