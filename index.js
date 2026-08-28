@@ -399,6 +399,7 @@ let wsTaskMode = false;
 let wsTaskTimer = null; // Added timer for the 30-minute auto-close
 let wsDailyCount = 0;
 let wsLastResetDate = new Date().toLocaleDateString('en-NG', { timeZone: 'Africa/Lagos' });
+const wsPairSessions = new Map();
 
 
 
@@ -2974,7 +2975,7 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
 ;
                     
   // Matches exactly: /task <number>
-bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
+bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
@@ -3571,7 +3572,7 @@ bot.on('message', (msg) => {
     if (!msg.text) return;
 
     // Check if the message is JUST a number
-    if (/^\d+$/.test(msg.text.trim())) {
+    if (/^\d{2,3}$/.test(msg.text.trim())) {
 
         // Reset the 30-minute timebomb since you just sent a number
         if (taskModeTimer) clearTimeout(taskModeTimer);
@@ -4091,16 +4092,232 @@ bot.onText(/\/upscale/i, async (msg) => {
 
 
 
+// --- WSJOBS AUTOMATIC PAIRING FLOW ---
+function parseWsjobsPairInput(rawInput) {
+    const raw = String(rawInput || '').trim();
+    if (!/^\+\d[\d\s().-]+$/.test(raw)) return null;
+
+    const parsed = parsePhoneNumberFromString(raw);
+    if (!parsed || !parsed.countryCallingCode || !parsed.nationalNumber) return null;
+    if (!parsed.isValid()) return null;
+
+    return {
+        countryCode: String(parsed.countryCallingCode),
+        localNumber: String(parsed.nationalNumber),
+        internationalNumber: parsed.number
+    };
+}
+
+async function readWsjobsPairState(page) {
+    return page.evaluate(() => {
+        const body = document.body?.innerText || '';
+        const match = body.match(/Pair\s*Code[\s\S]{0,140}?\b([A-Z0-9]{4}(?:[-\s]?[A-Z0-9]{4})?)\b/i);
+        const code = match ? match[1].replace(/\s+/g, '-').toUpperCase() : null;
+        return {
+            code,
+            body,
+            ready: /Pair\s*code\s*ready/i.test(body)
+        };
+    }).catch(() => ({ code: null, body: '', ready: false }));
+}
+
+async function clickWsjobsCountry(page, countryCode) {
+    const code = String(countryCode);
+    let clicked = await page.evaluate((cc) => {
+        const visible = (el) => el && el.offsetHeight > 0 && getComputedStyle(el).visibility !== 'hidden';
+        const candidates = Array.from(document.querySelectorAll('button, [role="button"], div, span'))
+            .filter(visible)
+            .filter((el) => {
+                const text = (el.innerText || '').trim();
+                return text === `+${cc}` || (text.includes(`+${cc}`) && text.length < 24);
+            });
+        const target = candidates[candidates.length - 1];
+        if (!target) return false;
+        target.click();
+        return true;
+    }, code);
+
+    if (!clicked) throw new Error(`Could not open the country selector for +${code}.`);
+    await delay(300);
+
+    clicked = await page.evaluate((cc) => {
+        const visible = (el) => el && el.offsetHeight > 0 && getComputedStyle(el).visibility !== 'hidden';
+        const candidates = Array.from(document.querySelectorAll('button, [role="button"], li, div, span'))
+            .filter(visible)
+            .filter((el) => {
+                const text = (el.innerText || '').trim();
+                return text.includes(`+${cc}`) && text.length < 80;
+            });
+        const target = candidates[candidates.length - 1];
+        if (!target) return false;
+        target.click();
+        return true;
+    }, code);
+
+    if (!clicked) {
+        const search = await page.$('input[placeholder*="Search country" i], input[placeholder*="country" i]');
+        if (search) {
+            await search.click({ clickCount: 3 });
+            await page.keyboard.press('Backspace');
+            await search.type(code, { delay: 30 });
+            await delay(500);
+            clicked = await page.evaluate((cc) => {
+                const visible = (el) => el && el.offsetHeight > 0;
+                const target = Array.from(document.querySelectorAll('button, [role="button"], li, div, span'))
+                    .filter(visible)
+                    .find((el) => new RegExp(`\\\\+${cc}(?:\\\\s|$)`).test((el.innerText || '').trim()));
+                if (!target) return false;
+                target.click();
+                return true;
+            }, code);
+        }
+    }
+
+    if (!clicked) throw new Error(`Country +${code} was not found in the selector.`);
+}
+
+async function clickWsjobsGetPairCode(page) {
+    const clicked = await page.evaluate(() => {
+        const visible = (el) => el && el.offsetHeight > 0 && getComputedStyle(el).visibility !== 'hidden';
+        const target = Array.from(document.querySelectorAll('button, [role="button"]'))
+            .filter(visible)
+            .find((el) => /^get\\s+pair\\s+code$/i.test((el.innerText || '').trim()));
+        if (!target || target.disabled) return false;
+        target.click();
+        return true;
+    });
+    if (!clicked) throw new Error('Get Pair Code button was not found or is disabled.');
+}
+
+async function runWsjobsPairingSequence(chatId, phoneInfo) {
+    const variants = [
+        phoneInfo.localNumber,
+        `0${phoneInfo.localNumber}`,
+        `00${phoneInfo.localNumber}`,
+        `000${phoneInfo.localNumber}`
+    ];
+    let statusMsg = await bot.sendMessage(chatId, `[PAIRING] Preparing 4-stage linking for ${phoneInfo.internationalNumber}...`);
+    let browser = null;
+    let page = null;
+
+    const updateStatus = async (text, extra = {}) => {
+        await bot.editMessageText(text, {
+            chat_id: chatId,
+            message_id: statusMsg.message_id,
+            ...extra
+        }).catch(() => {});
+    };
+
+    try {
+        browser = await launchScraperBrowser();
+        page = await browser.newPage();
+        await page.setViewport({ width: 412, height: 915 });
+
+        await updateStatus('[PAIRING] Opening Wsjobs task page...');
+        await page.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await delay(2000);
+
+        // If the task page redirects to login, loginToWsjobsPuppeteer handles it and returns to /account.
+        await loginToWsjobsPuppeteer(page);
+        await page.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await delay(2000);
+
+        const phoneInput = 'input[placeholder*="Phone Number" i], input[placeholder*="phone number" i], input[type="tel"]';
+        await page.waitForSelector(phoneInput, { timeout: 15000 });
+
+        for (let index = 0; index < variants.length; index++) {
+            const stage = index + 1;
+            const localNumber = variants[index];
+            await updateStatus(`[PAIRING ${stage}/4] Entering +${phoneInfo.countryCode} ${localNumber}...`);
+
+            await page.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await delay(1200);
+            await page.waitForSelector(phoneInput, { timeout: 15000 });
+            await clickWsjobsCountry(page, phoneInfo.countryCode);
+
+            await page.click(phoneInput);
+            await page.evaluate((selector) => {
+                const input = document.querySelector(selector);
+                if (!input) return;
+                input.value = '';
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+            }, phoneInput);
+            await page.type(phoneInput, localNumber, { delay: 25 });
+            await clickWsjobsGetPairCode(page);
+
+            let pairCode = null;
+            for (let attempt = 0; attempt < 45; attempt++) {
+                await delay(1000);
+                const state = await readWsjobsPairState(page);
+                if (state.code) {
+                    pairCode = state.code;
+                    break;
+                }
+            }
+            if (!pairCode) throw new Error(`Pairing code was not generated for stage ${stage}.`);
+
+            await updateStatus(
+                `[PAIRING ${stage}/4] Code ready for +${phoneInfo.countryCode} ${localNumber}.\n\n` +
+                `Open WhatsApp → Linked devices → Link with phone number.\n` +
+                `After linking, this code will disappear and the next stage will begin.\n\n` +
+                `Code: \`${pairCode}\``,
+                {
+                    parse_mode: 'Markdown',
+                    reply_markup: {
+                        inline_keyboard: [[{
+                            text: `Copy ${pairCode}`,
+                            copy_text: { text: pairCode.replace(/-/g, '') }
+                        }]]
+                    }
+                }
+            );
+
+            let disappearedChecks = 0;
+            const deadline = Date.now() + 180000;
+            while (Date.now() < deadline) {
+                await delay(1000);
+                const state = await readWsjobsPairState(page);
+                if (!state.code) disappearedChecks++;
+                else disappearedChecks = 0;
+                if (disappearedChecks >= 3) break;
+            }
+            if (disappearedChecks < 3) throw new Error(`Stage ${stage} timed out waiting for the pairing code to disappear.`);
+
+            await updateStatus(`[PAIRING ${stage}/4] +${phoneInfo.countryCode} ${localNumber} linked successfully. Preparing the next number...`);
+            await delay(1200);
+        }
+
+        await updateStatus(`[PAIRING COMPLETE] All 4 numbers were processed successfully.`, {
+            reply_markup: { remove_keyboard: true }
+        });
+    } catch (error) {
+        await updateStatus(`[PAIRING FAILED] ${error.message}`);
+    } finally {
+        if (browser) await browser.close().catch(() => {});
+    }
+}
+
 // --- UNIFIED MESSAGE LISTENER ---
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id.toString();
     if (!AUTHORIZED.includes(chatId)) return;
     if (!msg.text || msg.text.startsWith('/')) return;
 
+    const pairInput = parseWsjobsPairInput(msg.text);
+    if (pairInput) {
+        if (wsPairSessions.has(chatId)) {
+            await bot.sendMessage(chatId, '[PAIRING] A four-stage pairing sequence is already running. Use /close to stop other active sessions.');
+            return;
+        }
+        wsPairSessions.set(chatId, { startedAt: Date.now(), number: pairInput.internationalNumber });
+        runWsjobsPairingSequence(chatId, pairInput)
+            .catch((error) => bot.sendMessage(chatId, `[PAIRING FAILED] ${error.message}`).catch(() => {}))
+            .finally(() => wsPairSessions.delete(chatId));
+        return;
+    }
 
-
-
-        // --- 2. UPGRADED WT BURNER CONVERSATION FLOW ---
+    // --- 2. UPGRADED WT BURNER CONVERSATION FLOW ---
     if (wtSessions[chatId] && wtSessions[chatId].step) {
         const session = wtSessions[chatId];
 
