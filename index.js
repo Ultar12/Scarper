@@ -1110,7 +1110,7 @@ async function recognizeMusicFromBuffer(buffer, fileName = 'music-find.bin') {
 function isFindApiAuthorized(req) {
     const expectedToken = process.env.FIND_API_TOKEN;
     if (!expectedToken) return true;
-    const bearer = String(req.get('authorization') || '').replace(/^Bearer\\s+/i, '').trim();
+    const bearer = String(req.get('authorization') || '').replace(/^Bearer\s+/i, '').trim();
     const apiKey = String(req.get('x-api-key') || '').trim();
     return bearer === expectedToken || apiKey === expectedToken;
 }
@@ -1721,6 +1721,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
     let finalTodayPoints = null;
     let currentBalance = null;
     let lastFeedbackResults = [];
+    let lastPointsPerTask = null;
     let loopCount = 1;
 
     try {
@@ -1835,49 +1836,91 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             }
             await delay(1500);
 
-            // CLAIM NUMBERS & LOG WHO TOOK WHAT
+            // Build one canonical target list from the master task page. Each
+            // target is then assigned to exactly one tab by phone number, rather
+            // than by a positional card index that can change between tabs.
+            const targetNumbers = await masterPage.evaluate((suffix) => {
+                const visible = (el) => {
+                    const rect = el.getBoundingClientRect();
+                    const style = getComputedStyle(el);
+                    return rect.width > 0 && rect.height > 0
+                        && style.visibility !== 'hidden' && style.display !== 'none';
+                };
+                const buttons = Array.from(document.querySelectorAll(
+                    'button, [role="button"], [class*="btn"], [class*="button"]'
+                )).filter(el => visible(el) && /^send(?:\s+task)?$/i.test(
+                    (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim()
+                ));
+                const numbers = [];
+                for (const button of buttons) {
+                    let card = button.parentElement;
+                    for (let level = 0; level < 10 && card; level++, card = card.parentElement) {
+                        const ownButtons = Array.from(card.querySelectorAll(
+                            'button, [role="button"], [class*="btn"], [class*="button"]'
+                        )).filter(el => visible(el) && /^send(?:\s+task)?$/i.test(
+                            (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim()
+                        ));
+                        if (ownButtons.length !== 1 || ownButtons[0] !== button) continue;
+                        const text = (card.innerText || '').replace(/\s+/g, ' ');
+                        const candidates = text.match(/\+\s*\d[\d\s().*-]{6,}\d/g) || [];
+                        const candidate = candidates.find(value => {
+                            const digits = value.replace(/\D/g, '');
+                            return digits.length >= 8 && digits.length <= 15 && digits.endsWith(suffix);
+                        });
+                        if (candidate) {
+                            const number = `+${candidate.replace(/\D/g, '')}`;
+                            if (!numbers.includes(number)) numbers.push(number);
+                        }
+                        break;
+                    }
+                }
+                return numbers;
+            }, targetSuffix);
+            const activeTargetNumbers = targetNumbers.slice(0, activeTabsCount);
+            if (activeTargetNumbers.length !== activeTabsCount) {
+                throw new Error(`Only ${activeTargetNumbers.length}/${activeTabsCount} unique matching task number(s) were verified on the task page.`);
+            }
+
+            // CLAIM NUMBERS & LOG WHO TOOK WHAT. Each tab searches for its
+            // assigned canonical number, so two tabs cannot intentionally claim
+            // the same card when the page order changes.
             await updateStatus(`[SYSTEM] Loop ${loopCount}: Claiming targets in synchronized order...`);
             const claimedNumbers = [];
             for (let idx = 0; idx < activePages.length; idx++) {
                 const p = activePages[idx];
-                claimedNumbers.push(await p.evaluate((suffix, index) => {
-                    const btns = Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
-                        .filter(el => /Send Task|SEND/i.test(el.innerText?.trim()) && el.offsetHeight > 0);
-                    
-                    let matches = 0;
-                    for (let btn of btns) {
-                        let curr = btn;
-                        let matched = false;
-                        for (let i = 0; i < 8; i++) {
-                            if (curr && curr.innerText?.includes(suffix)) {
-                                matched = true;
-                                break;
-                            }
-                            if (curr) curr = curr.parentElement;
-                        }
-                        
-                        if (matched) {
-                            if (matches === index) {
-                                // Extract and canonicalize the phone number from
-                                // this card so duplicate claims can be rejected.
-                                const textMatch = (curr.innerText || '').match(/\+?\s*\d[\d\s().-]{7,}\d/g);
-                                const normalizedNumber = textMatch
-                                    ? textMatch[0].replace(/\D/g, '')
-                                    : '';
-                                if (normalizedNumber.length < 8 || normalizedNumber.length > 15) {
-                                    return 'Unknown';
-                                }
-                                const foundNumber = `+${normalizedNumber}`;
-
-                                btn.click(); 
-                                btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                                return foundNumber; 
-                            }
-                            matches++;
+                const assignedNumber = activeTargetNumbers[idx];
+                claimedNumbers.push(await p.evaluate((targetNumber) => {
+                    const visible = (el) => {
+                        const rect = el.getBoundingClientRect();
+                        const style = getComputedStyle(el);
+                        return rect.width > 0 && rect.height > 0
+                            && style.visibility !== 'hidden' && style.display !== 'none';
+                    };
+                    const buttons = Array.from(document.querySelectorAll(
+                        'button, [role="button"], [class*="btn"], [class*="button"]'
+                    )).filter(el => visible(el) && /^send(?:\s+task)?$/i.test(
+                        (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim()
+                    ));
+                    for (const button of buttons) {
+                        let card = button.parentElement;
+                        for (let level = 0; level < 10 && card; level++, card = card.parentElement) {
+                            const ownButtons = Array.from(card.querySelectorAll(
+                                'button, [role="button"], [class*="btn"], [class*="button"]'
+                            )).filter(el => visible(el) && /^send(?:\s+task)?$/i.test(
+                                (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim()
+                            ));
+                            if (ownButtons.length !== 1 || ownButtons[0] !== button) continue;
+                            const text = (card.innerText || '').replace(/\s+/g, ' ');
+                            const candidates = text.match(/\+\s*\d[\d\s().*-]{6,}\d/g) || [];
+                            const match = candidates.find(value => `+${value.replace(/\D/g, '')}` === targetNumber);
+                            if (!match) break;
+                            button.click();
+                            button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                            return targetNumber;
                         }
                     }
-                    return "Unknown";
-                }, targetSuffix, idx));
+                    return 'Unknown';
+                }, assignedNumber));
             }
             const unknownClaims = claimedNumbers.filter(number => number === 'Unknown').length;
             if (unknownClaims > 0) {
@@ -1959,6 +2002,9 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             // The displayed total is always the refreshed final value minus the
             // first value captured before the first task tab started.
             const loopPointsEarned = finalTodayPoints - startingPoints;
+            if (successfulFeedback > 0 && Number.isFinite(loopPointsEarned)) {
+                lastPointsPerTask = loopPointsEarned / successfulFeedback;
+            }
             totalPoints = finalTodayPoints - initialTodayPoints;
             totalSuccess += successfulFeedback;
 
@@ -2011,7 +2057,10 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
         const finalFeedbackSummary = lastFeedbackResults.length
             ? lastFeedbackResults.map(result => `Tab ${result.tabNumber}: ${result.status}`).join('\n')
             : 'No tab feedback recorded.';
-        await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nVerified successful tabs: ${totalSuccess}\nPoints Earned: ${totalPoints}\nBalance: ${formattedBalance}\n\nLast tab feedback:\n${finalFeedbackSummary}`);
+        const pointsPerTaskText = lastPointsPerTask === null
+            ? 'Unavailable'
+            : lastPointsPerTask.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+        await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nVerified successful tabs: ${totalSuccess}\nPoints Earned: ${totalPoints}\nPoints Per Successful Task: ${pointsPerTaskText}\nBalance: ${formattedBalance}\n\nLast tab feedback:\n${finalFeedbackSummary}`);
 
         const finalSnap = await masterPage.screenshot({ type: 'png' }).catch(() => null);
 
@@ -2019,7 +2068,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             await bot.sendMessage(chatId, `[SYSTEM] Strike Protocol Complete. Screenshot capture timed out; final balance: ${formattedBalance}.`);
         } else {
             await bot.sendPhoto(chatId, finalSnap, {
-            caption: `*Strike Protocol Complete*\nSuffix: \`${targetSuffix}\`\nVerified Successful Tabs: \`${totalSuccess}\`\nPoints Earned: \`${totalPoints}\`\nBalance: \`${formattedBalance}\`\n\nLast Tab Feedback:\n${finalFeedbackSummary}`,
+            caption: `*Strike Protocol Complete*\nSuffix: \`${targetSuffix}\`\nVerified Successful Tabs: \`${totalSuccess}\`\nPoints Earned: \`${totalPoints}\`\nPoints Per Successful Task: \`${pointsPerTaskText}\`\nBalance: \`${formattedBalance}\`\n\nLast Tab Feedback:\n${finalFeedbackSummary}`,
             parse_mode: 'Markdown'
         });
         }
@@ -2576,6 +2625,22 @@ bot.on('callback_query', async (query) => {
         return;
     }
 
+    if (query.data === 'wsjobs_pair_cancel') {
+        const pairingSession = wsPairSessions.get(chatId);
+        if (!pairingSession) {
+            await bot.answerCallbackQuery(query.id, { text: 'No active pairing sequence.' }).catch(() => {});
+            return;
+        }
+        pairingSession.cancelled = true;
+        await bot.answerCallbackQuery(query.id, { text: 'Pairing cancelled.' }).catch(() => {});
+        await bot.editMessageText('[PAIRING CANCELLED] Stopping this number’s pairing sequence. The Chrome session will remain open.', {
+            chat_id: chatId,
+            message_id: query.message.message_id,
+            reply_markup: { inline_keyboard: [] }
+        }).catch(() => {});
+        return;
+    }
+
     if (query.data === 'wsjobs_withdraw_cancel') {
         await bot.answerCallbackQuery(query.id, { text: 'Withdrawal cancelled.' }).catch(() => {});
         await bot.editMessageText('Withdrawal cancelled.', {
@@ -2849,6 +2914,15 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
         `000${phoneInfo.localNumber}`
     ];
     let statusMsg = await bot.sendMessage(chatId, `[PAIRING] Preparing 4-stage linking for ${phoneInfo.internationalNumber}...`);
+    const pairingSession = wsPairSessions.get(chatId);
+    if (pairingSession) pairingSession.statusMessageId = statusMsg.message_id;
+    const throwIfPairingCancelled = () => {
+        if (wsPairSessions.get(chatId)?.cancelled) {
+            const error = new Error('Pairing cancelled by user.');
+            error.code = 'WS_PAIR_CANCELLED';
+            throw error;
+        }
+    };
     let browser = runtime?.browser || null;
     let page = runtime?.page || null;
 
@@ -2893,6 +2967,7 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
         await page.waitForSelector(phoneInput, { timeout: 15000 });
 
         for (let index = 0; index < variants.length; index++) {
+            throwIfPairingCancelled();
             const stage = index + 1;
             const localNumber = variants[index];
             await updateStatus(`[PAIRING ${stage}/4] Entering +${phoneInfo.countryCode} ${localNumber}...`);
@@ -2915,7 +2990,9 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
 
             let websitePairCode = null;
             for (let attempt = 0; attempt < 45; attempt++) {
+                throwIfPairingCancelled();
                 await delay(1000);
+                throwIfPairingCancelled();
                 const state = await readWsjobsPairState(page);
                 // The website value is used only as proof that the pairing
                 // state appeared. The Telegram-facing code is intentionally
@@ -2936,10 +3013,13 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
                 {
                     parse_mode: 'Markdown',
                     reply_markup: {
-                        inline_keyboard: [[{
-                            text: `Copy ${pairCode}`,
-                            copy_text: { text: pairCode }
-                        }]]
+                            inline_keyboard: [[{
+                                text: `Copy ${pairCode}`,
+                                copy_text: { text: pairCode }
+                            }], [{
+                                text: 'Cancel Pairing',
+                                callback_data: 'wsjobs_pair_cancel'
+                            }]]
                     }
                 }
             );
@@ -2947,7 +3027,9 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
             let disappearedChecks = 0;
             const deadline = Date.now() + 180000;
             while (Date.now() < deadline) {
+                throwIfPairingCancelled();
                 await delay(500);
+                throwIfPairingCancelled();
                 const state = await readWsjobsPairState(page);
                 if (!state.code) {
                     disappearedChecks++;
@@ -2983,8 +3065,14 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
         });
 
     } catch (error) {
-        await updateStatus(`[PAIRING FAILED] ${error.message}`);
-        await sendWsjobsPairingDiagnostics(chatId, runtime, error.message);
+        if (error.code === 'WS_PAIR_CANCELLED') {
+            await updateStatus('[PAIRING CANCELLED] This number’s pairing sequence was stopped. The Chrome session remains open for the next number.', {
+                reply_markup: { inline_keyboard: [] }
+            });
+        } else {
+            await updateStatus(`[PAIRING FAILED] ${error.message}`);
+            await sendWsjobsPairingDiagnostics(chatId, runtime, error.message);
+        }
     } finally {
         if (runtime && browser && page && browser.isConnected?.() !== false && !page.isClosed?.()) {
             runtime.browser = browser;
@@ -3012,7 +3100,7 @@ bot.on('message', async (msg) => {
             return;
         }
         const pairingRuntime = wsPairRuntimes.get(chatId) || null;
-        wsPairSessions.set(chatId, { startedAt: Date.now(), number: pairInput.internationalNumber });
+        wsPairSessions.set(chatId, { startedAt: Date.now(), number: pairInput.internationalNumber, cancelled: false });
         runWsjobsPairingSequence(chatId, pairInput, pairingRuntime)
             .catch((error) => bot.sendMessage(chatId, `[PAIRING FAILED] ${error.message}`).catch(() => {}))
             .finally(() => wsPairSessions.delete(chatId));
