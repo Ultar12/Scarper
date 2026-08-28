@@ -9,7 +9,6 @@
     "check": "node --check index.js"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "^2.1.235",
     "axios": "^1.6.8",
     "cheerio": "^1.0.0",
     "dotenv": "^16.4.5",
