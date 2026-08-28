@@ -3549,6 +3549,11 @@ bot.on('callback_query', async (query) => {
         const cancelRetry = pairingSession.retryResolver;
         pairingSession.retryResolver = null;
         if (cancelRetry) cancelRetry();
+        const pairingRuntime = wsPairRuntimes.get(chatId);
+        if (pairingRuntime?.page && !pairingRuntime.page.isClosed?.()) {
+            await pairingRuntime.page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 })
+                .catch((error) => console.log('[PAIRING] Cancel refresh failed:', error.message));
+        }
         await bot.answerCallbackQuery(query.id, { text: 'Pairing cancelled.' }).catch(() => {});
         await bot.editMessageText('[PAIRING CANCELLED] Stopping this number’s pairing sequence. The Chrome session will remain open.', {
             chat_id: chatId,
@@ -4140,7 +4145,7 @@ bot.on('message', async (msg) => {
                     await page1.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
                     await delay(3000);
 
-                    await loginToWsjobs(page1, { username: session.username, password: session.password });
+                    await loginToWsjobs(page1);
                 } else {
                     await updateStatus('[WT BURNER] Using warm Burner session...');
                     pages.push(session.masterPage); // Grab the master page from memory
