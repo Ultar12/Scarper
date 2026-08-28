@@ -400,6 +400,7 @@ let wsTaskTimer = null; // Added timer for the 30-minute auto-close
 let wsDailyCount = 0;
 let wsLastResetDate = new Date().toLocaleDateString('en-NG', { timeZone: 'Africa/Lagos' });
 const wsPairSessions = new Map();
+const wsPairRuntimes = new Map();
 
 
 
@@ -3270,7 +3271,17 @@ bot.onText(/^(?:close|\/close)$/i, async (msg) => {
         stoppedSomething = true;
     }
 
-    // 2. Kill Task Mode & Radar
+    // 2. Kill persistent Wsjobs pairing session
+    if (wsPairRuntimes && wsPairRuntimes.has(chatId)) {
+        const pairingRuntime = wsPairRuntimes.get(chatId);
+        if (pairingRuntime?.browser) await pairingRuntime.browser.close().catch(() => {});
+        wsPairRuntimes.delete(chatId);
+        wsPairSessions.delete(chatId);
+        bot.sendMessage(chatId, '[SUCCESS] Persistent Wsjobs pairing browser closed.');
+        stoppedSomething = true;
+    }
+
+    // 3. Kill Task Mode & Radar
     if (typeof taskModeActive !== 'undefined' && taskModeActive) {
         taskModeActive = false;
         if (typeof taskModeTimer !== 'undefined' && taskModeTimer) clearTimeout(taskModeTimer);
@@ -3285,7 +3296,7 @@ bot.onText(/^(?:close|\/close)$/i, async (msg) => {
         stoppedSomething = true;
     }
 
-    // 3. Kill WSTASK Mode
+    // 4. Kill WSTASK Mode
     if (typeof wsTaskMode !== 'undefined' && wsTaskMode) {
         wsTaskMode = false;
         if (typeof wsTaskTimer !== 'undefined' && wsTaskTimer) clearTimeout(wsTaskTimer);
@@ -3298,7 +3309,7 @@ bot.onText(/^(?:close|\/close)$/i, async (msg) => {
         stoppedSomething = true;
     }
 
-    // 4. Kill WhatsApp Login Memory
+    // 5. Kill WhatsApp Login Memory
     if (typeof userState !== 'undefined' && userState[chatId]) {
         userState[chatId] = null;
         bot.sendMessage(chatId, '[SYSTEM] WhatsApp login sequence aborted.');
@@ -4123,57 +4134,64 @@ async function readWsjobsPairState(page) {
 
 async function clickWsjobsCountry(page, countryCode) {
     const code = String(countryCode);
-    let clicked = await page.evaluate((cc) => {
-        const visible = (el) => el && el.offsetHeight > 0 && getComputedStyle(el).visibility !== 'hidden';
-        const candidates = Array.from(document.querySelectorAll('button, [role="button"], div, span'))
+    const opened = await page.evaluate(() => {
+        const visible = (el) => {
+            const rect = el.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+        };
+        const candidates = Array.from(document.querySelectorAll('button, [role="button"], [aria-haspopup="listbox"], div, span'))
             .filter(visible)
-            .filter((el) => {
-                const text = (el.innerText || '').trim();
-                return text === `+${cc}` || (text.includes(`+${cc}`) && text.length < 24);
-            });
-        const target = candidates[candidates.length - 1];
+            .filter((el) => /^\+\d{1,4}$/.test((el.innerText || '').trim()));
+        const target = candidates[0];
         if (!target) return false;
-        target.click();
+        (target.closest('button, [role="button"]') || target).click();
         return true;
-    }, code);
+    });
+    if (!opened) throw new Error('Could not find the current country selector box.');
 
-    if (!clicked) throw new Error(`Could not open the country selector for +${code}.`);
-    await delay(300);
+    const searchSelector = 'input[placeholder*="Search country" i], input[placeholder*="ISO" i], input[placeholder*="code" i]';
+    await page.waitForSelector(searchSelector, { visible: true, timeout: 10000 });
+    const search = await page.$(searchSelector);
+    if (!search) throw new Error('Country search field did not appear.');
 
-    clicked = await page.evaluate((cc) => {
-        const visible = (el) => el && el.offsetHeight > 0 && getComputedStyle(el).visibility !== 'hidden';
+    await search.click({ clickCount: 3 });
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Backspace');
+    await search.type(code, { delay: 30 });
+    await delay(500);
+
+    await page.waitForFunction((cc) => {
+        const codeToken = `+${cc}`;
+        return Array.from(document.querySelectorAll('button, [role="button"], li, div, span')).some((el) => {
+            const rect = el.getBoundingClientRect();
+            const text = (el.innerText || '').trim();
+            const tokens = text.replace(/[(),]/g, ' ').split(/\s+/).filter(Boolean);
+            const countryCodes = tokens.filter((token) => /^\+\d+$/.test(token));
+            return rect.width > 0 && rect.height > 0 && text.length < 120 && tokens.includes(codeToken) && countryCodes.length === 1;
+        });
+    }, { timeout: 10000 }, code);
+
+    const selected = await page.evaluate((cc) => {
+        const codeToken = `+${cc}`;
+        const visible = (el) => {
+            const rect = el.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+        };
         const candidates = Array.from(document.querySelectorAll('button, [role="button"], li, div, span'))
             .filter(visible)
             .filter((el) => {
                 const text = (el.innerText || '').trim();
-                return text.includes(`+${cc}`) && text.length < 80;
+                const tokens = text.replace(/[(),]/g, ' ').split(/\s+/).filter(Boolean);
+                const countryCodes = tokens.filter((token) => /^\+\d+$/.test(token));
+                return text.length < 120 && tokens.includes(codeToken) && countryCodes.length === 1 && !/search country|select country|common|all countries/i.test(text);
             });
         const target = candidates[candidates.length - 1];
         if (!target) return false;
-        target.click();
+        (target.closest('button, [role="button"], li') || target).click();
         return true;
     }, code);
 
-    if (!clicked) {
-        const search = await page.$('input[placeholder*="Search country" i], input[placeholder*="country" i]');
-        if (search) {
-            await search.click({ clickCount: 3 });
-            await page.keyboard.press('Backspace');
-            await search.type(code, { delay: 30 });
-            await delay(500);
-            clicked = await page.evaluate((cc) => {
-                const visible = (el) => el && el.offsetHeight > 0;
-                const target = Array.from(document.querySelectorAll('button, [role="button"], li, div, span'))
-                    .filter(visible)
-                    .find((el) => new RegExp(`\\\\+${cc}(?:\\\\s|$)`).test((el.innerText || '').trim()));
-                if (!target) return false;
-                target.click();
-                return true;
-            }, code);
-        }
-    }
-
-    if (!clicked) throw new Error(`Country +${code} was not found in the selector.`);
+    if (!selected) throw new Error(`Country +${code} was not found in the search results.`);
 }
 
 async function clickWsjobsGetPairCode(page) {
@@ -4181,7 +4199,7 @@ async function clickWsjobsGetPairCode(page) {
         const visible = (el) => el && el.offsetHeight > 0 && getComputedStyle(el).visibility !== 'hidden';
         const target = Array.from(document.querySelectorAll('button, [role="button"]'))
             .filter(visible)
-            .find((el) => /^get\\s+pair\\s+code$/i.test((el.innerText || '').trim()));
+            .find((el) => (el.innerText || '').replace(/\s+/g, ' ').trim().toLowerCase() === 'get pair code');
         if (!target || target.disabled) return false;
         target.click();
         return true;
@@ -4189,7 +4207,7 @@ async function clickWsjobsGetPairCode(page) {
     if (!clicked) throw new Error('Get Pair Code button was not found or is disabled.');
 }
 
-async function runWsjobsPairingSequence(chatId, phoneInfo) {
+async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
     const variants = [
         phoneInfo.localNumber,
         `0${phoneInfo.localNumber}`,
@@ -4197,8 +4215,8 @@ async function runWsjobsPairingSequence(chatId, phoneInfo) {
         `000${phoneInfo.localNumber}`
     ];
     let statusMsg = await bot.sendMessage(chatId, `[PAIRING] Preparing 4-stage linking for ${phoneInfo.internationalNumber}...`);
-    let browser = null;
-    let page = null;
+    let browser = runtime?.browser || null;
+    let page = runtime?.page || null;
 
     const updateStatus = async (text, extra = {}) => {
         await bot.editMessageText(text, {
@@ -4209,18 +4227,31 @@ async function runWsjobsPairingSequence(chatId, phoneInfo) {
     };
 
     try {
-        browser = await launchScraperBrowser();
-        page = await browser.newPage();
-        await page.setViewport({ width: 412, height: 915 });
+        const reusedRuntime = Boolean(browser && page && browser.isConnected?.() !== false && !page.isClosed?.());
+        if (!reusedRuntime) {
+            browser = await launchScraperBrowser();
+            page = await browser.newPage();
+            await page.setViewport({ width: 412, height: 915 });
+            runtime = { ...(runtime || {}), browser, page, createdAt: Date.now() };
+            wsPairRuntimes.set(chatId, runtime);
+        }
 
-        await updateStatus('[PAIRING] Opening Wsjobs task page...');
-        await page.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await delay(2000);
+        await updateStatus(reusedRuntime
+            ? '[PAIRING] Reusing the existing Chrome session on the Wsjobs task page...'
+            : '[PAIRING] Opening Wsjobs task page and checking login...');
 
-        // If the task page redirects to login, loginToWsjobsPuppeteer handles it and returns to /account.
-        await loginToWsjobsPuppeteer(page);
-        await page.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await delay(2000);
+        if (!reusedRuntime || !page.url().includes(WSJOBS_TASK_PATH)) {
+            await page.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await delay(2000);
+        }
+
+        // The first message performs login if the task page redirected to /login.
+        // Later messages reuse the already-authenticated task page and skip bootstrap.
+        if (!reusedRuntime) {
+            await loginToWsjobsPuppeteer(page);
+            await page.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await delay(2000);
+        }
 
         const phoneInput = 'input[placeholder*="Phone Number" i], input[placeholder*="phone number" i], input[type="tel"]';
         await page.waitForSelector(phoneInput, { timeout: 15000 });
@@ -4294,7 +4325,12 @@ async function runWsjobsPairingSequence(chatId, phoneInfo) {
     } catch (error) {
         await updateStatus(`[PAIRING FAILED] ${error.message}`);
     } finally {
-        if (browser) await browser.close().catch(() => {});
+        if (runtime && browser && page && browser.isConnected?.() !== false && !page.isClosed?.()) {
+            runtime.browser = browser;
+            runtime.page = page;
+            runtime.lastUsedAt = Date.now();
+            wsPairRuntimes.set(chatId, runtime);
+        }
     }
 }
 
@@ -4310,8 +4346,9 @@ bot.on('message', async (msg) => {
             await bot.sendMessage(chatId, '[PAIRING] A four-stage pairing sequence is already running. Use /close to stop other active sessions.');
             return;
         }
+        const pairingRuntime = wsPairRuntimes.get(chatId) || null;
         wsPairSessions.set(chatId, { startedAt: Date.now(), number: pairInput.internationalNumber });
-        runWsjobsPairingSequence(chatId, pairInput)
+        runWsjobsPairingSequence(chatId, pairInput, pairingRuntime)
             .catch((error) => bot.sendMessage(chatId, `[PAIRING FAILED] ${error.message}`).catch(() => {}))
             .finally(() => wsPairSessions.delete(chatId));
         return;
