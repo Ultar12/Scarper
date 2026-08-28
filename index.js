@@ -712,27 +712,55 @@ async function runAutoTaskScanner(chatId) {
         }).catch(() => {});
         await delay(1000);
 
-        // Count available matching task cards using the same DOM strategy as /task.
+        // Count only real task cards. The old scanner climbed arbitrary
+        // ancestors and could read points, counters, or linked-account text
+        // outside the task card, creating false suffixes.
         const counts = await scanPage.evaluate(() => {
+            const isVisible = (el) => {
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0
+                    && style.visibility !== 'hidden' && style.display !== 'none';
+            };
+            const isSendTaskButton = (el) =>
+                isVisible(el) && /^send(?:\s+task)?$/i.test((el.innerText || '').replace(/\s+/g, ' ').trim());
             const sendButtons = Array.from(document.querySelectorAll(
-                'button, [class*="btn"], [class*="button"]'
-            )).filter(el => /Send Task|SEND/i.test(el.innerText?.trim()) && el.offsetHeight > 0);
+                'button, [role="button"], [class*="btn"], [class*="button"]'
+            )).filter(isSendTaskButton);
             const tracker = {};
 
             for (const button of sendButtons) {
-                let current = button;
-                let cardText = '';
-                for (let level = 0; level < 8 && current; level++, current = current.parentElement) {
-                    cardText = current.innerText || '';
-                    if (/\d[\d\s*()-]{3,}\d/.test(cardText)) break;
+                // Pick the smallest ancestor that contains exactly this one
+                // visible Send Task button; that is the task-card boundary.
+                let card = null;
+                let current = button.parentElement;
+                for (let level = 0; level < 10 && current; level++, current = current.parentElement) {
+                    const buttonsInCurrent = Array.from(current.querySelectorAll(
+                        'button, [role="button"], [class*="btn"], [class*="button"]'
+                    )).filter(isSendTaskButton);
+                    if (buttonsInCurrent.length === 1 && buttonsInCurrent[0] === button) {
+                        card = current;
+                        break;
+                    }
                 }
+                if (!card) continue;
 
-                const compactText = cardText.replace(/\s+/g, ' ');
-                const numberMatch = compactText.match(/[\d*]{5,}(\d{2})/);
-                const suffix = numberMatch
-                    ? numberMatch[1]
-                    : (compactText.match(/\d{2}(?=\D*$)/) || [])[0];
-                if (suffix) tracker[suffix] = (tracker[suffix] || 0) + 1;
+                const cardText = (card.innerText || '').replace(/\s+/g, ' ');
+                // Accept phone-like values only: a leading plus, or a masked
+                // number, followed by 8–15 digits. Never use arbitrary trailing
+                // digits from totals, counters, timestamps, or page headings.
+                const phoneCandidates = cardText.match(/(?:\+\s*[\d][\d\s().*-]{6,}[\d*]|\*{3,}[\d*]{2,})/g) || [];
+                const phoneCandidate = phoneCandidates.find(candidate => {
+                    const digits = candidate.replace(/\D/g, '');
+                    return digits.length >= 8 && digits.length <= 15;
+                });
+                if (!phoneCandidate) continue;
+
+                const digits = phoneCandidate.replace(/\D/g, '');
+                const suffix = digits.slice(-2);
+                if (/^\d{2}$/.test(suffix)) {
+                    tracker[suffix] = (tracker[suffix] || 0) + 1;
+                }
             }
             return tracker;
         });
