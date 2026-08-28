@@ -4234,19 +4234,28 @@ async function readWsjobsPairState(page) {
             return Boolean(normalized) && !demoCodes.has(normalized);
         };
 
-        // Read only the short text immediately following the Pair Code label.
-        // This prevents unrelated 8-character text elsewhere on the dashboard
-        // from being mistaken for the current pairing code.
-        const label = Array.from(document.querySelectorAll('*')).find(el =>
-            el.offsetParent !== null && /^Pair(?:ing)?\s*Code$/i.test(el.innerText?.trim() || '')
-        );
-        const nearbyText = [
-            label?.parentElement?.innerText,
-            label?.parentElement?.parentElement?.innerText,
-            label?.parentElement?.parentElement?.parentElement?.innerText,
-            body
-        ].filter(Boolean).join(' ');
-        const candidates = nearbyText.match(/\b(?:[A-Z0-9]{8}|[A-Z0-9]{4}\s*(?:[-–—]\s*|\s+)[A-Z0-9]{4})\b/gi) || [];
+        // Read the visible pairing-code element itself. Do not scan the whole
+        // page for any eight-character word: the dashboard contains unrelated
+        // text such as "WHATSAPP", which previously looked like a code and
+        // prevented the disappearance check from ever becoming true.
+        const visible = (el) => {
+            const rect = el.getBoundingClientRect();
+            const style = getComputedStyle(el);
+            return rect.width > 0 && rect.height > 0
+                && style.visibility !== 'hidden' && style.display !== 'none';
+        };
+        const codePattern = /\b(?:\d{4}\s*[-–—]\s*\d{4}|\d{8}|[A-Z0-9]{4}\s*[-–—]\s*[A-Z0-9]{4})\b/gi;
+        const codeElements = Array.from(document.querySelectorAll('*'))
+            .filter(visible)
+            .map(el => ({ el, text: (el.innerText || '').replace(/\s+/g, ' ').trim() }))
+            .filter(({ text }) => text.length > 0 && text.length <= 80)
+            .map(({ el, text }) => ({ el, text, matches: text.match(codePattern) || [] }))
+            .filter(({ matches }) => matches.length > 0);
+
+        // Prefer the smallest visible element containing a code. This avoids
+        // selecting a large parent card whose text also contains other labels.
+        codeElements.sort((a, b) => a.text.length - b.text.length);
+        const candidates = codeElements.flatMap(({ matches }) => matches);
         const code = candidates.map(normalize).find(isRealCode) || null;
         return {
             code,
