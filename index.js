@@ -2892,9 +2892,9 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             const totalDollarsEarned = totalPoints / WSJOBS_POINTS_PER_DOLLAR;
             await updateStatus(`[SYSTEM] Loop ${loopCount} Result:\n\nTargets Hit:\n${targetsClaimedStr}\n\nFeedback:\n${feedbackSummary}\n\nToday Points: ${startingPoints} → ${finalTodayPoints}\nLoop Points Earned: $${loopDollarsEarned.toFixed(2)} (${loopPointsEarned} points)\nTotal Earned: $${totalDollarsEarned.toFixed(2)} (${totalPoints} points)`);
 
-            // A new loop is allowed only when every tab explicitly reported
-            // success. Failures and timeouts stop without inventing successes.
-            if (successfulFeedback === activeTabsCount && failedFeedback === 0 && timedOutFeedback === 0) {
+            // Start another loop whenever none of the tabs reported a failure.
+            // A timeout alone does not stop the loop.
+            if (failedFeedback === 0) {
                 await updateStatus(`[SYSTEM] All ${activeTabsCount} tab(s) succeeded. Waiting 1 second and restarting...`);
                 await delay(1000);
                 loopCount++;
