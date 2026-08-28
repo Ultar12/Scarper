@@ -1869,50 +1869,55 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                 claimedNumbers.push(await p.evaluate((suffix, index) => {
                     const btns = Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
                         .filter(el => /Send Task|SEND/i.test(el.innerText?.trim()) && el.offsetHeight > 0);
-
                     let matches = 0;
-                    for (let btn of btns) {
+                    const diagnostics = [];
+                    for (const btn of btns) {
                         let curr = btn;
                         let matched = false;
-                        for (let i = 0; i < 8; i++) {
-                            if (curr && curr.innerText?.includes(suffix)) {
+                        let matchedDepth = -1;
+                        for (let depth = 0; depth < 10 && curr; depth++, curr = curr.parentElement) {
+                            const text = (curr.innerText || curr.textContent || '').replace(/\s+/g, ' ').trim();
+                            if (text.includes(suffix)) {
                                 matched = true;
+                                matchedDepth = depth;
                                 break;
                             }
-                            if (curr) curr = curr.parentElement;
                         }
-
-                        if (matched) {
-                            if (matches === index) {
-                                // Extract and canonicalize the phone number from
-                                // this card so duplicate claims can be rejected.
-                                const textMatch = (curr.innerText || '').match(/\+?\s*\d[\d\s().-]{7,}\d/g);
-                                const normalizedNumber = textMatch
-                                    ? textMatch[0].replace(/\D/g, '')
-                                    : '';
-                                if (normalizedNumber.length < 8 || normalizedNumber.length > 15) {
-                                    return 'Unknown';
-                                }
-                                const foundNumber = `+${normalizedNumber}`;
-
-                                btn.click();
-                                btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                                return foundNumber;
-                            }
-                            matches++;
+                        if (!matched) continue;
+                        const cardText = (curr.innerText || curr.textContent || '').replace(/\s+/g, ' ').trim();
+                        diagnostics.push({ match: matches + 1, depth: matchedDepth, button: (btn.innerText || '').trim(), cardText: cardText.slice(0, 500) });
+                        if (matches === index) {
+                            const phoneCandidates = cardText.match(/(?:\+?\s*)?\d[\d\s().-]{7,}\d/g) || [];
+                            const normalizedNumber = phoneCandidates
+                                .map(value => value.replace(/\D/g, ''))
+                                .filter(value => value.length >= 8 && value.length <= 15)
+                                .sort((a, b) => b.length - a.length)[0] || '';
+                            if (!normalizedNumber) return { number: 'Unknown', diagnostics };
+                            const foundNumber = `+${normalizedNumber}`;
+                            btn.click();
+                            btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                            return { number: foundNumber, diagnostics };
                         }
+                        matches++;
                     }
-                    return "Unknown";
+                    return { number: 'Unknown', diagnostics };
                 }, targetSuffix, idx));
             }
-            const unknownClaims = claimedNumbers.filter(number => number === 'Unknown').length;
+            const unknownClaims = claimedNumbers.filter(result => result.number === 'Unknown').length;
             if (unknownClaims > 0) {
-                throw new Error(`Only ${activeTabsCount - unknownClaims}/${activeTabsCount} tab(s) claimed a matching task; exact phone numbers could not be verified.`);
+                const details = claimedNumbers
+                    .map((result, index) => result.number === 'Unknown'
+                        ? `Tab ${index + 1}: ${JSON.stringify(result.diagnostics)}`
+                        : null)
+                    .filter(Boolean)
+                    .join(' | ');
+                throw new Error(`Only ${activeTabsCount - unknownClaims}/${activeTabsCount} tab(s) claimed a matching task; exact phone numbers could not be verified. ${details}`);
             }
+            const claimedNumberValues = claimedNumbers.map(result => result.number);
 
             const claimIndexByNumber = new Map();
             const duplicateClaims = [];
-            claimedNumbers.forEach((number, index) => {
+            claimedNumberValues.forEach((number, index) => {
                 const normalized = String(number).replace(/\D/g, '');
                 if (claimIndexByNumber.has(normalized)) {
                     duplicateClaims.push(`${number} (Tabs ${claimIndexByNumber.get(normalized) + 1} and ${index + 1})`);
@@ -1994,7 +1999,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             const feedbackSummary = feedbackResults.map(result =>
                 `Tab ${result.tabNumber}: ${result.status}${result.message ? ` (${result.message})` : ''}`
             ).join('\n');
-            const targetsClaimedStr = claimedNumbers.join('\n');
+            const targetsClaimedStr = claimedNumberValues.join('\n');
             const loopDollarsEarned = loopPointsEarned / WSJOBS_POINTS_PER_DOLLAR;
             const totalDollarsEarned = totalPoints / WSJOBS_POINTS_PER_DOLLAR;
             await updateStatus(`[SYSTEM] Loop ${loopCount} Result:\n\nTargets Hit:\n${targetsClaimedStr}\n\nFeedback:\n${feedbackSummary}\n\nToday Points: ${startingPoints} → ${finalTodayPoints}\nLoop Points Earned: $${loopDollarsEarned.toFixed(2)} (${loopPointsEarned} points)\nTotal Earned: $${totalDollarsEarned.toFixed(2)} (${totalPoints} points)`);
