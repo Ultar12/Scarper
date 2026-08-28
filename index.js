@@ -3158,20 +3158,25 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             }
 
             const activePages = pages.slice(0, activeTabsCount);
-            
-            await Promise.all(activePages.map(p => p.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded' })));
-            
-            await Promise.all(activePages.map(p => p.waitForFunction(() => {
-                return Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
-                    .some(el => /Send Task|SEND/i.test(el.innerText?.trim()));
-            }, { timeout: 15000 }).catch(()=>{})));
-            
-            await delay(1500); 
+
+            // Synchronize preparation tab by tab. No parallel action happens
+            // before the final Confirm step.
+            for (const page of activePages) {
+                await page.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded' });
+                await page.waitForFunction(() => Array.from(
+                    document.querySelectorAll('button, [class*="btn"], [class*="button"]')
+                ).some(el => /Send Task|SEND/i.test(el.innerText?.trim()) && el.offsetHeight > 0), {
+                    timeout: 15000
+                });
+            }
+            await delay(1500);
 
             // CLAIM NUMBERS & LOG WHO TOOK WHAT
-            await updateStatus(`[SYSTEM] Loop ${loopCount}: Claiming targets...`);
-            const claimedNumbers = await Promise.all(activePages.map(async (p, idx) => {
-                return await p.evaluate((suffix, index) => {
+            await updateStatus(`[SYSTEM] Loop ${loopCount}: Claiming targets in synchronized order...`);
+            const claimedNumbers = [];
+            for (let idx = 0; idx < activePages.length; idx++) {
+                const p = activePages[idx];
+                claimedNumbers.push(await p.evaluate((suffix, index) => {
                     const btns = Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
                         .filter(el => /Send Task|SEND/i.test(el.innerText?.trim()) && el.offsetHeight > 0);
                     
@@ -3201,8 +3206,8 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                         }
                     }
                     return "Unknown";
-                }, targetSuffix, idx);
-            }));
+                }, targetSuffix, idx));
+            }
             const unknownClaims = claimedNumbers.filter(number => number === 'Unknown').length;
             if (unknownClaims > 0) {
                 throw new Error(`Only ${activeTabsCount - unknownClaims}/${activeTabsCount} tab(s) claimed a matching task.`);
@@ -3212,16 +3217,14 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             // missing modal: that would make the final report claim tabs ran
             // when only a subset actually submitted.
             await updateStatus(`[SYSTEM] Loop ${loopCount}: Synchronizing ${activeTabsCount} confirmation modal(s)...`);
-            const readyStates = await Promise.all(activePages.map(async (p) => {
-                return await p.waitForFunction(() => Array.from(
+            // Wait for every tab one by one. Only after this loop completes are
+            // all tabs guaranteed to be sitting at Confirm.
+            for (const page of activePages) {
+                await page.waitForFunction(() => Array.from(
                     document.querySelectorAll('button, [class*="btn"], [class*="button"]')
                 ).some(el => /confirm/i.test(el.innerText?.trim()) && el.offsetHeight > 0), {
                     timeout: 15000
-                }).then(() => true).catch(() => false);
-            }));
-            const readyCount = readyStates.filter(Boolean).length;
-            if (readyCount !== activeTabsCount) {
-                throw new Error(`Only ${readyCount}/${activeTabsCount} tab(s) reached the Confirm step.`);
+                });
             }
 
             await delay(1000); // Give every modal a moment to finish animating.
@@ -3249,9 +3252,12 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             // WAIT FOR FEEDBACK FROM EVERY ACTIVE TAB. A fixed sleep could report
             // zero while tabs were still processing, or miss slower tabs entirely.
             await updateStatus(`[SYSTEM] Loop ${loopCount}: Waiting for feedback from all ${activeTabsCount} tab(s)...`);
-            const feedbackResults = await Promise.all(activePages.map((p, idx) =>
-                waitForWsjobsTaskFeedbackPuppeteer(p, idx + 1, 30000)
-            ));
+            const feedbackResults = [];
+            for (let idx = 0; idx < activePages.length; idx++) {
+                feedbackResults.push(await waitForWsjobsTaskFeedbackPuppeteer(
+                    activePages[idx], idx + 1, 30000
+                ));
+            }
             lastFeedbackResults = feedbackResults;
             const successfulFeedback = feedbackResults.filter(result => result.status === 'success').length;
             const failedFeedback = feedbackResults.filter(result => result.status === 'failed').length;
