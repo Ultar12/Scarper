@@ -117,7 +117,6 @@ process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
 const fs = require('fs');
 const { execSync } = require('child_process');
 const express = require('express');
-const youtubedl = require('youtube-dl-exec');
 const TelegramBot = require('node-telegram-bot-api');
 const { Client, RemoteAuth } = require('whatsapp-web.js');
 const { PostgresStore } = require('wwebjs-postgres');
@@ -129,7 +128,6 @@ const QRCode = require('qrcode');
 const { remote } = require('webdriverio');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const ytSearch = require('yt-search');
 const pdf = require('pdf-parse');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
@@ -150,20 +148,6 @@ const upload = multer({ limits: { fileSize: 25 * 1024 * 1024 } }); // 25MB limit
 
 
 const { PuppeteerScreenRecorder } = require('puppeteer-screen-recorder');
-const playCache = {};
-
-// --- YOUTUBE AUTHENTICATION COMPILER ---
-const cookiePath = path.join(__dirname, 'cookies.txt');
-
-const BGUTIL_SERVER_HOME = path.join(__dirname, 'bgutil-ytdlp-pot-provider', 'server');
-const BGUTIL_PLUGIN_DIR = path.join(__dirname, 'yt-dlp-plugins');
-
-const POT_ARGS = fs.existsSync(BGUTIL_SERVER_HOME) ? [
-    '--plugin-dirs', BGUTIL_PLUGIN_DIR,
-    '--extractor-args', `youtubepot-bgutilscript:server_home=${BGUTIL_SERVER_HOME}`
-] : [];
-
-
 // Prevent unhandled stream errors from crashing the app
 process.on('uncaughtException', (err) => {
     console.error('[UNCAUGHT EXCEPTION]', err.message);
@@ -190,14 +174,14 @@ function getChromePath() {
         '/usr/bin/chromium',
         '/usr/bin/chromium-browser'
     ];
-    
+
     for (const path of possiblePaths) {
         if (path && fs.existsSync(path)) {
             console.log(`[SYSTEM] Found Chrome at: ${path}`);
             return path;
         }
     }
-    
+
     try {
         const osPath = execSync('which chrome').toString().trim();
         console.log(`[SYSTEM] OS located Chrome at: ${osPath}`);
@@ -206,387 +190,6 @@ function getChromePath() {
         console.log('[ERROR] Could not locate Chrome path automatically.');
         return null;
     }
-}
-
-const MEDIA_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
-const MAX_MEDIA_HEIGHT = 2160;
-
-function isPinterestUrl(rawUrl) {
-    try {
-        const hostname = new URL(rawUrl).hostname.toLowerCase();
-        return hostname === 'pin.it' || hostname === 'www.pin.it' || hostname === 'pinterest.com' || hostname.endsWith('.pinterest.com') || hostname.endsWith('.pinterest.co.uk') || hostname.endsWith('.pinterest.ca');
-    } catch {
-        return false;
-    }
-}
-
-function isYouTubeUrl(rawUrl) {
-    try {
-        const hostname = new URL(rawUrl).hostname.toLowerCase().replace(/^www\./, '');
-        return hostname === 'youtube.com' || hostname.endsWith('.youtube.com') || hostname === 'youtu.be';
-    } catch {
-        return false;
-    }
-}
-
-const ADULT_VIDEO_HOSTS = new Set([
-    'pornhub.com', 'xvideos.com', 'xnxx.com', 'xhamster.com', 'redtube.com',
-    'spankbang.com', 'tube8.com', 'eporner.com', 'txxx.com', 'youporn.com'
-]);
-
-function isPublicAdultVideoUrl(rawUrl) {
-    try {
-        const hostname = new URL(rawUrl).hostname.toLowerCase().replace(/^www\./, '');
-        return [...ADULT_VIDEO_HOSTS].some((domain) => hostname === domain || hostname.endsWith(`.${domain}`));
-    } catch {
-        return false;
-    }
-}
-
-const TELEGRAM_MAX_VIDEO_BYTES = 49 * 1024 * 1024;
-
-function telegramPartPaths(videoPath) {
-    const directory = path.dirname(videoPath);
-    const prefix = `${path.basename(videoPath)}.part-`;
-    return fs.readdirSync(directory)
-        .filter((name) => name.startsWith(prefix) && name.endsWith('.mp4'))
-        .map((name) => path.join(directory, name))
-        .sort();
-}
-
-async function prepareTelegramVideoFiles(videoPath) {
-    if (!fs.existsSync(videoPath)) throw new Error('The downloader produced no video file.');
-    if (fs.statSync(videoPath).size <= TELEGRAM_MAX_VIDEO_BYTES) return [videoPath];
-
-    const ffmpegPath = process.env.FFMPEG_PATH || process.env.HEROKU_FFMPEG_BIN || 'ffmpeg';
-    const ffprobePath = process.env.FFPROBE_PATH || 'ffprobe';
-    let duration = 0;
-    try {
-        const probe = await execFilePromise(ffprobePath, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', videoPath]);
-        duration = Number.parseFloat(String(probe.stdout).trim()) || 0;
-    } catch {}
-
-    const originalBytes = fs.statSync(videoPath).size;
-    let segmentSeconds = duration > 0
-        ? Math.max(10, duration * (TELEGRAM_MAX_VIDEO_BYTES / originalBytes) * 0.82)
-        : 60;
-    const outputPattern = path.join(path.dirname(videoPath), `${path.basename(videoPath)}.part-%03d.mp4`);
-
-    for (let attempt = 0; attempt < 6; attempt++) {
-        for (const part of telegramPartPaths(videoPath)) {
-            try { fs.unlinkSync(part); } catch {}
-        }
-        try {
-            await execFilePromise(ffmpegPath, [
-                '-y', '-i', videoPath, '-map', '0', '-c', 'copy',
-                '-f', 'segment', '-segment_time', String(Math.floor(segmentSeconds)),
-                '-reset_timestamps', '1', '-break_non_keyframes', '1', '-segment_format', 'mp4', outputPattern
-            ], { maxBuffer: 1024 * 1024 });
-        } catch {}
-
-        const parts = telegramPartPaths(videoPath);
-        if (parts.length > 1 && parts.every((part) => fs.statSync(part).size <= TELEGRAM_MAX_VIDEO_BYTES)) {
-            return parts;
-        }
-        for (const part of parts) {
-            try { fs.unlinkSync(part); } catch {}
-        }
-        segmentSeconds = Math.max(5, segmentSeconds * 0.68);
-    }
-    throw new Error('The 1080p video could not be split into Telegram-sized MP4 parts.');
-}
-
-async function sendTelegramVideo(bot, chatId, videoPath, caption) {
-    const files = await prepareTelegramVideoFiles(videoPath);
-    try {
-        if (files.length === 1) {
-            await bot.sendVideo(chatId, files[0], { caption });
-        } else {
-            for (let index = 0; index < files.length; index++) {
-                await bot.sendDocument(chatId, files[index], {
-                    caption: `${caption}\nPart ${index + 1}/${files.length} — original quality preserved`
-                });
-            }
-        }
-        return { count: files.length, bytes: files.reduce((total, file) => total + fs.statSync(file).size, 0) };
-    } finally {
-        for (const file of files) {
-            if (file !== videoPath && fs.existsSync(file)) {
-                try { fs.unlinkSync(file); } catch {}
-            }
-        }
-    }
-}
-
-async function downloadPublicVideo(sourceUrl, outputPath, requestedHeight = MAX_MEDIA_HEIGHT) {
-    const maxHeight = Math.max(144, Math.min(MAX_MEDIA_HEIGHT, Number(requestedHeight) || MAX_MEDIA_HEIGHT));
-    await youtubedl(sourceUrl, {
-        output: outputPath,
-        format: `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/best`,
-        mergeOutputFormat: 'mp4',
-        recodeVideo: 'mp4',
-        noPlaylist: true,
-        noWarnings: true,
-        ...(fs.existsSync(BGUTIL_SERVER_HOME) ? {
-            pluginDirs: BGUTIL_PLUGIN_DIR,
-            extractorArgs: `youtubepot-bgutilscript:server_home=${BGUTIL_SERVER_HOME}`
-        } : {})
-    });
-    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1024) {
-        throw new Error('The site returned no valid video file. The URL may be private, age-gated, paywalled, DRM-protected, or unavailable.');
-    }
-}
-
-async function deliverPublicAdultVideo(bot, chatId, videoPath, caption) {
-    if (!fs.existsSync(videoPath)) throw new Error('The downloaded adult video file no longer exists.');
-    const fileSize = fs.statSync(videoPath).size;
-    if (fileSize > TELEGRAM_MAX_VIDEO_BYTES) {
-        await bot.sendDocument(chatId, videoPath, {
-            caption: `${caption}\nOriginal quality up to 4K — full file attached`
-        }, {
-            filename: `adult-video-${Date.now()}.mp4`,
-            contentType: 'video/mp4'
-        });
-        return { count: 1, bytes: fileSize, document: true };
-    }
-    await bot.sendVideo(chatId, videoPath, { caption });
-    return { count: 1, bytes: fileSize, document: false };
-}
-
-function isNetscapeCookieFile(filePath) {
-    try {
-        const header = fs.readFileSync(filePath, 'utf8').split(/\r?\n/, 1)[0].trim();
-        return header === '# Netscape HTTP Cookie File' || header === '# HTTP Cookie File';
-    } catch {
-        return false;
-    }
-}
-
-function getYouTubeCookiePath() {
-    const candidates = [
-        process.env.YOUTUBE_COOKIES_PATH,
-        cookiePath,
-        path.join(__dirname, 'cookies.txt')
-    ].filter(Boolean);
-    const cookieFile = candidates.find(candidate => fs.existsSync(candidate)) || null;
-    if (cookieFile && isNetscapeCookieFile(cookieFile)) return cookieFile;
-    if (cookieFile) console.warn(`[YOUTUBE] Ignoring non-Netscape cookie file: ${cookieFile}`);
-    return null;
-}
-
-function getYouTubeVideoId(sourceUrl) {
-    const parsed = new URL(sourceUrl);
-    const queryId = parsed.searchParams.get('v');
-    if (queryId) return queryId;
-    if (parsed.hostname.replace(/^www\./, '') === 'youtu.be') return parsed.pathname.split('/').filter(Boolean)[0] || null;
-    return parsed.pathname.match(/\/(?:shorts|embed|live)\/([^/?]+)/i)?.[1] || null;
-}
-
-const PIPED_API_INSTANCES = [
-    process.env.PIPED_API_URL,
-    'https://pipedapi.kavin.rocks',
-    'https://pipedapi.leptons.xyz',
-    'https://pipedapi.adminforge.de',
-    'https://api.piped.yt',
-    'https://pipedapi.drgns.space'
-].filter((value, index, values) => value && values.indexOf(value) === index).map(value => value.replace(/\/+$/, ''));
-
-function sortByBestMediaHeight(a, b) {
-    const aHeight = Number(a.height) || 0;
-    const bHeight = Number(b.height) || 0;
-    const aWithinCap = aHeight > 0 && aHeight <= MAX_MEDIA_HEIGHT ? 1 : 0;
-    const bWithinCap = bHeight > 0 && bHeight <= MAX_MEDIA_HEIGHT ? 1 : 0;
-    return bWithinCap - aWithinCap || bHeight - aHeight || (Number(b.bitrate) || 0) - (Number(a.bitrate) || 0);
-}
-
-async function downloadRemoteStreamToFile(url, outputPath, headers = {}) {
-    const response = await axios.get(url, {
-        responseType: 'stream',
-        timeout: 120000,
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity,
-        headers
-    });
-    await new Promise((resolve, reject) => {
-        const output = fs.createWriteStream(outputPath);
-        let settled = false;
-        const fail = error => {
-            if (settled) return;
-            settled = true;
-            output.destroy();
-            reject(error);
-        };
-        response.data.once('error', fail);
-        output.once('error', fail);
-        output.once('finish', () => {
-            if (settled) return;
-            settled = true;
-            resolve();
-        });
-        response.data.pipe(output);
-    });
-}
-
-async function normalizeVideoToMp4(inputPath, outputPath) {
-    await execFilePromise('ffmpeg', [
-        '-y', '-i', inputPath,
-        '-map', '0:v:0', '-map', '0:a:0?',
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
-        '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
-        '-movflags', '+faststart', outputPath
-    ], { timeout: 600000 });
-    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1024) {
-        throw new Error('FFmpeg produced no valid MP4 output.');
-    }
-}
-
-async function downloadYouTubeViaPiped(sourceUrl, outputPath) {
-    const videoId = getYouTubeVideoId(sourceUrl);
-    if (!videoId) throw new Error('Could not parse a YouTube video ID for the alternate stream fallback.');
-
-    let lastError = null;
-    for (const instance of PIPED_API_INSTANCES) {
-        const videoTempPath = `${outputPath}.piped-video`;
-        const audioTempPath = `${outputPath}.piped-audio`;
-        let downloaded = false;
-        try {
-            const metadata = await axios.get(`${instance}/streams/${encodeURIComponent(videoId)}`, {
-                timeout: 20000,
-                headers: { 'User-Agent': process.env.YOUTUBE_USER_AGENT || MEDIA_USER_AGENT }
-            });
-            const headers = {
-                'User-Agent': process.env.YOUTUBE_USER_AGENT || MEDIA_USER_AGENT,
-                'Referer': 'https://www.youtube.com/'
-            };
-            const videoStreams = (metadata.data?.videoStreams || [])
-                .filter(stream => stream?.url && stream.mimeType?.toLowerCase().startsWith('video/'))
-                .sort(sortByBestMediaHeight);
-            const audioStreams = (metadata.data?.audioStreams || [])
-                .filter(stream => stream?.url && (stream.mimeType?.toLowerCase().startsWith('audio/mp4') || stream.format === 'M4A'))
-                .sort((a, b) => (Number(b.bitrate) || 0) - (Number(a.bitrate) || 0));
-            const combinedStream = videoStreams.find(stream => stream.videoOnly !== true);
-            const videoStream = videoStreams[0];
-            if (!videoStream) throw new Error('Piped returned no MP4 video stream.');
-
-            if (combinedStream) {
-                await downloadRemoteStreamToFile(combinedStream.url, videoTempPath, headers);
-                await normalizeVideoToMp4(videoTempPath, outputPath);
-            } else {
-                const audioStream = audioStreams[0];
-                if (!audioStream) throw new Error('Piped returned separate video but no MP4 audio stream.');
-                await Promise.all([
-                    downloadRemoteStreamToFile(videoStream.url, videoTempPath, headers),
-                    downloadRemoteStreamToFile(audioStream.url, audioTempPath, headers)
-                ]);
-                await execFilePromise('ffmpeg', [
-                    '-y', '-i', videoTempPath, '-i', audioTempPath,
-                    '-map', '0:v:0', '-map', '1:a:0',
-                    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
-                    '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
-                    '-movflags', '+faststart', outputPath
-                ], { timeout: 180000 });
-            }
-            if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1024) {
-                downloaded = true;
-                return;
-            }
-            throw new Error('Piped returned an empty video stream.');
-        } catch (error) {
-            lastError = error;
-            console.log(`[YOUTUBE PIPED] ${instance} failed: ${error.message}`);
-        } finally {
-            for (const tempPath of [videoTempPath, audioTempPath]) {
-                if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-            }
-            if (!downloaded && fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-        }
-    }
-    throw lastError || new Error('No Piped instance returned a usable YouTube stream.');
-}
-
-function buildYouTubeDownloadOptions(outputPath, format = null, cookies = null, ignoreCookies = false, client = 'android_music') {
-    return {
-        output: outputPath,
-        ...(format ? { format } : {}),
-        mergeOutputFormat: 'mp4',
-        recodeVideo: 'mp4',
-        noPlaylist: true,
-        noWarnings: true,
-        jsRuntimes: 'nodejs',
-        remoteComponents: 'ejs:github',
-        userAgent: process.env.YOUTUBE_USER_AGENT || MEDIA_USER_AGENT,
-        httpChunkSize: '10M',
-        extractorArgs: [
-            ...(client ? [`youtube:player_client=${client}`] : []),
-            ...(fs.existsSync(BGUTIL_SERVER_HOME) ? [`youtubepot-bgutilscript:server_home=${BGUTIL_SERVER_HOME}`] : [])
-        ],
-        ...(fs.existsSync(BGUTIL_SERVER_HOME) ? { pluginDirs: BGUTIL_PLUGIN_DIR } : {}),
-        ...(ignoreCookies ? { noCookies: true } : {}),
-        ...(cookies ? { cookies } : {})
-    };
-}
-
-async function downloadYouTubeVideo(sourceUrl, outputPath) {
-    const cookies = getYouTubeCookiePath();
-    const formats = [
-        null,
-        'bv*+ba/best',
-        'bestvideo*+bestaudio/best',
-        'best'
-    ];
-    const clients = [null, 'android_music', 'web', 'web_safari', 'tv_embedded'];
-    const authenticatedAttempts = cookies
-        ? clients.flatMap(client => formats.map(format => buildYouTubeDownloadOptions(outputPath, format, cookies, false, client)))
-        : [];
-    const anonymousAttempts = clients.flatMap(client => formats.map(format => buildYouTubeDownloadOptions(outputPath, format, null, true, client)));
-    const attempts = [...anonymousAttempts, ...authenticatedAttempts];
-    let lastError = null;
-    for (let index = 0; index < attempts.length; index++) {
-        const options = attempts[index];
-        const hasCookies = Boolean(options.cookies);
-        const clientLabel = options.extractorArgs.find(value => value.startsWith('youtube:player_client='))?.split('=')[1] || 'auto';
-        console.log(`[YOUTUBE] Attempt ${index + 1}/${attempts.length} client=${clientLabel} cookies=${hasCookies ? 'yes' : 'no'} format=${options.format || 'default'}`);
-        try {
-            await youtubedl(sourceUrl, options);
-            if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) return;
-        } catch (error) {
-            lastError = error;
-            if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-        }
-    }
-    try {
-        console.log('[YOUTUBE] yt-dlp attempts exhausted; trying alternate Piped stream fallback.');
-        await downloadYouTubeViaPiped(sourceUrl, outputPath);
-        return;
-    } catch (alternateError) {
-        lastError = alternateError;
-    }
-    throw lastError || new Error('No YouTube downloader path returned a video file.');
-}
-
-function normalizeMediaUrl(rawUrl, baseUrl) {
-    if (!rawUrl || typeof rawUrl !== 'string') return null;
-
-    let value = rawUrl
-        .replaceAll('\\u002F', '/')
-        .replaceAll('\\/', '/')
-        .replace(/&amp;/gi, '&')
-        .trim()
-        .replace(/[),.;}\]]+$/, '');
-
-    try {
-        const resolved = new URL(value, baseUrl);
-        if (!['http:', 'https:'].includes(resolved.protocol)) return null;
-        return resolved.href;
-    } catch {
-        return null;
-    }
-}
-
-function normalizePinterestImageUrl(rawUrl) {
-    const url = normalizeMediaUrl(rawUrl, 'https://www.pinterest.com/');
-    if (!url || !url.includes('pinimg.com')) return url;
-    return url.replace(/\/(?:\d+x\d*|originals)\//i, '/originals/');
 }
 
 function launchPlaywrightBrowser(options = {}) {
@@ -605,141 +208,6 @@ function launchScraperBrowser() {
     const chromePath = getChromePath();
     if (chromePath) launchOptions.executablePath = chromePath;
     return puppeteer.launch(launchOptions);
-}
-
-async function extractPinterestMedia(page) {
-    const media = await page.evaluate(() => {
-        const candidates = [];
-        const add = (value, kind) => {
-            if (typeof value !== 'string' || !/^https?:/i.test(value)) return;
-            candidates.push({ url: value, kind });
-        };
-
-        document.querySelectorAll('video, source').forEach((element) => {
-            add(element.currentSrc || element.src, 'video');
-            add(element.getAttribute('src'), 'video');
-        });
-        document.querySelectorAll('meta[property="og:video"], meta[property="og:video:url"], meta[name="twitter:player:stream"]').forEach((element) => add(element.content, 'video'));
-        document.querySelectorAll('img').forEach((element) => {
-            if (element.naturalWidth >= 120 && element.naturalHeight >= 120) {
-                add(element.currentSrc || element.src, 'image');
-                add(element.getAttribute('data-src'), 'image');
-            }
-        });
-        document.querySelectorAll('meta[property="og:image"], meta[name="twitter:image"], link[rel="image_src"]').forEach((element) => {
-            add(element.content || element.href, 'image');
-        });
-
-        // Pinterest frequently stores the original media in serialized page state rather than visible DOM.
-        const pageState = Array.from(document.scripts).map((script) => script.textContent || '').join('\\n')
-            .replaceAll('\\u002F', '/')
-            .replaceAll('\\/', '/');
-        const pinimgPattern = /https?:\/\/(?:i|v1)\.pinimg\.com\/[^"'\\\s<>),;}\]]+/gi;
-        for (const match of pageState.matchAll(pinimgPattern)) {
-            const decoded = match[0].replaceAll('\\u002F', '/').replaceAll('\\/', '/');
-            add(decoded, /\.(?:mp4|m3u8)(?:[?#]|$)/i.test(decoded) || /\/videos\//i.test(decoded) ? 'video' : 'image');
-        }
-
-        const videos = [...new Set(candidates.filter((item) => item.kind === 'video').map((item) => item.url))];
-        const images = [...new Set(candidates.filter((item) => item.kind === 'image').map((item) => item.url))];
-        const preferredVideo = videos.find((url) => /\.(?:mp4|m3u8)(?:[?#]|$)/i.test(url)) || videos.find((url) => /\/videos\//i.test(url)) || videos[0];
-        if (preferredVideo) return { type: 'video', url: preferredVideo };
-
-        const originalImages = images.filter((url) => /\/originals\//i.test(url));
-        const usableImages = originalImages.length ? originalImages : images.filter((url) => !/(?:\/75x75|\/236x|\/474x|\/564x|\/60x60)\//i.test(url));
-        if (usableImages.length) return { type: 'images', urls: usableImages.slice(0, 20) };
-        return null;
-    });
-
-    if (!media) return null;
-    if (media.type === 'video') {
-        const url = normalizeMediaUrl(media.url, page.url());
-        return url ? { type: 'video', url } : null;
-    }
-
-    const urls = [...new Set(media.urls.map(normalizePinterestImageUrl).filter(Boolean))];
-    return urls.length ? { type: 'images', urls } : null;
-}
-
-async function fetchRemoteMediaBuffer(mediaUrl) {
-    const response = await axios.get(mediaUrl, {
-        responseType: 'arraybuffer',
-        timeout: 120000,
-        maxContentLength: 50 * 1024 * 1024,
-        headers: {
-            'User-Agent': MEDIA_USER_AGENT,
-            'Referer': 'https://www.pinterest.com/'
-        }
-    });
-    return Buffer.from(response.data);
-}
-
-async function downloadPinterestVideo(mediaUrl, outputPath) {
-    const sourcePath = `${outputPath}.source`;
-    try {
-        const isHls = /\.m3u8(?:[?#]|$)/i.test(mediaUrl);
-        if (isHls) {
-            await youtubedl(mediaUrl, {
-                output: sourcePath,
-                format: 'best',
-                mergeOutputFormat: 'mp4',
-                noWarnings: true,
-                addHeader: ['Referer: https://www.pinterest.com/', `User-Agent: ${MEDIA_USER_AGENT}`]
-            });
-        } else {
-            const buffer = await fetchRemoteMediaBuffer(mediaUrl);
-            fs.writeFileSync(sourcePath, buffer);
-        }
-        if (!fs.existsSync(sourcePath) || fs.statSync(sourcePath).size < 1024) {
-            throw new Error('Pinterest returned an empty or invalid video file.');
-        }
-        await normalizeVideoToMp4(sourcePath, outputPath);
-    } finally {
-        if (fs.existsSync(sourcePath)) fs.unlinkSync(sourcePath);
-    }
-}
-
-async function resolvePinterestMedia(sourceUrl) {
-    let browser = null;
-    try {
-        browser = await launchScraperBrowser();
-        const page = await browser.newPage();
-        const networkMedia = new Set();
-        page.on('response', (response) => {
-            const responseUrl = response.url();
-            if (/^https?:\/\/(?:i|v1)\.pinimg\.com\//i.test(responseUrl) && /\.(?:mp4|m3u8|jpg|jpeg|png|webp)(?:[?#]|$)/i.test(responseUrl)) {
-                networkMedia.add(responseUrl);
-            }
-        });
-        await page.setUserAgent(MEDIA_USER_AGENT);
-        await page.setExtraHTTPHeaders({
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://www.pinterest.com/'
-        });
-        await page.goto(sourceUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-        await delay(3500);
-
-        let media = await extractPinterestMedia(page);
-        if (!media && networkMedia.size) {
-            const videos = [...networkMedia].filter((candidate) => /\.(?:mp4|m3u8)(?:[?#]|$)/i.test(candidate) || /\/videos\//i.test(candidate));
-            const images = [...networkMedia].filter((candidate) => !videos.includes(candidate)).map(normalizePinterestImageUrl);
-            media = videos.length ? { type: 'video', url: videos[0] } : (images.length ? { type: 'images', urls: [...new Set(images)] } : null);
-        }
-        if (!media) {
-            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-            await delay(2000);
-            media = await extractPinterestMedia(page);
-            if (!media && networkMedia.size) {
-                const videos = [...networkMedia].filter((candidate) => /\.(?:mp4|m3u8)(?:[?#]|$)/i.test(candidate) || /\/videos\//i.test(candidate));
-                const images = [...networkMedia].filter((candidate) => !videos.includes(candidate)).map(normalizePinterestImageUrl);
-                media = videos.length ? { type: 'video', url: videos[0] } : (images.length ? { type: 'images', urls: [...new Set(images)] } : null);
-            }
-        }
-        if (!media) throw new Error('Pinterest returned no public image or video URL. The pin may be private, deleted, or login-gated.');
-        return media;
-    } finally {
-        if (browser) await browser.close().catch(() => {});
-    }
 }
 
 // --- 1. HEROKU POSTGRESQL SETUP ---
@@ -787,21 +255,21 @@ function prepareGhostCookies() {
     try {
         const rawData = fs.readFileSync(jsonPath, 'utf8');
         const cookies = JSON.parse(rawData);
-        
+
         let netscapeFormat = "# Netscape HTTP Cookie File\n# Auto-Generated by Node.js\n\n";
-        
+
         for (let c of cookies) {
             let domain = c.domain || '';
             let includeSub = domain.startsWith('.') ? 'TRUE' : 'FALSE';
             let pathStr = c.path || '/';
             let secure = c.secure ? 'TRUE' : 'FALSE';
-            
+
             // Handle different JSON time formats
             let expiry = 0;
             if (c.expirationDate) expiry = Math.round(c.expirationDate);
             else if (c.expires) expiry = Math.round(c.expires);
             else expiry = Math.round(Date.now() / 1000) + (60 * 60 * 24 * 365); // Default 1 year
-            
+
             netscapeFormat += `${domain}\t${includeSub}\t${pathStr}\t${secure}\t${expiry}\t${c.name}\t${c.value}\n`;
         }
 
@@ -828,7 +296,7 @@ pool.query(`
     // Check if we need to insert the first row
     const res = await pool.query('SELECT * FROM wstask_stats LIMIT 1');
     if (res.rows.length === 0) {
-        await pool.query('INSERT INTO wstask_stats (daily_count, last_reset_date) VALUES (0, $1)', 
+        await pool.query('INSERT INTO wstask_stats (daily_count, last_reset_date) VALUES (0, $1)',
             [new Date().toLocaleDateString('en-NG', { timeZone: 'Africa/Lagos' })]);
     }
     console.log('[SYSTEM] WSTASK Stats DB Ready.');
@@ -842,9 +310,9 @@ const saveSessionToDB = async (platform, page) => {
         const cookies = await page.cookies();
         // Extract all cache/localStorage
         const localStorageData = await page.evaluate(() => Object.assign({}, window.localStorage));
-        
+
         await pool.query(
-            `INSERT INTO browser_sessions (platform, cookies, local_storage) VALUES ($1, $2, $3) 
+            `INSERT INTO browser_sessions (platform, cookies, local_storage) VALUES ($1, $2, $3)
              ON CONFLICT (platform) DO UPDATE SET cookies = EXCLUDED.cookies, local_storage = EXCLUDED.local_storage`,
             [platform, JSON.stringify(cookies), JSON.stringify(localStorageData)]
         );
@@ -859,7 +327,7 @@ const loadSessionFromDB = async (platform, page) => {
         const res = await pool.query(`SELECT cookies, local_storage FROM browser_sessions WHERE platform = $1`, [platform]);
         if (res.rows.length > 0) {
             const { cookies, local_storage } = res.rows[0];
-            
+
             if (cookies && cookies.length > 0) {
                 await page.setCookie(...cookies);
             }
@@ -914,7 +382,7 @@ let taskIdleTimer = null;
 // --- CONTINUOUS TASK MODE STATE ---
 let taskModeActive = false;
 let taskModeTimer = null;
-let autoScannerInterval = null; 
+let autoScannerInterval = null;
 let isTaskExecuting = false;    // Traffic light for the /task command
 let isRadarScanning = false;    // Traffic light for the background queue
 
@@ -924,7 +392,7 @@ let initialBalanceText = "0";
 let initialBalanceNum = 0;
 
 // --- WT BURNER SESSION TRACKER ---
-const wtSessions = {}; 
+const wtSessions = {};
 
 // --- WSTASK STATE & TRACKING ---
 let wsTaskMode = false;
@@ -937,7 +405,7 @@ let wsLastResetDate = new Date().toLocaleDateString('en-NG', { timeZone: 'Africa
 const appiumSessions = {};
 
 // --- AUTHORIZATION CONFIG ---
-const ADMIN_ID = process.env.ADMIN_ID || '7710721646'; 
+const ADMIN_ID = process.env.ADMIN_ID || '7710721646';
 
 // Split the SUBADMIN_ID string by commas into a real array
 const SUBADMIN_IDS = (process.env.SUBADMIN_ID || '').split(',').map(id => id.trim());
@@ -976,7 +444,7 @@ app.get('/', (req, res) => res.send('WhatsApp Bot running with Postgres Auth.'))
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-global.termuxSocket = null; 
+global.termuxSocket = null;
 let fileMeta = null;
 
 wss.on('connection', (ws) => {
@@ -990,7 +458,7 @@ global.fileStorage = new Map();
 
 
 
- 
+
 
     ws.on('message', async (data, isBinary) => {
     try {
@@ -998,10 +466,10 @@ global.fileStorage = new Map();
         if (!isBinary) {
             const msg = JSON.parse(data.toString());
             if (msg.action === 'ping') return;
-            
+
             if (msg.action === 'file_delivery') {
-                fileMeta = msg; 
-            } 
+                fileMeta = msg;
+            }
             // --- CATCH TERMUX ERRORS ---
             else if (msg.action === 'error') {
                 if (msg.chatId === 'API_USER') {
@@ -1016,7 +484,7 @@ global.fileStorage = new Map();
                     await bot.editMessageText(`[ERROR] Termux: ${msg.message}`, { chat_id: msg.chatId, message_id: msg.msgId }).catch(()=>{});
                 }
             }
-        
+
                         // ==========================================
             // NEW: HANDLE AI RESPONSES FROM TERMUX
             // ==========================================
@@ -1025,7 +493,7 @@ global.fileStorage = new Map();
                 if (client) {
                     clearTimeout(client.timeout);
                     if (client.heartbeat) clearInterval(client.heartbeat); // KILL THE HEARTBEAT
-                    
+
                     global.waitingAiClients.delete(msg.reqId);
 
                     if (client.isApiCall) {
@@ -1041,12 +509,12 @@ global.fileStorage = new Map();
                             client.res.write(JSON.stringify({ success: false, error: msg.error }));
                             client.res.end();
                         }
-                    } 
+                    }
                     else {
                         // (Your Telegram logic remains completely unchanged below this)
                         if (msg.success) {
                             await bot.deleteMessage(client.chatId, client.msgId).catch(() => {});
-                            
+
                             const replyText = msg.text;
                             if (replyText.length > 4000) {
                                 const chunks = replyText.match(/[\s\S]{1,4000}/g);
@@ -1077,56 +545,56 @@ global.fileStorage = new Map();
             // Handle API Webhook Downloads
             if (chatId === 'API_USER') {
                 const clientData = global.waitingClients.get(msgId);
-                
+
                 if (clientData && clientData.res) {
                     const res = clientData.res;
 
                     if (clientData.heartbeat) {
                         clearInterval(clientData.heartbeat);
                     }
-                    
+
                     if (!res.headersSent) {
                         res.setHeader('Content-Type', ext === 'mp4' ? 'video/mp4' : 'audio/mpeg');
                     }
-                    
+
                     res.write(data);
-                    res.end(); 
-                    
+                    res.end();
+
                     global.waitingClients.delete(msgId);
                 }
                 fileMeta = null;
                 data = null;
                 return;
             }
-            
+
             // Handle Telegram Downloads
             await bot.editMessageText(`[SYSTEM] Streaming binary to Telegram...`, { chat_id: chatId, message_id: msgId }).catch(()=>{});
-            
+
             if (ext === 'mp4') {
                 await bot.sendVideo(
-                    chatId, 
-                    data, 
+                    chatId,
+                    data,
                     { supports_streaming: true },
                     { filename: `video_${Date.now()}.mp4`, contentType: 'video/mp4' }
                 ).catch(console.error);
             } else {
                 await bot.sendAudio(
-                    chatId, 
+                    chatId,
                     data,
                     {},
                     { filename: `audio_${Date.now()}.mp3`, contentType: 'audio/mpeg' }
                 ).catch(console.error);
             }
-            
+
             await bot.deleteMessage(chatId, msgId).catch(() => {});
-            
+
             fileMeta = null;
             data = null;
         }
     } catch (err) {
         console.error('[WS SERVER ERROR]', err);
     }
-}); 
+});
 
 
 
@@ -1166,7 +634,7 @@ async function getNgnRate() {
         const apiKey = process.env.EXCHANGE_RATE_API_KEY || '27b153ae2befc94acf2d3eab';
         const res = await fetch(`https://v6.exchangerate-api.com/v6/${apiKey}/latest/USD`);
         const data = await res.json();
-        
+
         if (data.result === 'success' && data.conversion_rates && data.conversion_rates.NGN) {
             cachedNgnRate = data.conversion_rates.NGN;
             lastRateFetch = now;
@@ -1177,18 +645,18 @@ async function getNgnRate() {
         console.log("[API ERROR] Failed to fetch NGN rate:", e.message);
     }
     // Fallback rate if the API goes down so the bot doesn't crash
-    return cachedNgnRate || 1500; 
+    return cachedNgnRate || 1500;
 }
 
 
 // --- TASK MODE IDLE TIMER HELPER ---
 function resetTaskModeTimer(chatId) {
     if (taskModeTimer) clearTimeout(taskModeTimer);
-    
+
     taskModeTimer = setTimeout(() => {
         taskModeActive = false;
         if (autoScannerInterval) clearInterval(autoScannerInterval);
-        
+
         bot.sendMessage(chatId, '[SYSTEM] Task Mode automatically ended after 30 minutes of inactivity.', {
             reply_markup: {
                 keyboard: [[{ text: 'Withdraw' }, { text: 'Balance' }]],
@@ -1205,12 +673,12 @@ function resetTaskModeTimer(chatId) {
 async function runAutoTaskScanner(chatId) {
     // Abort if task mode is off, if a strike is running, or if the radar is already busy
     if (!taskModeActive || isTaskExecuting || isRadarScanning) return;
-    
+
     isRadarScanning = true; // Lock the radar
 
     let scanContext = null;
     let scanPage = null;
-    let targetsToStrike = []; 
+    let targetsToStrike = [];
 
     try {
         // --- 1. THE COLD BOOT FIX ---
@@ -1235,7 +703,7 @@ async function runAutoTaskScanner(chatId) {
         // The radar must log in quickly so the site actually shows it the tasks
         await scanPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded', timeout: 30000 });
         await delay(3000);
-        
+
         await loginToWsjobs(scanPage);
 
         // Now teleport to the task board as an authenticated user
@@ -1244,15 +712,15 @@ async function runAutoTaskScanner(chatId) {
 
         // --- 3. DOM FREQUENCY ANALYZER ---
         const counts = await scanPage.evaluate(() => {
-            const btns = Array.from(document.querySelectorAll('*')).filter(el => 
+            const btns = Array.from(document.querySelectorAll('*')).filter(el =>
                 el.innerText?.trim().toUpperCase() === 'SEND' && el.offsetParent !== null
             );
-            
+
             let tracker = {};
             for (let btn of btns) {
                 let txt = btn.parentElement?.parentElement?.innerText || '';
-                let cleanTxt = txt.replace(/\s+/g, ' '); 
-                
+                let cleanTxt = txt.replace(/\s+/g, ' ');
+
                 let numMatch = cleanTxt.match(/[\d\*]{5,}(\d{2})/);
                 let suffix = numMatch ? numMatch[1] : (cleanTxt.match(/\d{2}(?=\D*$)/) || [])[0];
 
@@ -1278,24 +746,24 @@ async function runAutoTaskScanner(chatId) {
         if (scanContext) await scanContext.close().catch(() => {});
     }
 
-        
-        
+
+
             // --- 5. SEQUENTIAL EXECUTION QUEUE ---
     if (targetsToStrike.length > 0) {
         const queueList = targetsToStrike.map(t => t.suffix).join(', ');
-        
+
         // SILENT LOG: Replaced Telegram message with Heroku console log
         console.log(`[RADAR DETECTED] Found ${targetsToStrike.length} valid clusters: ${queueList}. Locking queue and initiating sequential strikes...`);
 
         for (let target of targetsToStrike) {
-            if (!taskModeActive) break; 
+            if (!taskModeActive) break;
 
-            resetTaskModeTimer(chatId); 
+            resetTaskModeTimer(chatId);
 
             // SILENT LOG: Replaced Telegram message with Heroku console log
             console.log(`[RADAR QUEUE] Triggering strike for suffix: ${target.suffix} (${target.count} targets)`);
 
-            // This invisibly triggers your normal /task command, which WILL still send the 
+            // This invisibly triggers your normal /task command, which WILL still send the
             // "[SYSTEM] Strike Protocol" message and the final screenshot to your chat.
             bot.processUpdate({
                 update_id: Date.now(),
@@ -1308,18 +776,18 @@ async function runAutoTaskScanner(chatId) {
                 }
             });
 
-            
+
             // We removed the while loop. It now waits exactly 60 seconds and fires the next one.
             console.log(`[RADAR QUEUE] Sleeping for exactly 1 minute before triggering the next target...`);
             await new Promise(r => setTimeout(r, 60000));
         }
-        
+
         console.log(`[RADAR QUEUE] All targets processed. Returning to silent background scan.`);
     } else {
         console.log(`[RADAR] Scan finished. Targets found, but none had 3 or more occurrences.`);
     }
 
-    isRadarScanning = false; 
+    isRadarScanning = false;
 }
 
 
@@ -1331,25 +799,25 @@ async function runAutoTaskScanner(chatId) {
 async function clearOnboardingPopups(page, updateStatus) {
     try {
         if (updateStatus) await updateStatus('[SYSTEM] Waiting for website to spawn tutorial popups...');
-        
+
         // Force the bot to wait up to 10 seconds for the popup to actually appear
         await page.waitForFunction(() => {
             const bodyText = document.body.innerText.toLowerCase();
             return bodyText.includes('1 of 6') || bodyText.includes('next →') || bodyText.includes('done');
         }, { timeout: 10000 });
-        
+
         if (updateStatus) await updateStatus('[SYSTEM] Popups detected! Engaging aggressive background sweeper...');
         let clickCount = 0;
-        
+
         // Loop 20 times to smash through all 6 steps completely
         for (let i = 0; i < 20; i++) {
             const clicked = await page.evaluate(() => {
                 const elements = Array.from(document.querySelectorAll('*'));
                 // Reverse read to hit the top overlay layer first
-                for (let el of elements.reverse()) { 
+                for (let el of elements.reverse()) {
                     if (el.offsetParent === null) continue;
                     const txt = (el.innerText || '').trim().toLowerCase();
-                    
+
                     if (txt === 'next' || txt === 'next →' || txt === 'done') {
                         // Ghost-click bypass
                         el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
@@ -1373,11 +841,11 @@ async function clearOnboardingPopups(page, updateStatus) {
                     const text = document.body.innerText.toLowerCase();
                     return text.includes('next →') || text.includes('1 of 6');
                 });
-                if (!isStillThere && clickCount > 0) break; 
-                await new Promise(r => setTimeout(r, 500)); 
+                if (!isStillThere && clickCount > 0) break;
+                await new Promise(r => setTimeout(r, 500));
             }
         }
-        
+
         if (updateStatus) await updateStatus(`[SYSTEM] Successfully cleared ${clickCount} popup steps.`);
         return true; // Returns true so your main command knows it needs to save the database
     } catch (e) {
@@ -1447,7 +915,7 @@ async function scrapeRecentOTPNumbers() {
         }
 
         await new Promise(r => setTimeout(r, 1000));
-        
+
         await page.evaluate(() => {
             const btns = Array.from(document.querySelectorAll('button'));
             for (let btn of btns) {
@@ -1503,13 +971,13 @@ async function scrapeRecentOTPNumbers() {
         for (let num of scrapedNumbers) {
             if (!seenTimesmsNumbers.has(num)) {
                 newNumbers.push(num);
-                seenTimesmsNumbers.add(num); 
+                seenTimesmsNumbers.add(num);
             }
         }
 
         if (newNumbers.length > 0) {
             console.log(`[SYSTEM] Preparing payload of ${newNumbers.length} new numbers...`);
-            
+
             // Format exact payload specification (newline separated string)
             const payload = {
                 text: newNumbers.join('\n')
@@ -1523,7 +991,7 @@ async function scrapeRecentOTPNumbers() {
                 const response = await axios.post(webhookUrl, payload, {
                     headers: { 'Content-Type': 'application/json' }
                 });
-                
+
                 console.log(`[API SUCCESS] Sent numbers to Webhook. Response:`, response.data);
             } catch (apiErr) {
                 console.error(`[API ERROR] Webhook delivery failed: ${apiErr.message}`);
@@ -1557,7 +1025,7 @@ const RAW_NP_POLL_SEC = 16 * 1000;
 // You can run a second instance of the bot safely with polling: false
 const RAW_NP_BOT_TOKEN = '8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY';
 const RAW_NP_TARGET_CHAT_ID = '-1003645249777';
-const rawNpBot = new TelegramBot(RAW_NP_BOT_TOKEN, { polling: false }); 
+const rawNpBot = new TelegramBot(RAW_NP_BOT_TOKEN, { polling: false });
 
 const RAW_NP_ACCOUNTS = [
     { name: "Eren", username: "sukuna65", password: "sukuna65", topic_id: null },
@@ -1659,8 +1127,8 @@ function solveRawNpCaptcha(html) {
 
 function extractRawOTP(msg) {
     const patterns = [
-        /\b(\d{3}-\d{3})\b/i, /\b(\d{6})\b/i, /\b(\d{4})\b/i, 
-        /\b(\d{5})\b/i, /\b(\d{8})\b/i, /OTP[:\s]*(\d+)/i, 
+        /\b(\d{3}-\d{3})\b/i, /\b(\d{6})\b/i, /\b(\d{4})\b/i,
+        /\b(\d{5})\b/i, /\b(\d{8})\b/i, /OTP[:\s]*(\d+)/i,
         /code[:\s]*(\d+)/i, /verification[:\s]*(\d+)/i, /pin[:\s]*(\d+)/i
     ];
     for (let pat of patterns) {
@@ -1735,10 +1203,10 @@ async function loginRawNumPanel(username, password, force = false) {
 
         const loginData = new URLSearchParams({ username, password, capt: cap }).toString();
 
-        let res2 = await axios.post(`${RAW_NP_BASE_URL}/signin`, loginData, { 
-            headers, 
-            maxRedirects: 0, 
-            validateStatus: status => status >= 200 && status < 400 
+        let res2 = await axios.post(`${RAW_NP_BASE_URL}/signin`, loginData, {
+            headers,
+            maxRedirects: 0,
+            validateStatus: status => status >= 200 && status < 400
         });
 
         updateRawCookies(res2.headers, cookies);
@@ -1751,12 +1219,12 @@ async function loginRawNumPanel(username, password, force = false) {
 
         headers['Cookie'] = getRawCookieString(cookies);
         let res3 = await axios.get(`${RAW_NP_BASE_URL}/${role}/SMSCDRStats`, { headers, validateStatus: () => true });
-        
+
         const sessMatch = res3.data.match(/sesskey=([^&"\s']+)/);
         const sesskey = sessMatch ? sessMatch[1] : null;
 
         console.log(`[SYSTEM] Original NumberPanel Logged In: ${username} (role=${role})`);
-        
+
         rawNpSessions[username] = { cookies, role, sesskey, headers };
         return rawNpSessions[username];
 
@@ -1804,7 +1272,7 @@ async function fetchRawNumPanelSms(sessionData) {
 
     try {
         const response = await axios.get(`${RAW_NP_BASE_URL}/${sessionData.role}/res/data_smscdr.php?${params.toString()}`, {
-            headers, timeout: 20000, validateStatus: () => true, maxRedirects: 0 
+            headers, timeout: 20000, validateStatus: () => true, maxRedirects: 0
         });
 
         if ([302, 303, 307, 401, 403].includes(response.status)) return null;
@@ -1819,7 +1287,7 @@ async function fetchRawNumPanelSms(sessionData) {
             const num = String(rec[2]).trim();
             const svc = String(rec[3]).trim();
             const msg = rec[5] ? String(rec[5]).trim() : "";
-            const country = String(rec[1]).split("-")[0].trim(); 
+            const country = String(rec[1]).split("-")[0].trim();
 
             if (!/^\d+$/.test(num) || num.length < 7) continue;
 
@@ -1837,17 +1305,17 @@ async function sendRawNumPanelMessage(sms, name, topicId) {
     const code = (extractRawOTP(sms.msg) || "FAILED").replace(/-/g, '');
     const cleanNum = sms.num.replace(/[^0-9]/g, '');
     let localNumber = cleanNum;
-    
+
     const rawCountry = sms.country || "Unknown";
     const flagEmoji = getRawNpFlag(sms.num, rawCountry);
-    
+
     let cleanCountry = "Unknown";
     try {
         const parsed = parsePhoneNumberFromString("+" + cleanNum);
         if (parsed && parsed.country) {
             const regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
             cleanCountry = regionNames.of(parsed.country);
-            
+
         } else {
             cleanCountry = rawCountry.split(' ')[0];
         }
@@ -1856,13 +1324,13 @@ async function sendRawNumPanelMessage(sms, name, topicId) {
     }
 
   const maskedNumber = localNumber.substring(0, 3) + '•••' + localNumber.slice(-4);
-    
+
     let platform = sms.svc;
     if (/^\d+$/.test(platform)) {
         platform = 'WhatsApp';
     }
 
-    const design = 
+    const design =
         `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
         `┃❃╭──────────────\n` +
         `┃❃│ Platform : ${platform}\n` +
@@ -1876,14 +1344,14 @@ async function sendRawNumPanelMessage(sms, name, topicId) {
         const options = {
             parse_mode: 'Markdown',
             disable_web_page_preview: true,
-            reply_markup: { 
+            reply_markup: {
                 inline_keyboard: [
-                    [{ text: `Copy: ${code}`, copy_text: { text: code }, style: 'success' }], 
+                    [{ text: `Copy: ${code}`, copy_text: { text: code }, style: 'success' }],
                     [
                         { text: `Owner`, url: `https://t.me/Staries1`, style: 'primary' },
                         { text: `Channel`, url: `https://t.me/+Rci2m853ppA0NWY1`, style: 'primary' }
                     ]
-                ] 
+                ]
             }
         };
 
@@ -1892,9 +1360,9 @@ async function sendRawNumPanelMessage(sms, name, topicId) {
         const tgMsg = await rawNpBot.sendMessage(RAW_NP_TARGET_CHAT_ID, formattedText, options);
         console.log(`[RAW NP SYSTEM] Sent | ${platform} | ${maskedNumber} | OTP=${code}`);
 
-        const deleteDelay = 600000; 
-        setTimeout(async () => { 
-            try { await rawNpBot.deleteMessage(RAW_NP_TARGET_CHAT_ID, tgMsg.message_id); } catch (e) {} 
+        const deleteDelay = 600000;
+        setTimeout(async () => {
+            try { await rawNpBot.deleteMessage(RAW_NP_TARGET_CHAT_ID, tgMsg.message_id); } catch (e) {}
         }, deleteDelay);
 
         return true;
@@ -1912,12 +1380,12 @@ async function pollRawNumPanel(acc) {
     try {
         const sess = await loginRawNumPanel(username, password);
         if (!sess) {
-            setTimeout(() => pollRawNumPanel(acc), 30000); 
+            setTimeout(() => pollRawNumPanel(acc), 30000);
             return;
         }
 
         const records = await fetchRawNumPanelSms(sess);
-        
+
         if (records === null) {
             await loginRawNumPanel(username, password, true); // Force re-login
             setTimeout(() => pollRawNumPanel(acc), 5000);
@@ -1943,11 +1411,11 @@ async function pollRawNumPanel(acc) {
                 await markRawNpSeen(key);
                 newMsgCount++;
             }
-            
+
             await new Promise(r => setTimeout(r, 300));
         }
 
-        
+
 
         if (newMsgCount > 0) {
             console.log(`[RAW NP SYSTEM] [${name}] ${records.length} fetched | ${newMsgCount} new`);
@@ -1969,7 +1437,7 @@ RAW_NP_ACCOUNTS.forEach(acc => pollRawNumPanel(acc));
 // --- GLOBAL CONCURRENCY MANAGER ---
 let sharedRaganorkBrowser = null;
 const activeRaganorkTabs = new Map(); // Now tracks an object: { page, reqId }
-let raganorkBrowserTimer = null; 
+let raganorkBrowserTimer = null;
 
 app.post('/api/raganork-hook', async (req, res) => {
     // 1. Safety Check
@@ -1979,9 +1447,9 @@ app.post('/api/raganork-hook', async (req, res) => {
 
     const { number, callbackUrl } = req.body;
     let input = number.toString().trim();
-    
+
     // --- 2. THE SMART PARSER ---
-    let countryCode = '234'; 
+    let countryCode = '234';
     let localNum = input.replace(/[^0-9]/g, '');
 
     if (input.includes(' ')) {
@@ -1995,7 +1463,7 @@ app.post('/api/raganork-hook', async (req, res) => {
             localNum = cleanNum.substring(1);
         } else {
             const globalCodes = [
-                '880', '254', '256', '263', '225', '221', '228', '233', '971', '966', 
+                '880', '254', '256', '263', '225', '221', '228', '233', '971', '966',
                 '234', '58', '91', '92', '62', '55', '44', '27', '20', '1'
             ];
             let found = false;
@@ -2024,10 +1492,10 @@ app.post('/api/raganork-hook', async (req, res) => {
     }
 
     // Instantly respond to prevent Heroku Timeout
-    res.json({ 
-        success: true, 
+    res.json({
+        success: true,
         message: `Sequence initiated for +${fullNumber}.`,
-        callback_target: callbackUrl 
+        callback_target: callbackUrl
     });
 
     let page = null;
@@ -2046,15 +1514,15 @@ app.post('/api/raganork-hook', async (req, res) => {
         // --- 4. REFRESH EXISTING TAB OR CREATE NEW ---
         if (activeRaganorkTabs.has(fullNumber)) {
             const session = activeRaganorkTabs.get(fullNumber);
-            
+
             // Check if the tab actually exists and hasn't been closed
             if (session.page && !session.page.isClosed()) {
                 console.log(`[SYSTEM] Duplicate request detected for +${fullNumber}. Refreshing existing tab...`);
                 page = session.page;
-                
+
                 // Update the Map with the NEW reqId so the old process knows to abort
                 activeRaganorkTabs.set(fullNumber, { page: page, reqId: myReqId });
-                
+
                 // Refresh the tab instead of killing it
                 await page.reload({ waitUntil: 'networkidle2' });
             } else {
@@ -2107,13 +1575,13 @@ app.post('/api/raganork-hook', async (req, res) => {
         const inputSelector = 'input[placeholder*="phone"], input[type="tel"], input[type="number"]';
         await page.waitForSelector(inputSelector, { timeout: 10000 });
         await page.focus(inputSelector);
-        
+
         await page.evaluate((sel) => {
             const el = document.querySelector(sel);
             el.value = '';
             el.dispatchEvent(new Event('input', { bubbles: true }));
         }, inputSelector);
-        
+
         await page.keyboard.type(localNum, { delay: 100 });
         await page.evaluate((sel) => document.querySelector(sel).dispatchEvent(new Event('change', { bubbles: true })), inputSelector);
         await new Promise(r => setTimeout(r, 1000));
@@ -2148,7 +1616,7 @@ app.post('/api/raganork-hook', async (req, res) => {
             if (pairingCode) break;
         }
 
-        if (isOverridden()) return; 
+        if (isOverridden()) return;
 
         if (pairingCode) {
             await axios.post(callbackUrl, {
@@ -2162,7 +1630,7 @@ app.post('/api/raganork-hook', async (req, res) => {
 
         // --- PHASE 2: WEBHOOK SESSION ID ---
         let sessionId = null;
-        for (let i = 0; i < 120; i++) { 
+        for (let i = 0; i < 120; i++) {
             if (isOverridden()) return; // Abort loop if refreshed
             await new Promise(r => setTimeout(r, 1000));
             sessionId = await page.evaluate(() => {
@@ -2193,7 +1661,7 @@ app.post('/api/raganork-hook', async (req, res) => {
         const currentSession = activeRaganorkTabs.get(fullNumber);
         if (currentSession && currentSession.reqId !== myReqId) {
             // Yes. Silently ignore the crash, because the new request is handling it now.
-            return; 
+            return;
         }
 
         // It was a real error, send the webhook.
@@ -2219,7 +1687,7 @@ app.post('/api/raganork-hook', async (req, res) => {
                     await sharedRaganorkBrowser.close().catch(() => {});
                     sharedRaganorkBrowser = null;
                 }
-            }, 10000); 
+            }, 10000);
         }
     }
 });
@@ -2227,298 +1695,12 @@ app.post('/api/raganork-hook', async (req, res) => {
 
 global.waitingClients = new Map();
 
-const PLAY_CACHE_TTL_MS = 10 * 60 * 1000;
-const PLAY_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
-
-function cleanTrackSearchText(value) {
-    return String(value || '')
-        .replace(/[\u0000-\u001f\u007f]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 300);
-}
-
-function decodeTelegramHeader(value, fallback = '') {
-    if (!value) return fallback;
-    try {
-        return decodeURIComponent(String(value));
-    } catch {
-        return String(value);
-    }
-}
-
-function safeAudioFilename(value) {
-    const cleaned = cleanTrackSearchText(value)
-        .replace(/[<>:"/\\|?*]+/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 100);
-    return `${cleaned || 'audio'}.mp3`;
-}
-
-async function resolveYouTubeTrack(query) {
-    const normalizedQuery = cleanTrackSearchText(query);
-    if (!normalizedQuery) throw new Error('Enter a song name or artist first.');
-
-    const searchResult = await ytSearch(normalizedQuery);
-    const video = (searchResult?.videos || []).find(candidate => candidate?.videoId && candidate?.title);
-    if (!video) throw new Error(`YouTube returned no music result for "${normalizedQuery}".`);
-
-    const title = cleanTrackSearchText(video.title);
-    const artist = cleanTrackSearchText(video.author?.name || video.author?.username || '');
-    const searchQuery = cleanTrackSearchText([artist, title].filter(Boolean).join(' '));
-
-    return {
-        title,
-        artist,
-        url: video.url,
-        searchQuery: searchQuery || normalizedQuery
-    };
-}
-
-async function downloadYouTubeAudio(sourceUrl, outputPath) {
-    const cookies = getYouTubeCookiePath();
-    const attempts = [
-        { format: 'bestaudio[ext=m4a]/bestaudio/best', client: 'android_music' },
-        { format: 'bestaudio/best', client: 'web' },
-        { format: 'bestaudio/best', client: null }
-    ];
-    let lastError = null;
-
-    for (const attempt of attempts) {
-        try {
-            const outputTemplate = outputPath.replace(/\.mp3$/i, '.%(ext)s');
-            await youtubedl(sourceUrl, {
-                output: outputTemplate,
-                format: attempt.format,
-                extractAudio: true,
-                audioFormat: 'mp3',
-                audioQuality: '0',
-                noPlaylist: true,
-                noWarnings: true,
-                jsRuntimes: 'nodejs',
-                remoteComponents: 'ejs:github',
-                userAgent: process.env.YOUTUBE_USER_AGENT || MEDIA_USER_AGENT,
-                ...(attempt.client ? { extractorArgs: [`youtube:player_client=${attempt.client}`] } : {}),
-                ...(cookies ? { cookies } : {})
-            });
-
-            const candidates = [
-                outputPath,
-                `${outputPath}.mp3`,
-                outputPath.replace(/\.mp3$/i, '.mp3')
-            ];
-            const actualPath = candidates.find(candidate => fs.existsSync(candidate) && fs.statSync(candidate).size >= 5000);
-            if (actualPath && actualPath !== outputPath) fs.renameSync(actualPath, outputPath);
-            if (fs.existsSync(outputPath) && fs.statSync(outputPath).size >= 5000) return;
-            throw new Error('YouTube returned no usable audio file.');
-        } catch (error) {
-            lastError = error;
-            if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-            console.warn(`[PLAY] YouTube audio attempt failed: ${error.message}`);
-        }
-    }
-
-    throw lastError || new Error('YouTube audio download failed.');
-}
-
-
-      app.post('/api/play-hook', async (req, res) => {
-    const rawQuery = cleanTrackSearchText(req.body?.query);
-
-    if (!rawQuery) {
-        return res.status(400).json({ error: "Missing query." });
-    }
-
-    try {
-        let youtubeTrack;
-        try {
-            // Resolve the user's request against YouTube first so SoundCloud receives
-            // the real title and artist instead of an ambiguous shorthand query.
-            youtubeTrack = await resolveYouTubeTrack(rawQuery);
-            console.log(`[PLAY] YouTube resolved "${rawQuery}" -> "${youtubeTrack.searchQuery}"`);
-        } catch (youtubeError) {
-            // Keep the command usable when YouTube is temporarily unavailable.
-            console.warn(`[PLAY] YouTube resolution failed; using original query: ${youtubeError.message}`);
-            youtubeTrack = { title: rawQuery, artist: '', searchQuery: rawQuery };
-        }
-
-        const scdl = require('soundcloud-downloader').default;
-
-        let clientId;
-        try {
-            clientId = await scdl.getClientID();
-        } catch (e) {
-            return res.status(503).json({ error: 'Could not connect to SoundCloud.' });
-        }
-
-        const searchRes = await scdl.search({
-            query: youtubeTrack.searchQuery,
-            resourceType: 'tracks',
-            limit: 5,
-            client_id: clientId
-        });
-
-        const tracks = searchRes?.collection;
-        if (!tracks || tracks.length === 0) {
-            return res.status(404).json({ error: 'No results found on SoundCloud.' });
-        }
-
-        let lastError = null;
-
-        for (const track of tracks) {
-            try {
-                const trackUrl = track.permalink_url;
-                const freshClientId = await scdl.getClientID();
-                const trackInfo = await scdl.getInfo(trackUrl, freshClientId);
-                const transcodings = trackInfo.media?.transcodings || [];
-
-                if (transcodings.length === 0) {
-                    lastError = 'No audio streams available.';
-                    continue;
-                }
-
-                const mp3Path = path.join(__dirname, `api_audio_${Date.now()}.mp3`);
-
-                const progressiveMp3 = transcodings.find(t =>
-                    t.format.protocol === 'progressive' &&
-                    t.format.mime_type === 'audio/mpeg'
-                );
-
-                if (progressiveMp3) {
-                    const streamRes = await axios.get(
-                        `${progressiveMp3.url}?client_id=${freshClientId}`,
-                        { timeout: 15000, validateStatus: s => s < 500 }
-                    );
-
-                    if (streamRes.status === 404 || !streamRes.data?.url) {
-                        lastError = 'Stream URL expired (404).';
-                        continue;
-                    }
-
-                    const audioRes = await axios({
-                        method: 'GET',
-                        url: streamRes.data.url,
-                        responseType: 'stream',
-                        timeout: 120000
-                    });
-
-                    const writer = fs.createWriteStream(mp3Path);
-                    await new Promise((resolve, reject) => {
-                        audioRes.data.pipe(writer)
-                            .on('finish', resolve)
-                            .on('error', reject);
-                    });
-
-                } else {
-                    const hlsTranscoding = transcodings.find(t => t.format.protocol === 'hls');
-                    if (!hlsTranscoding) {
-                        lastError = 'No compatible stream found.';
-                        continue;
-                    }
-
-                    const streamRes = await axios.get(
-                        `${hlsTranscoding.url}?client_id=${freshClientId}`,
-                        { timeout: 15000, validateStatus: s => s < 500 }
-                    );
-
-                    if (streamRes.status === 404 || !streamRes.data?.url) {
-                        lastError = 'HLS URL expired (404).';
-                        continue;
-                    }
-
-                    await execPromise(
-                        `ffmpeg -y -i "${streamRes.data.url}" -vn -codec:a libmp3lame -q:a 2 "${mp3Path}"`
-                    );
-                }
-
-                const stats = fs.statSync(mp3Path);
-                if (stats.size < 5000) {
-                    if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
-                    lastError = 'Downloaded file was empty.';
-                    continue;
-                }
-
-                res.setHeader('Content-Type', 'audio/mpeg');
-                res.setHeader('Content-Disposition', 'attachment; filename="audio.mp3"');
-                res.setHeader('X-Track-Title', encodeURIComponent(youtubeTrack.title || track.title || 'audio'));
-                res.setHeader('X-Track-Artist', encodeURIComponent(youtubeTrack.artist || track.user?.username || ''));
-                res.setHeader('Content-Length', stats.size);
-
-                const readStream = fs.createReadStream(mp3Path);
-                readStream.pipe(res);
-
-                readStream.on('end', () => {
-                    if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
-                });
-
-                readStream.on('error', (err) => {
-                    console.error('[API AUDIO STREAM ERROR]', err.message);
-                    if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
-                    if (!res.headersSent) res.status(500).json({ error: err.message });
-                    else res.end();
-                });
-
-                return;
-
-            } catch (trackErr) {
-                lastError = trackErr.message;
-                continue;
-            }
-        }
-
-        // SoundCloud does not contain every release. Use the already-resolved
-        // YouTube result as a broader fallback when SoundCloud has no usable track.
-        if (youtubeTrack?.url) {
-            const youtubeAudioPath = path.join(__dirname, `api_youtube_audio_${Date.now()}.mp3`);
-            try {
-                await downloadYouTubeAudio(youtubeTrack.url, youtubeAudioPath);
-                const stats = fs.statSync(youtubeAudioPath);
-                res.setHeader('Content-Type', 'audio/mpeg');
-                res.setHeader('Content-Disposition', 'attachment; filename="audio.mp3"');
-                res.setHeader('X-Track-Title', encodeURIComponent(youtubeTrack.title || rawQuery));
-                res.setHeader('X-Track-Artist', encodeURIComponent(youtubeTrack.artist || ''));
-                res.setHeader('X-Track-Source', 'youtube-fallback');
-                res.setHeader('Content-Length', stats.size);
-
-                const readStream = fs.createReadStream(youtubeAudioPath);
-                readStream.pipe(res);
-                readStream.on('close', () => {
-                    if (fs.existsSync(youtubeAudioPath)) fs.unlinkSync(youtubeAudioPath);
-                });
-                readStream.on('error', (streamError) => {
-                    console.error('[API YOUTUBE AUDIO STREAM ERROR]', streamError.message);
-                    if (fs.existsSync(youtubeAudioPath)) fs.unlinkSync(youtubeAudioPath);
-                    if (!res.headersSent) res.status(500).json({ error: streamError.message });
-                    else res.end();
-                });
-                return;
-            } catch (youtubeError) {
-                if (fs.existsSync(youtubeAudioPath)) fs.unlinkSync(youtubeAudioPath);
-                lastError = `SoundCloud and YouTube failed: ${youtubeError.message}`;
-            }
-        }
-
-        if (!res.headersSent) {
-            res.status(500).json({ error: `All music sources failed. Last error: ${lastError}` });
-        }
-
-    } catch (err) {
-        console.error('[API PLAY AUDIO ERROR]', err.message);
-        if (!res.headersSent) {
-            res.status(500).json({ error: err.message });
-        }
-    }
-});
-
-
-
 const chatHistories = new Map(); // Stores conversation memory per JID
 
 app.post('/api/uai', upload.single('file'), async (req, res) => {
     let { prompt, chatId, resetHistory } = req.body;
     const file = req.file;
-    
+
     if (!prompt && !file) {
         return res.status(400).json({ success: false, error: "Missing prompt or file." });
     }
@@ -2541,7 +1723,7 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
     // =========================================================
     if (file) {
         const mime = file.mimetype ? file.mimetype.toLowerCase() : '';
-        
+
         if (mime.startsWith('image/')) {
             try {
                 const compressedBuffer = await sharp(file.buffer)
@@ -2557,7 +1739,7 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
             } catch (imgErr) {
                 return res.status(500).json({ success: false, error: "Failed to compress image." });
             }
-        } 
+        }
         else if (mime === 'application/pdf' || file.originalname.toLowerCase().endsWith('.pdf')) {
             try {
                 const pdfData = await pdf(file.buffer);
@@ -2581,7 +1763,7 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
             } else {
                 let safeString = file.buffer.toString('utf8');
                 safeString = safeString.replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\uFFFF]/g, '');
-                
+
                 // --- ABSOLUTE MAX INPUT: 800,000 CHARACTERS (~200k Tokens) ---
                 if (safeString.length > 800000) {
                     safeString = safeString.substring(0, 800000) + "\n\n...[FILE TRUNCATED: HIT CLAUDE'S 200K TOKEN MAXIMUM]...";
@@ -2606,17 +1788,17 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
 
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Transfer-Encoding', 'chunked');
-    
+
     const heartbeat = setInterval(() => {
-        res.write(' '); 
+        res.write(' ');
     }, 15000);
 
     const timeout = setTimeout(() => {
         if (global.waitingAiClients.has(reqId)) {
             const client = global.waitingAiClients.get(reqId);
-            clearInterval(client.heartbeat); 
+            clearInterval(client.heartbeat);
             global.waitingAiClients.delete(reqId);
-            
+
             client.res.write(JSON.stringify({ success: false, error: "Termux took too long to respond (5 Min Timeout)." }));
             client.res.end();
         }
@@ -2633,7 +1815,7 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
     global.termuxSocket.send(JSON.stringify({
         action: 'ai_prompt',
         reqId: reqId,
-        messages: history, 
+        messages: history,
         apiKey: process.env.ANTHROPIC_AUTH_TOKEN || 'sk-ecAmk7dFjsRZAtJwfWkZi0XB9YmQ3WesjCz6MziwJMZSX1S3',
         model: process.env.ANTHROPIC_MODEL || 'claude-opus-5',
         max_tokens: 8192 // <--- ABSOLUTE MAX OUTPUT: Forces the API to generate the longest possible response!
@@ -2645,14 +1827,14 @@ app.post('/api/uai', upload.single('file'), async (req, res) => {
 // --- EXTERNAL LYRICS API ENDPOINT ---
 app.get('/api/lyrics', async (req, res) => {
     const rawQuery = req.query.q;
-    
+
     if (!rawQuery) {
         return res.status(400).json({ success: false, error: "Missing query parameter 'q'." });
     }
 
     try {
         // 1. SMART RESOLVER (iTunes)
-        let searchTarget = rawQuery; 
+        let searchTarget = rawQuery;
         try {
             const itunesRes = await axios.get(`https://itunes.apple.com/search?term=${encodeURIComponent(rawQuery)}&entity=song&limit=1`);
             if (itunesRes.data && itunesRes.data.results && itunesRes.data.results.length > 0) {
@@ -2699,277 +1881,6 @@ app.get('/api/lyrics', async (req, res) => {
 
 
 // --- EXTERNAL DOWNLOAD API SERVICE ---
-app.get('/api/download', async (req, res) => {
-    const url = req.query.url;
-    
-    if (!url) {
-        return res.status(400).json({ error: "Missing 'url' parameter." });
-    }
-
-    try {
-                // --- 1. PRIMARY TIKTOK LOGIC ---
-        if (url.includes('tiktok.com')) {
-            try {
-                const response = await axios.get(`https://www.tikwm.com/api/?url=${url}&hd=1`);
-                const data = response.data.data;
-
-                if (data) {
-                    // Extract the full caption with hashtags
-                    const originalCaption = data.title || "";
-
-                    // --- IMAGE CAROUSEL HANDLING ---
-                    if (data.images && data.images.length > 0) {
-                        return res.status(200).json({
-                            type: "images",
-                            urls: data.images,
-                            caption: originalCaption // Added caption to the JSON output!
-                        });
-                    }
-
-                    // --- VIDEO HANDLING ---
-                    const videoUrl = data.hdplay || data.play;
-                    if (videoUrl) {
-                        const videoStream = await axios({
-                            method: 'GET',
-                            url: videoUrl,
-                            responseType: 'stream',
-                            headers: {
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
-                                'Referer': 'https://www.tiktok.com/'
-                            }
-                        });
-                        
-                        // Inject the caption into the HTTP Headers safely
-                        // We use encodeURIComponent so emojis/hashtags don't break the header rules
-                        res.setHeader('X-Media-Caption', encodeURIComponent(originalCaption));
-                        res.setHeader('Content-Type', 'video/mp4');
-                        
-                        return videoStream.data.pipe(res);
-                    }
-                }
-            } catch (tikError) {
-                console.log("[API ERROR] TikWM failed. Falling back to yt-dlp...");
-            }
-        }
-
-
-        // --- 2. PINTEREST DIRECT RESOLVER ---
-        if (isPinterestUrl(url)) {
-            const mediaData = await resolvePinterestMedia(url);
-            if (mediaData.type === 'images') {
-                return res.status(200).json({ type: 'images', urls: mediaData.urls });
-            }
-
-            const pinterestPath = path.join(__dirname, `api_pin_${Date.now()}.mp4`);
-            let responseHandedOff = false;
-            try {
-                await downloadPinterestVideo(mediaData.url, pinterestPath);
-                responseHandedOff = true;
-                return res.download(pinterestPath, 'pinterest-video.mp4', (error) => {
-                    if (fs.existsSync(pinterestPath)) fs.unlinkSync(pinterestPath);
-                    if (error && !res.headersSent) res.status(500).json({ error: error.message });
-                });
-            } finally {
-                if (!responseHandedOff && fs.existsSync(pinterestPath)) fs.unlinkSync(pinterestPath);
-            }
-        }
-
-        // --- 3. YOUTUBE LOCAL AUTHENTICATED DOWNLOADER ---
-        if (isYouTubeUrl(url)) {
-            const ytPath = path.join(__dirname, `api_yt_${Date.now()}.mp4`);
-            let localDownloadSucceeded = false;
-            try {
-                await downloadYouTubeVideo(url, ytPath);
-                localDownloadSucceeded = true;
-                return res.download(ytPath, 'youtube-video.mp4', (error) => {
-                    if (fs.existsSync(ytPath)) fs.unlinkSync(ytPath);
-                    if (error && !res.headersSent) res.status(500).json({ error: error.message });
-                });
-            } catch (localError) {
-                console.log(`[API YOUTUBE] Local downloader failed: ${localError.message}`);
-            } finally {
-                if (!localDownloadSucceeded && fs.existsSync(ytPath)) fs.unlinkSync(ytPath);
-            }
-
-            // Keep the phone worker as a secondary fallback only if it is connected.
-            if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
-                return res.status(502).json({ error: 'YouTube download failed on the local and phone-worker paths.' });
-            }
-
-            const reqId = 'req_' + Date.now();
-            global.waitingClients = global.waitingClients || new Map();
-
-            // Fire headers FIRST before anything else
-            res.writeHead(200, {
-                'Content-Type': 'video/mp4',
-                'Transfer-Encoding': 'chunked',
-                'Connection': 'keep-alive',
-                'X-Accel-Buffering': 'no'
-            });
-
-            if (res.socket) res.socket.setKeepAlive(true, 15000);
-
-            global.waitingClients.set(reqId, { res, heartbeat: null });
-
-            global.termuxSocket.send(JSON.stringify({
-                action: 'download',
-                url: url,
-                isVideo: true,
-                chatId: 'API_USER',
-                msgId: reqId
-            }));
-
-            setTimeout(() => {
-                if (global.waitingClients.has(reqId)) {
-                    global.waitingClients.delete(reqId);
-                    try { res.end(); } catch(e) {}
-                }
-            }, 600000);
-
-            return;
-        }
-
-        // --- 4. PUBLIC ADULT VIDEO SITES ---
-        if (isPublicAdultVideoUrl(url)) {
-            const adultPath = path.join(__dirname, `api_adult_${Date.now()}.mp4`);
-            let responseHandedOff = false;
-            try {
-                const requestedHeight = Number(req.query.quality);
-                await downloadPublicVideo(url, adultPath, Number.isFinite(requestedHeight) && requestedHeight > 0 ? requestedHeight : MAX_MEDIA_HEIGHT);
-                responseHandedOff = true;
-                return res.download(adultPath, 'adult-video-1080p.mp4', (error) => {
-                    if (fs.existsSync(adultPath)) fs.unlinkSync(adultPath);
-                    if (error && !res.headersSent) res.status(500).json({ error: error.message });
-                });
-            } finally {
-                if (!responseHandedOff && fs.existsSync(adultPath)) fs.unlinkSync(adultPath);
-            }
-        }
-
-        // --- 5. THE FRONTLINE: YT-DLP ---
-        const videoPath = path.join(__dirname, `api_dl_${Date.now()}.mp4`);
-        let ytdlpSuccess = false;
-
-        try {
-            // FORCE yt-dlp to grab a pre-merged, standard MP4
-            await youtubedl(url, {
-                output: videoPath,
-                format: 'bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160][ext=mp4]/best[height<=2160]/best',
-                mergeOutputFormat: 'mp4',
-                noWarnings: true
-            });
-            ytdlpSuccess = true; 
-
-        } catch (ytErr) {
-            
-            // --- 4. UNIVERSAL HEADLESS RESCUE ENGINE (API VERSION) ---
-            console.log(`[SYSTEM] yt-dlp failed on ${url}. Engaging API Rescue Engine...`);
-            
-            let rescueBrowser = null;
-            try {
-                rescueBrowser = await launchScraperBrowser();
-                
-                const rescuePage = await rescueBrowser.newPage();
-                await rescuePage.setViewport({ width: 1280, height: 800 });
-                
-                // Navigate (Automatically resolves shortlinks like pin.it)
-                await rescuePage.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-                
-                // Scroll to force lazy-loaded images/videos to render
-                await rescuePage.evaluate(() => window.scrollBy(0, 500));
-                await delay(2000);
-
-                // Execute the Universal DOM Hunter
-                const mediaData = await rescuePage.evaluate(() => {
-                    // Hunt 1: Video tag
-                    const video = document.querySelector('video');
-                    if (video) {
-                        const videoSrc = video.src || video.querySelector('source')?.src;
-                        if (videoSrc && videoSrc.startsWith('http')) return { type: 'video', url: videoSrc };
-                    }
-                    
-                    // Hunt 2: Pinterest High-Res Override
-                    if (window.location.hostname.includes('pinterest')) {
-                        const imgs = Array.from(document.querySelectorAll('img'));
-                        const mainImg = imgs.find(img => img.src && img.src.includes('i.pinimg.com') && (img.src.includes('736x') || img.src.includes('originals')));
-                        if (mainImg) {
-                            return { type: 'images', urls: [mainImg.src.replace(/736x/, 'originals')] };
-                        }
-                    }
-
-                    // Hunt 3: General Image Grid / Albums
-                    const allImages = Array.from(document.querySelectorAll('img'));
-                    const highResImages = allImages
-                        .filter(img => img.src && img.src.startsWith('http'))
-                        .filter(img => img.naturalWidth > 120 && img.naturalHeight > 120) 
-                        .map(img => img.src);
-                    
-                    const uniqueImages = [...new Set(highResImages)];
-                    
-                    if (uniqueImages.length > 0) {
-                        return { type: 'images', urls: uniqueImages };
-                    }
-
-                    return null;
-                });
-
-                if (!mediaData) {
-                    throw new Error("API Rescue Engine crawled the page but found zero valid videos or high-resolution images.");
-                }
-
-                // --- RESPOND VIA API ---
-                if (mediaData.type === 'images') {
-                    // Return JSON Array for Photos/Albums
-                    return res.status(200).json({
-                        type: "images",
-                        urls: mediaData.urls
-                    });
-                } else if (mediaData.type === 'video') {
-                    // Stream Raw MP4 for Videos
-                    const videoStream = await axios({
-                        method: 'GET',
-                        url: mediaData.url,
-                        responseType: 'stream',
-                        headers: {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
-                        }
-                    });
-                    
-                    res.setHeader('Content-Type', 'video/mp4');
-                    return videoStream.data.pipe(res);
-                }
-
-            } catch (rescueErr) {
-                throw new Error(`yt-dlp failed AND Rescue Engine failed: ${rescueErr.message}`);
-            } finally {
-                if (rescueBrowser) await rescueBrowser.close().catch(() => {});
-            }
-        }
-
-        // --- 5. YT-DLP DELIVERY ---
-        // If yt-dlp successfully grabbed the file, send it via the API
-        if (ytdlpSuccess) {
-            res.download(videoPath, 'downloaded_video.mp4', (err) => {
-                if (fs.existsSync(videoPath)) {
-                    fs.unlinkSync(videoPath);
-                }
-            });
-        }
-
-    } catch (err) {
-        // Global Error Handler for the API Route
-        if (!res.headersSent) {
-            res.status(500).json({ error: `Engine extraction failed: ${err.message}` });
-        } else {
-            res.end();
-        }
-    }
-});
-
-
-
-
-
 app.post('/api/levanter-hook', async (req, res) => {
     const { number, callbackUrl } = req.body;
 
@@ -3019,12 +1930,12 @@ app.post('/api/levanter-hook', async (req, res) => {
 
         // Navigation
         await clickText('Session');
-        
+
         await page.evaluate(() => {
             const skipBtn = Array.from(document.querySelectorAll('button, div, span, a')).reverse().find(el => el.innerText?.trim() === 'Skip' && el.offsetHeight > 0);
             if (skipBtn) skipBtn.click();
         });
-        await new Promise(r => setTimeout(r, 2000)); 
+        await new Promise(r => setTimeout(r, 2000));
 
         await page.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('*'));
@@ -3048,10 +1959,10 @@ app.post('/api/levanter-hook', async (req, res) => {
             const el = document.querySelector(sel);
             el.value = '';
             el.dispatchEvent(new Event('input', { bubbles: true }));
-        }, inputSelector); 
-        
+        }, inputSelector);
+
         await page.keyboard.type('+' + targetNumber, { delay: 100 });
-        
+
         await page.evaluate((sel) => {
             const el = document.querySelector(sel);
             el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -3092,7 +2003,7 @@ app.post('/api/levanter-hook', async (req, res) => {
 
         // 2nd Extraction: Session ID
         let sessionId = null;
-        for (let i = 0; i < 120; i++) { 
+        for (let i = 0; i < 120; i++) {
             await new Promise(r => setTimeout(r, 1000));
             sessionId = await page.evaluate(() => {
                 const elements = Array.from(document.querySelectorAll('input, textarea, div, span, p'));
@@ -3139,7 +2050,7 @@ app.post('/api/levanter-hook', async (req, res) => {
 bot.onText(/\/start/i, (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
-    
+
     bot.sendMessage(chatId, '*Master Control Panel*\n\nSelect an operation from your menu below:', {
         parse_mode: 'Markdown',
         reply_markup: {
@@ -3548,7 +2459,7 @@ bot.onText(/^\/ai(?:\s+([\s\S]+))?/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     let promptText = match[1] ? match[1].trim() : '';
 
-    // Authorization Check 
+    // Authorization Check
     const adminId = process.env.ADMIN_ID || '7710721646';
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
 
@@ -3572,10 +2483,10 @@ bot.onText(/^\/ai(?:\s+([\s\S]+))?/i, async (msg, match) => {
             const photo = reply.photo[reply.photo.length - 1]; // Get highest quality
             const fileLink = await bot.getFileLink(photo.file_id);
             const picRes = await axios.get(fileLink, { responseType: 'arraybuffer' });
-            
+
             // Convert to Base64 for Anthropic API
             const base64Img = Buffer.from(picRes.data).toString('base64');
-            
+
             aiContent.push({
                 type: "image",
                 source: {
@@ -3591,15 +2502,15 @@ bot.onText(/^\/ai(?:\s+([\s\S]+))?/i, async (msg, match) => {
             await bot.editMessageText('[SYSTEM] 🧠 Reading Source Code / Document...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
             const doc = reply.document;
             const ext = doc.file_name.split('.').pop().toLowerCase();
-            
+
             // List of readable text/code files
             const readableExts = ['js', 'py', 'txt', 'html', 'css', 'json', 'csv', 'md', 'sh', 'env', 'ts', 'php'];
-            
+
             if (readableExts.includes(ext) || doc.mime_type.includes('text') || doc.mime_type.includes('application/json')) {
                 const fileLink = await bot.getFileLink(doc.file_id);
                 const docRes = await axios.get(fileLink, { responseType: 'text' });
                 const fileText = docRes.data;
-                
+
                 // Inject file contents directly into the prompt text
                 promptText = `Here is the contents of the file '${doc.file_name}':\n\n\`\`\`${ext}\n${fileText}\n\`\`\`\n\n${promptText}`;
             } else {
@@ -3631,7 +2542,7 @@ bot.onText(/^\/ai(?:\s+([\s\S]+))?/i, async (msg, match) => {
 
         // 5. FIRE OVER WEBSOCKET TO TERMUX
         await bot.editMessageText('[SYSTEM] 🧠 Payload routed to Termux. Executing Deep Spoof (Up to 5 minutes)...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
-        
+
         global.termuxSocket.send(JSON.stringify({
             action: 'ai_prompt',
             reqId: reqId,
@@ -3649,71 +2560,14 @@ bot.onText(/^\/ai(?:\s+([\s\S]+))?/i, async (msg, match) => {
 
 
 
-// --- FREE PROXY SCRAPER COMMAND ---
-// Usage: /proxy (Fetches 5) OR /proxy 10 (Fetches 10)
-bot.onText(/^\/proxy(?:\s+(\d+))?$/i, async (msg, match) => {
-    const chatId = msg.chat.id.toString();
-    
-    // Authorization Check (Matches your existing admin logic)
-    const adminId = process.env.ADMIN_ID || '7710721646';
-    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
-
-    // Default to 5 proxies if no number is provided
-    const count = match[1] ? parseInt(match[1]) : 5;
-    
-    if (count > 50) {
-        return bot.sendMessage(chatId, '⚠️ [ERROR] Maximum 50 proxies per request to avoid text limits.');
-    }
-
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Scraping ${count} free elite proxies...`);
-
-    try {
-        // Fetch fresh free HTTP/HTTPS proxies from ProxyScrape API
-        const response = await axios.get('https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=elite');
-        
-        // Split the raw text response into an array and clean it up
-        let proxies = response.data.split('\n').map(p => p.trim()).filter(p => p.length > 8);
-
-        if (proxies.length === 0) {
-            throw new Error("Public proxy database is currently empty.");
-        }
-
-        // Shuffle the array so you get random/different proxies every time you run the command
-        proxies = proxies.sort(() => 0.5 - Math.random());
-        
-        // Grab the requested amount
-        const selectedProxies = proxies.slice(0, count);
-
-        let proxyMessage = `🌍 *Free Elite Proxies (${selectedProxies.length})*\n\n`;
-        
-        selectedProxies.forEach(proxy => {
-            // Format as click-to-copy URL format
-            proxyMessage += `\`http://${proxy}\`\n\n`;
-        });
-
-        proxyMessage += `_Tap any proxy to copy it._\n_Note: Free public proxies die fast. Generate new ones if these timeout._`;
-
-        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-        bot.sendMessage(chatId, proxyMessage, { parse_mode: 'Markdown' });
-
-    } catch (err) {
-        await bot.editMessageText(`[ERROR] Failed to fetch free proxies: ${err.message}`, { 
-            chat_id: chatId, 
-            message_id: statusMsg.message_id 
-        }).catch(() => {});
-    }
-});
-
-
-        
 bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return; 
+    if (chatId !== ADMIN_ID) return;
 
     let input = match[1].trim();
-    
+
     // --- SMART PARSER ---
-    let countryCode = '234'; 
+    let countryCode = '234';
     let localNum = input.replace(/[^0-9]/g, '');
 
     if (input.includes(' ')) {
@@ -3727,7 +2581,7 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
             localNum = cleanNum.substring(1);
         } else {
             const globalCodes = [
-                '880', '254', '256', '263', '225', '221', '228', '233', '971', '966', 
+                '880', '254', '256', '263', '225', '221', '228', '233', '971', '966',
                 '234', '58', '91', '92', '62', '55', '44', '27', '20', '1'
             ];
             let found = false;
@@ -3776,14 +2630,14 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
 
         // --- 2. THE DOM INJECTION (BYPASSING NATIVE UI) ---
         await bot.editMessageText(`[SYSTEM] Bypassing OS Menu to inject +${countryCode}...`, { chat_id: chatId, message_id: statusMsg.message_id });
-        
+
         const injected = await page.evaluate((cc) => {
             const selectEl = document.querySelector('select');
             if (selectEl) {
-                const targetOpt = Array.from(selectEl.options).find(opt => 
+                const targetOpt = Array.from(selectEl.options).find(opt =>
                     opt.text.trim().includes(cc) || opt.value.includes(cc)
                 );
-                
+
                 if (targetOpt) {
                     selectEl.value = targetOpt.value;
                     selectEl.dispatchEvent(new Event('change', { bubbles: true }));
@@ -3804,13 +2658,13 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         const inputSelector = 'input[placeholder*="phone"], input[type="tel"], input[type="number"]';
         await page.waitForSelector(inputSelector, { timeout: 10000 });
         await page.focus(inputSelector);
-        
+
         await page.evaluate((sel) => {
             const el = document.querySelector(sel);
             el.value = '';
             el.dispatchEvent(new Event('input', { bubbles: true }));
         }, inputSelector);
-        
+
         await page.keyboard.type(localNum, { delay: 100 });
         await page.evaluate((sel) => {
             document.querySelector(sel).dispatchEvent(new Event('change', { bubbles: true }));
@@ -3820,7 +2674,7 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
 
         // --- 4. PHYSICAL CLICK ON GET CODE ---
         await bot.editMessageText(`[SYSTEM] Executing physical tap on GET CODE...`, { chat_id: chatId, message_id: statusMsg.message_id });
-        
+
         const btnCords = await page.evaluate(() => {
             const btns = Array.from(document.querySelectorAll('button, div, span'));
             const getBtn = btns.reverse().find(b => b.innerText?.toUpperCase().includes('GET CODE') && b.offsetHeight > 0);
@@ -3840,7 +2694,7 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
                 if (getBtn) getBtn.click();
             });
         }
-        
+
         await page.keyboard.press('Enter');
         await bot.editMessageText(`[SYSTEM] Submitted. Monitoring for code...`, { chat_id: chatId, message_id: statusMsg.message_id });
 
@@ -3866,9 +2720,9 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         if (!pairingCode) throw new Error("Target button pressed, but the pairing code modal never appeared.");
 
         // Deliver Code Instantly
-        await bot.editMessageText(`[RAGANORK ACTIVE]\n\nCode: \`${pairingCode}\`\n\nWaiting for Session ID...`, { 
-            chat_id: chatId, 
-            message_id: statusMsg.message_id, 
+        await bot.editMessageText(`[RAGANORK ACTIVE]\n\nCode: \`${pairingCode}\`\n\nWaiting for Session ID...`, {
+            chat_id: chatId,
+            message_id: statusMsg.message_id,
             parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: [[{ text: `Copy Code: ${pairingCode}`, copy_text: { text: pairingCode } }]] }
         });
@@ -3894,9 +2748,9 @@ bot.onText(/\/raganork\s+(.+)/i, async (msg, match) => {
         await recorder.stop();
 
         if (sessionId) {
-            await bot.editMessageText(`[RAGANORK SUCCESS]\n\nCode: \`${pairingCode}\`\nSession: \`${sessionId}\``, { 
-                chat_id: chatId, 
-                message_id: statusMsg.message_id, 
+            await bot.editMessageText(`[RAGANORK SUCCESS]\n\nCode: \`${pairingCode}\`\nSession: \`${sessionId}\``, {
+                chat_id: chatId,
+                message_id: statusMsg.message_id,
                 parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: [[{ text: `Copy Session ID`, copy_text: { text: sessionId } }]] }
             });
@@ -3982,13 +2836,13 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
             const skipBtn = Array.from(document.querySelectorAll('button, div, span, a')).reverse().find(el => el.innerText?.trim() === 'Skip' && el.offsetHeight > 0);
             if (skipBtn) skipBtn.click();
         });
-        await new Promise(r => setTimeout(r, 2000)); 
+        await new Promise(r => setTimeout(r, 2000));
 
         // 3. STEP 2: BRUTE-FORCE CHECKBOX STRIKE (Verified Working)
         await page.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('*'));
             const textElement = elements.find(el => el.innerText?.trim() === 'Receive Session on WhatsApp' && el.children.length === 0);
-            
+
             if (textElement && textElement.parentElement) {
                 const siblingBox = textElement.parentElement.querySelector('button, input, [role="checkbox"], div[class*="checkbox"], svg');
                 if (siblingBox) siblingBox.click();
@@ -4003,19 +2857,19 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
 
         // 5. Number Injection with React-Wakeup Events
         await bot.editMessageText(`[SYSTEM] Modal open. Injecting number...`, { chat_id: chatId, message_id: statusMsg.message_id });
-        
+
         const inputSelector = 'input[placeholder*="1 234"], input[type="tel"]';
         await page.waitForSelector(inputSelector, { timeout: 10000, visible: true });
-        
+
         await page.focus(inputSelector);
         await page.evaluate((sel) => {
             const el = document.querySelector(sel);
             el.value = '';
             el.dispatchEvent(new Event('input', { bubbles: true }));
-        }, inputSelector); 
-        
+        }, inputSelector);
+
         await page.keyboard.type('+' + targetNumber, { delay: 100 });
-        
+
         await page.evaluate((sel) => {
             const el = document.querySelector(sel);
             el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -4048,9 +2902,9 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
         if (!pairingCode) throw new Error("Number submitted, but pairing code never appeared.");
 
         // --- CODE OBTAINED: SEND TEXT IMMEDIATELY (VIDEO KEEPS RECORDING) ---
-        await bot.editMessageText(`[LEVANTER ACTIVE]\n\nCode: \`${pairingCode}\`\n\nVideo is still recording. Waiting for WhatsApp linking confirmation to grab Session ID...`, { 
-            chat_id: chatId, 
-            message_id: statusMsg.message_id, 
+        await bot.editMessageText(`[LEVANTER ACTIVE]\n\nCode: \`${pairingCode}\`\n\nVideo is still recording. Waiting for WhatsApp linking confirmation to grab Session ID...`, {
+            chat_id: chatId,
+            message_id: statusMsg.message_id,
             parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [[{ text: `Copy Code: ${pairingCode}`, copy_text: { text: pairingCode } }]]
@@ -4082,9 +2936,9 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
         await recorder.stop();
 
         if (!sessionId) {
-            await bot.editMessageText(`[TIMEOUT] Grabbed Pairing Code, but Session ID never generated in time. See full video for details.`, { 
-                chat_id: chatId, 
-                message_id: statusMsg.message_id 
+            await bot.editMessageText(`[TIMEOUT] Grabbed Pairing Code, but Session ID never generated in time. See full video for details.`, {
+                chat_id: chatId,
+                message_id: statusMsg.message_id
             });
             if (fs.existsSync(videoPath)) {
                 await bot.sendVideo(chatId, videoPath, { caption: `Full Diagnostic Video (Timed Out)` });
@@ -4092,9 +2946,9 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
             return;
         }
 
-        await bot.editMessageText(`[LEVANTER SUCCESS]\n\nCode Used: \`${pairingCode}\`\nSession ID: \`${sessionId}\``, { 
-            chat_id: chatId, 
-            message_id: statusMsg.message_id, 
+        await bot.editMessageText(`[LEVANTER SUCCESS]\n\nCode Used: \`${pairingCode}\`\nSession ID: \`${sessionId}\``, {
+            chat_id: chatId,
+            message_id: statusMsg.message_id,
             parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [[{ text: `Copy Session ID`, copy_text: { text: sessionId } }]]
@@ -4119,390 +2973,11 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
 
 
 
-// --- 2. THE COMMAND ACTIVATOR ---
-// Usage: /play [Song Name or Artist]
-bot.onText(/\/play\s+(.+)/, async (msg, match) => {
-    const chatId = msg.chat.id.toString();
-    const adminId = process.env.ADMIN_ID || '7710721646';
-    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
-
-    const query = match[1].trim();
-    playCache[chatId] = { query, createdAt: Date.now(), processing: false };
-
-    await bot.sendMessage(chatId, `[SYSTEM] Target Acquired: "${query}"\n\nClick below to extract:`, {
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    { text: "🎵 Download Audio (MP3)", callback_data: "action_play_audio" }
-                ],
-                [
-                    { text: "Cancel", callback_data: "action_play_cancel" }
-                ]
-            ]
-        }
-    });
-});
-
-// Telegram sends button presses as callback_query updates. This listener was
-// missing, so the /play audio button could render but never do any work.
-bot.on('callback_query', async (callbackQuery) => {
-    const action = callbackQuery?.data;
-    const message = callbackQuery?.message;
-    if (!action || !message || !action.startsWith('action_play_')) return;
-
-    const chatId = String(message.chat.id);
-    const adminId = process.env.ADMIN_ID || '7710721646';
-    if (chatId !== adminId && !AUTHORIZED.includes(chatId)) {
-        await bot.answerCallbackQuery(callbackQuery.id, { text: 'Not authorized.' }).catch(() => {});
-        return;
-    }
-
-    await bot.answerCallbackQuery(callbackQuery.id, { text: 'Working…' }).catch(() => {});
-
-    if (action === 'action_play_cancel') {
-        delete playCache[chatId];
-        await bot.editMessageText('[CANCELLED] Audio request cancelled.', {
-            chat_id: chatId,
-            message_id: message.message_id
-        }).catch(() => {});
-        return;
-    }
-
-    if (action !== 'action_play_audio') return;
-
-    const cached = playCache[chatId];
-    const query = typeof cached === 'string' ? cached : cached?.query;
-    if (!query || (cached?.createdAt && Date.now() - cached.createdAt > PLAY_CACHE_TTL_MS)) {
-        delete playCache[chatId];
-        await bot.editMessageText('[ERROR] This audio request expired. Send /play again.', {
-            chat_id: chatId,
-            message_id: message.message_id
-        }).catch(() => {});
-        return;
-    }
-
-    if (cached && typeof cached === 'object' && cached.processing) {
-        await bot.answerCallbackQuery(callbackQuery.id, { text: 'This request is already processing.' }).catch(() => {});
-        return;
-    }
-    if (cached && typeof cached === 'object') cached.processing = true;
-
-    try {
-        await bot.editMessageText(`[SYSTEM] Searching YouTube for the real track name, then checking SoundCloud…`, {
-            chat_id: chatId,
-            message_id: message.message_id
-        }).catch(() => {});
-
-        const response = await axios.post(`http://127.0.0.1:${PORT}/api/play-hook`, { query }, {
-            responseType: 'arraybuffer',
-            timeout: PLAY_REQUEST_TIMEOUT_MS,
-            validateStatus: () => true
-        });
-
-        if (response.status >= 400) {
-            let errorText = 'Audio download failed.';
-            try {
-                const body = JSON.parse(Buffer.from(response.data).toString('utf8'));
-                if (body?.error) errorText = body.error;
-            } catch {}
-            throw new Error(errorText);
-        }
-
-        const audioBuffer = Buffer.from(response.data || []);
-        if (audioBuffer.length < 5000) throw new Error('SoundCloud returned an empty audio file.');
-
-        const title = decodeTelegramHeader(response.headers['x-track-title'], query);
-        const artist = decodeTelegramHeader(response.headers['x-track-artist'], '');
-        await bot.sendAudio(chatId, audioBuffer, {
-            title: title.slice(0, 255),
-            performer: artist.slice(0, 255),
-            caption: `[SUCCESS] ${title}`
-        }, {
-            filename: safeAudioFilename(title),
-            contentType: 'audio/mpeg'
-        });
-
-        await bot.deleteMessage(chatId, message.message_id).catch(() => {});
-    } catch (error) {
-        await bot.editMessageText(`[ERROR] ${error.message || 'Audio download failed.'}`, {
-            chat_id: chatId,
-            message_id: message.message_id
-        }).catch(() => {});
-    } finally {
-        delete playCache[chatId];
-    }
-});
-
-
-bot.onText(/\/yt\s+(.+)/, async (msg, match) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
-
-    const url = match[1].trim();
-    if (!isYouTubeUrl(url)) {
-        return bot.sendMessage(chatId, '[ERROR] That is not a YouTube link.');
-    }
-
-    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Fetching YouTube video...');
-    const videoPath = path.join(__dirname, `yt_${Date.now()}.mp4`);
-    const cookies = getYouTubeCookiePath();
-
-    try {
-        await bot.editMessageText(`[SYSTEM] Downloading YouTube video${cookies ? ' with session loaded' : ''}...`, { chat_id: chatId, message_id: statusMsg.message_id });
-        await downloadYouTubeVideo(url, videoPath);
-
-        await bot.editMessageText('[SYSTEM] Preparing original-quality YouTube video for Telegram...', { chat_id: chatId, message_id: statusMsg.message_id });
-        await sendTelegramVideo(bot, chatId, videoPath, '[SUCCESS] YouTube video downloaded');
-        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-    } catch (err) {
-        await bot.editMessageText(`[ERROR] YouTube download failed: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
-    } finally {
-        if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
-    }
-});
-
-
-// Usage: /dl https://www.tiktok.com/@user/video/123456789 or YouTube or ANY Link
-bot.onText(/\/dl\s+(.+)/, async (msg, match) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
-
-    const url = match[1].trim();
-    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] Analyzing link and bypassing security...');
-    const requestTempPaths = new Set();
-
-    try {
-        // --- 1. TIKTOK SPECIFIC LOGIC (VIDEOS & IMAGES) ---
-        if (url.includes('tiktok.com')) {
-            await bot.editMessageText('[SYSTEM] TikTok link detected. Fetching unwatermarked HD source...', { chat_id: chatId, message_id: statusMsg.message_id });
-            
-            const response = await axios.get(`https://www.tikwm.com/api/?url=${url}&hd=1`);
-            const data = response.data.data;
-
-            if (!data) throw new Error("Could not extract TikTok data.");
-
-            if (data.images && data.images.length > 0) {
-                await bot.editMessageText(`[SYSTEM] TikTok Image Carousel detected (${data.images.length} images). Sending raw HD photos...`, { chat_id: chatId, message_id: statusMsg.message_id });
-                
-                let mediaGroup = [];
-                for (let i = 0; i < data.images.length; i++) {
-                    mediaGroup.push({
-                        type: 'photo',
-                        media: data.images[i],
-                        caption: i === 0 ? `[SUCCESS] HD TikTok Images Extracted` : '' 
-                    });
-                    
-                    if (mediaGroup.length === 10 || i === data.images.length - 1) {
-                        await bot.sendMediaGroup(chatId, mediaGroup);
-                        mediaGroup = []; 
-                    }
-                }
-                
-                await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
-                return; 
-            }
-
-            const videoUrl = data.hdplay || data.play;
-            await bot.editMessageText('[SYSTEM] Found raw TikTok video file. Streaming to Telegram...', { chat_id: chatId, message_id: statusMsg.message_id });
-            
-            await bot.sendVideo(chatId, videoUrl, { caption: `[SUCCESS] Max Native Quality (No Watermark)` });
-            await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
-            return;
-        }
-
-        // --- 2. PINTEREST DIRECT RESOLVER ---
-        if (isPinterestUrl(url)) {
-            await bot.editMessageText('[SYSTEM] Pinterest link detected. Resolving the original media...', { chat_id: chatId, message_id: statusMsg.message_id });
-            const mediaData = await resolvePinterestMedia(url);
-
-            if (mediaData.type === 'video') {
-                const videoPath = path.join(__dirname, `pin_${Date.now()}.mp4`);
-                requestTempPaths.add(videoPath);
-                try {
-                    await downloadPinterestVideo(mediaData.url, videoPath);
-                    await sendTelegramVideo(bot, chatId, videoPath, '[SUCCESS] Pinterest video downloaded');
-                } finally {
-                    if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
-                }
-            } else {
-                for (let i = 0; i < mediaData.urls.length; i++) {
-                    const image = await fetchRemoteMediaBuffer(mediaData.urls[i]);
-                    await bot.sendPhoto(chatId, image, { caption: i === 0 ? '[SUCCESS] Pinterest image downloaded' : undefined });
-                }
-            }
-
-            await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-            return;
-        }
-
-        // --- 3. PUBLIC ADULT VIDEO SITES ---
-        if (isPublicAdultVideoUrl(url)) {
-            const videoPath = path.join(__dirname, `dl_${Date.now()}.mp4`);
-            requestTempPaths.add(videoPath);
-            try {
-                await bot.editMessageText('[SYSTEM] Public adult video site detected. Downloading available media...', { chat_id: chatId, message_id: statusMsg.message_id });
-                await downloadPublicVideo(url, videoPath);
-                await deliverPublicAdultVideo(bot, chatId, videoPath, '[SUCCESS] Public adult video downloaded');
-                await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-                return;
-            } finally {
-                if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
-            }
-        }
-
-        // --- 4. YOUTUBE VIDEO / SHORTS ---
-        if (isYouTubeUrl(url)) {
-            const videoPath = path.join(__dirname, `dl_${Date.now()}.mp4`);
-            requestTempPaths.add(videoPath);
-            const cookies = getYouTubeCookiePath();
-            try {
-                await bot.editMessageText(`[SYSTEM] YouTube link detected. Downloading${cookies ? ' with session loaded' : ''}...`, { chat_id: chatId, message_id: statusMsg.message_id });
-                await downloadYouTubeVideo(url, videoPath);
-                await sendTelegramVideo(bot, chatId, videoPath, '[SUCCESS] YouTube video downloaded');
-                await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-                return;
-            } finally {
-                if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
-            }
-        }
-
-        // --- 3. THE FRONTLINE: YT-DLP ---
-        await bot.editMessageText('[SYSTEM] Standard link detected. Engaging yt-dlp for maximum native quality...', { chat_id: chatId, message_id: statusMsg.message_id });
-        
-        const videoPath = path.join(__dirname, `dl_${Date.now()}.mp4`);
-        requestTempPaths.add(videoPath);
-        let ytdlpSuccess = false;
-
-        try {
-            await youtubedl(url, {
-                output: videoPath,
-                format: 'bv*[height<=2160]+ba/b[height<=2160]/b',
-                mergeOutputFormat: 'mp4',
-                jsRuntimes: 'nodejs', 
-                noWarnings: true
-            });
-            
-            ytdlpSuccess = true;
-
-        } catch (ytErr) {
-            
-            // --- 4. THE UNIVERSAL HEADLESS RESCUE ENGINE ---
-            await bot.editMessageText(`[SYSTEM] yt-dlp failed or rejected the link. Engaging Universal Headless Rescue Engine...`, { chat_id: chatId, message_id: statusMsg.message_id });
-            
-            let rescueBrowser = null;
-            try {
-                rescueBrowser = await launchScraperBrowser();
-                
-                const rescuePage = await rescueBrowser.newPage();
-                await rescuePage.setViewport({ width: 1280, height: 800 });
-                
-                // Navigate (Automatically resolves shortlinks like pin.it)
-                await rescuePage.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-                
-                // Scroll to force lazy-loaded images/videos to render
-                await rescuePage.evaluate(() => window.scrollBy(0, 500));
-                await delay(2000);
-
-                // Execute the Universal DOM Hunter
-                const mediaData = await rescuePage.evaluate(() => {
-                    // Hunt 1: Is there a raw video on the page?
-                    const video = document.querySelector('video');
-                    if (video) {
-                        const videoSrc = video.src || video.querySelector('source')?.src;
-                        if (videoSrc && videoSrc.startsWith('http')) return { type: 'video', url: videoSrc };
-                    }
-                    
-                    // Hunt 2: Pinterest High-Res Override
-                    if (window.location.hostname.includes('pinterest')) {
-                        const imgs = Array.from(document.querySelectorAll('img'));
-                        const mainImg = imgs.find(img => img.src && img.src.includes('i.pinimg.com') && (img.src.includes('736x') || img.src.includes('originals')));
-                        if (mainImg) {
-                            return { type: 'image', url: mainImg.src.replace(/736x/, 'originals') };
-                        }
-                    }
-
-                    // Hunt 3: General Image Grid / Albums (Filters out icons & avatars)
-                    const allImages = Array.from(document.querySelectorAll('img'));
-                    const highResImages = allImages
-                        .filter(img => img.src && img.src.startsWith('http'))
-                        .filter(img => img.naturalWidth > 120 && img.naturalHeight > 120) 
-                        .map(img => img.src);
-                    
-                    const uniqueImages = [...new Set(highResImages)];
-                    
-                    if (uniqueImages.length > 0) {
-                        return { type: 'images', urls: uniqueImages };
-                    }
-
-                    return null;
-                });
-
-                if (!mediaData) {
-                    throw new Error("Rescue Engine crawled the page but found zero valid videos or high-resolution images.");
-                }
-
-                await bot.editMessageText('[SYSTEM] Media successfully acquired via Rescue Engine. Uploading...', { chat_id: chatId, message_id: statusMsg.message_id });
-
-                // Deliver what the Rescue Engine found
-                if (mediaData.type === 'video') {
-                    await bot.sendVideo(chatId, mediaData.url, { caption: '[SUCCESS] Video Extracted via Rescue Engine' });
-                } else if (mediaData.type === 'image') {
-                    await bot.sendPhoto(chatId, mediaData.url, { caption: '[SUCCESS] Image Extracted via Rescue Engine' });
-                } else if (mediaData.type === 'images') {
-                    // Handle albums/multiple images
-                    let mediaGroup = [];
-                    for (let i = 0; i < mediaData.urls.length; i++) {
-                        mediaGroup.push({
-                            type: 'photo',
-                            media: mediaData.urls[i],
-                            caption: i === 0 ? '[SUCCESS] Media Array Extracted via Rescue Engine' : ''
-                        });
-                        
-                        if (mediaGroup.length === 10 || i === mediaData.urls.length - 1) {
-                            await bot.sendMediaGroup(chatId, mediaGroup);
-                            mediaGroup = [];
-                        }
-                    }
-                }
-
-                await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-                return; // Stop execution, the Rescue Engine saved the day
-
-            } catch (rescueErr) {
-                // If BOTH yt-dlp and Puppeteer fail
-                throw new Error(`yt-dlp failed AND Rescue Engine failed: ${rescueErr.message}`);
-            } finally {
-                if (rescueBrowser) await rescueBrowser.close().catch(() => {});
-            }
-        }
-
-        // --- 5. YT-DLP DELIVERY ---
-        // If yt-dlp successfully grabs the file, execution drops here to deliver it
-        if (ytdlpSuccess) {
-            await bot.editMessageText('[SYSTEM] yt-dlp Extraction complete. Preparing original-quality video for Telegram...', { chat_id: chatId, message_id: statusMsg.message_id });
-            await sendTelegramVideo(bot, chatId, videoPath, '[SUCCESS] Max Native Quality Downloaded');
-            await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
-        }
-
-    } catch (err) {
-        bot.editMessageText(`[ERROR] Final Engine Failure: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
-    } finally {
-        for (const tempPath of requestTempPaths) {
-            if (fs.existsSync(tempPath)) {
-                try { fs.unlinkSync(tempPath); } catch (e) {}
-            }
-        }
-    }
-});
-
-
-
-// Matches exactly: /task <number>
 bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    const targetSuffix = match[1]; 
+    const targetSuffix = match[1];
     let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Strike Protocol: ${targetSuffix} ⚡\nInitializing tabs...`);
     const msgId = statusMsg.message_id;
 
@@ -4546,7 +3021,7 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
 
         await updateStatus('[SYSTEM] Synchronizing Account State...');
         await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
-        
+
         // Smart Wait instead of fixed delay
         await masterPage.waitForSelector('input, button, .account-card, .van-cell', { timeout: 15000 }).catch(()=>{});
         await loginToWsjobsPuppeteer(masterPage);
@@ -4555,10 +3030,10 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
 
         while (isLooping) {
             await updateStatus(`[SYSTEM] Loop ${loopCount}: Scanning for target suffix ${targetSuffix}...`);
-            
+
             // Navigate master to task page to scan available targets
             await masterPage.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded' });
-            
+
             // SMART WAIT: Wait until the Send Task buttons actually appear in the DOM
             await masterPage.waitForFunction(() => {
                 return Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
@@ -4572,7 +3047,7 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
                 // Fix: Target ACTUAL buttons, not just any element
                 const allSendBtns = Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
                     .filter(el => /Send Task|SEND/i.test(el.innerText?.trim()) && el.offsetHeight > 0);
-                
+
                 let found = 0;
                 for (let btn of allSendBtns) {
                     // Check if its parent card container holds the target suffix
@@ -4603,17 +3078,17 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
 
             // Select only the needed active tabs for this loop
             const activePages = pages.slice(0, activeTabsCount);
-            
+
             // Synchronize all active tabs to the task board
             await Promise.all(activePages.map(p => p.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded' })));
-            
+
             // Wait for buttons to render on all tabs
             await Promise.all(activePages.map(p => p.waitForFunction(() => {
                 return Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
                     .some(el => /Send Task|SEND/i.test(el.innerText?.trim()));
             }, { timeout: 15000 }).catch(()=>{})));
-            
-            await delay(1000); 
+
+            await delay(1000);
 
             // Assign 1 specific number to each tab and execute an aggressive click
             await updateStatus(`[SYSTEM] Loop ${loopCount}: Claiming 1 number per tab...`);
@@ -4621,15 +3096,15 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
                 await p.evaluate((suffix, index) => {
                     const btns = Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
                         .filter(el => /Send Task|SEND/i.test(el.innerText?.trim()) && el.offsetHeight > 0);
-                    
+
                     let matches = 0;
                     for (let btn of btns) {
                         if (btn.closest('div, .list-item, .account-card, .van-cell')?.innerText.includes(suffix)) {
-                            if (matches === index) { 
+                            if (matches === index) {
                                 // Aggressive robust click
-                                btn.click(); 
+                                btn.click();
                                 btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                                return; 
+                                return;
                             }
                             matches++;
                         }
@@ -4649,8 +3124,8 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
                 // Find the confirm button (reverse order to catch the top-most modal layer)
                 const btns = Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
                     .filter(el => /confirm/i.test(el.innerText?.trim()) && el.offsetHeight > 0);
-                
-                const confirmBtn = btns.pop(); 
+
+                const confirmBtn = btns.pop();
                 if (confirmBtn) {
                     confirmBtn.click();
                     confirmBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
@@ -4665,17 +3140,17 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
                     const interval = setInterval(() => {
                         attempts++;
                         const text = document.body.innerText;
-                        
+
                         // Site Error
                         if (text.includes('temporarily unable to send')) {
                             clearInterval(interval);
                             resolve('error');
-                        } 
+                        }
                         // Site Success
                         else if (text.includes('Send successful') || text.includes('Points have been credited')) {
                             clearInterval(interval);
                             resolve('success');
-                        } 
+                        }
                         // Timeout Safety (10 seconds)
                         else if (attempts > 50) {
                             clearInterval(interval);
@@ -4708,16 +3183,16 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
             }
         }
 
-        // Final Reporting & Screenshot 
+        // Final Reporting & Screenshot
         await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nTotal Sent: ${totalSuccess}\nTotal Points Earned: ${totalPoints}`);
-        
+
         const finalSnap = await masterPage.screenshot({ type: 'png' });
-        
-        await bot.sendPhoto(chatId, finalSnap, { 
+
+        await bot.sendPhoto(chatId, finalSnap, {
             caption: `*Strike Protocol Complete* ⚡\nSuffix: \`${targetSuffix}\`\nSuccesses: \`${totalSuccess}\`\nPoints Earned: \`${totalPoints}\``,
             parse_mode: 'Markdown'
         });
-        
+
         await bot.deleteMessage(chatId, msgId).catch(() => {});
 
     } catch (err) {
@@ -4735,7 +3210,7 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
 // Initiation Command
 bot.onText(/^\/wt$/i, async (msg) => {
     const chatId = msg.chat.id.toString(); // Ensure this is a string
-    
+
     // Check if the string exists in the AUTHORIZED array
     if (!AUTHORIZED.includes(chatId)) {
         console.log(`[AUTH] Unauthorized access attempt by ID: ${chatId}`);
@@ -4755,7 +3230,7 @@ bot.onText(/^(?:close|\/close)$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     const adminId = process.env.ADMIN_ID || '7710721646';
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
-    
+
     let stoppedSomething = false;
 
     // 1. Kill WT Burner Session
@@ -4775,7 +3250,7 @@ bot.onText(/^(?:close|\/close)$/i, async (msg) => {
         taskModeActive = false;
         if (typeof taskModeTimer !== 'undefined' && taskModeTimer) clearTimeout(taskModeTimer);
         if (typeof autoScannerInterval !== 'undefined' && autoScannerInterval) clearInterval(autoScannerInterval);
-        
+
         bot.sendMessage(chatId, '[INACTIVE] Task Mode Deactivated. Main menu restored.', {
             reply_markup: {
                 keyboard: [[{ text: 'Withdraw' }, { text: 'Balance' }]],
@@ -4811,8 +3286,8 @@ bot.onText(/^(?:close|\/close)$/i, async (msg) => {
 });
 
 
-        
-     
+
+
 
 
 // Usage: /checknum 2348000000000
@@ -4838,7 +3313,7 @@ bot.onText(/\/checknum\s+(.+)/, async (msg, match) => {
         if (result) {
             // Convert the raw JSON object into a formatted, readable string
             const rawData = JSON.stringify(result, null, 2);
-            
+
             // Send it back wrapped in a Markdown code block
             bot.sendMessage(chatId, `[SUCCESS] Registered on WhatsApp.\n\nRaw Protocol Data:\n\`\`\`json\n${rawData}\n\`\`\``, { parse_mode: 'Markdown' });
         } else {
@@ -4857,7 +3332,7 @@ bot.onText(/^\/getfile$/i, async (msg) => {
     if (chatId !== ADMIN_ID) return;
 
     let statusMsg = await bot.sendMessage(chatId, '⚙️ [SYSTEM] Booting Headless Browser for Native Excel Export...');
-    
+
     const updateStatus = async (text) => {
         await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
     };
@@ -4909,10 +3384,10 @@ bot.onText(/^\/getfile$/i, async (msg) => {
             const ph = await page.evaluate(el => (el.placeholder || '').toLowerCase(), input);
             if (ph.includes('username')) {
                 await input.click({ clickCount: 3 }); await page.keyboard.press('Backspace');
-                await input.type('Suzume', { delay: 50 }); 
+                await input.type('Suzume', { delay: 50 });
             } else if (ph.includes('password')) {
                 await input.click({ clickCount: 3 }); await page.keyboard.press('Backspace');
-                await input.type('Suzume', { delay: 50 }); 
+                await input.type('Suzume', { delay: 50 });
             } else if (ph.includes('answer')) {
                 await input.click({ clickCount: 3 }); await page.keyboard.press('Backspace');
                 await input.type(captchaAnswer, { delay: 50 });
@@ -4922,7 +3397,7 @@ bot.onText(/^\/getfile$/i, async (msg) => {
         await new Promise(r => setTimeout(r, 1000));
         await page.keyboard.press('Enter');
         await new Promise(r => setTimeout(r, 500));
-        
+
         await page.evaluate(() => {
             const els = Array.from(document.querySelectorAll('button, input, a, div'));
             for (let el of els) {
@@ -4975,17 +3450,17 @@ bot.onText(/^\/getfile$/i, async (msg) => {
         // --- 5. WAIT FOR DOWNLOAD TO COMPLETE ---
         await updateStatus('⚙️ [SYSTEM] Waiting for server to generate and download the file...');
         let downloadedFilePath = null;
-        
+
         // Poll the temporary directory for up to 60 seconds
         for (let i = 0; i < 60; i++) {
             await new Promise(r => setTimeout(r, 1000));
-            
+
             if (fs.existsSync(downloadDir)) {
                 const files = fs.readdirSync(downloadDir);
                 // Locate the finished export file, bypassing Chrome's active .crdownload extension
                 const excelFile = files.find(f => f.endsWith('.xlsx') || f.endsWith('.xls') || f.endsWith('.csv'));
                 const isDownloading = files.some(f => f.endsWith('.crdownload'));
-                
+
                 if (excelFile && !isDownloading) {
                     downloadedFilePath = path.join(downloadDir, excelFile);
                     break;
@@ -5001,7 +3476,7 @@ bot.onText(/^\/getfile$/i, async (msg) => {
 
         // --- 6. SEND FILE TO TELEGRAM ---
         await updateStatus('✅ [SUCCESS] File acquired! Handing off to the Message Bot...');
-        
+
         const msgBotToken = '8424082135:AAGc73Ztzkb49dZd4hHEx99QFlMMwS5MONw';
         const messageBot = new TelegramBot(msgBotToken, { polling: false });
 
@@ -5011,7 +3486,7 @@ bot.onText(/^\/getfile$/i, async (msg) => {
         });
 
         await updateStatus('✅ [SUCCESS] Excel file successfully delivered!');
-        
+
         setTimeout(() => {
             bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
         }, 3000);
@@ -5020,7 +3495,7 @@ bot.onText(/^\/getfile$/i, async (msg) => {
         await updateStatus(`❌ [ERROR] Sequence failed: ${err.message}`);
     } finally {
         if (browser) await browser.close().catch(() => {});
-        
+
         // Wipe the temporary folder from Heroku storage to free up disk space
         try {
             if (fs.existsSync(downloadDir)) {
@@ -5032,7 +3507,7 @@ bot.onText(/^\/getfile$/i, async (msg) => {
     }
 });
 
-  
+
 
 
 // Command to START Task Mode
@@ -5040,14 +3515,14 @@ bot.onText(/^(?:Task|task)$/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     const adminId = process.env.ADMIN_ID || '7710721646';
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
-    
+
     taskModeActive = true;
     isRadarScanning = false; // Force unlock the radar in case of a previous crash
     resetTaskModeTimer(chatId);
-    
-    await bot.sendMessage(chatId, '[ACTIVE] Autonomous Task Mode Activated!\n\nRunning initial board scan right now. Will continue to scan every 1.5 minutes.\nType Close to end this mode.', { 
+
+    await bot.sendMessage(chatId, '[ACTIVE] Autonomous Task Mode Activated!\n\nRunning initial board scan right now. Will continue to scan every 1.5 minutes.\nType Close to end this mode.', {
         parse_mode: 'Markdown',
-        reply_markup: { remove_keyboard: true } 
+        reply_markup: { remove_keyboard: true }
     });
 
     // FIRE THE FIRST SCAN INSTANTLY
@@ -5057,7 +3532,7 @@ bot.onText(/^(?:Task|task)$/i, async (msg) => {
     if (autoScannerInterval) clearInterval(autoScannerInterval);
     autoScannerInterval = setInterval(() => {
         runAutoTaskScanner(chatId);
-    }, 90000); 
+    }, 90000);
 });
 
 
@@ -5070,10 +3545,10 @@ bot.on('message', (msg) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID || !taskModeActive) return;
     if (!msg.text) return;
-    
+
     // Check if the message is JUST a number
     if (/^\d+$/.test(msg.text.trim())) {
-        
+
         // Reset the 30-minute timebomb since you just sent a number
         if (taskModeTimer) clearTimeout(taskModeTimer);
         taskModeTimer = setTimeout(() => {
@@ -5084,7 +3559,7 @@ bot.on('message', (msg) => {
         // Secretly convert "657" into "/task 657" and push it directly into the bot's processor
         const fakeMessage = { ...msg };
         fakeMessage.text = `/task ${msg.text.trim()}`;
-        
+
         // Feed it back to the bot to execute your original /task command
         bot.processUpdate({
             update_id: Math.floor(Math.random() * 1000000),
@@ -5130,7 +3605,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
                     const rect = okBtn.getBoundingClientRect();
                     ['mousedown', 'mouseup', 'click'].forEach(type => {
                         okBtn.dispatchEvent(new MouseEvent(type, {
-                            view: window, bubbles: true, cancelable: true, 
+                            view: window, bubbles: true, cancelable: true,
                             clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2
                         }));
                     });
@@ -5157,7 +3632,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
         // --- PRECISION BALANCE SCRAPER (The fix for "639" issues) ---
         wsjobsBal = await wPage.evaluate(() => {
             const allText = document.body.innerText;
-            
+
             // Priority 1: Hunt for decimals (Money)
             const decimalMatches = allText.match(/\d+\.\d{2}/g);
             if (decimalMatches) {
@@ -5172,8 +3647,8 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
                 const numbers = generalMatches
                     .map(n => n.replace(/,/g, ''))
                     .map(n => parseFloat(n))
-                    .filter(n => n > 100 && n < 100000); 
-                
+                    .filter(n => n > 100 && n < 100000);
+
                 if (numbers.length > 0) {
                     return Math.max(...numbers).toLocaleString(undefined, { minimumFractionDigits: 2 });
                 }
@@ -5223,9 +3698,9 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
 
 
 const updateStatus = async (text) => {
-    await bot.editMessageText(text, { 
-        chat_id: chatId, 
-        message_id: statusMsg.message_id 
+    await bot.editMessageText(text, {
+        chat_id: chatId,
+        message_id: statusMsg.message_id
     }).catch(() => {});
 };
 
@@ -5242,8 +3717,8 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
     let browser = null;
     let context = null;
-    let pages = []; 
-    
+    let pages = [];
+
     try {
         process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
 
@@ -5274,7 +3749,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                     const rect = okBtn.getBoundingClientRect();
                     ['mousedown', 'mouseup', 'click'].forEach(type => {
                         okBtn.dispatchEvent(new MouseEvent(type, {
-                            view: window, bubbles: true, cancelable: true, 
+                            view: window, bubbles: true, cancelable: true,
                             clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2
                         }));
                     });
@@ -5310,7 +3785,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                 const numbers = generalMatches
                     .map(n => n.replace(/,/g, ''))
                     .map(n => parseFloat(n))
-                    .filter(n => n > 100 && n < 100000); 
+                    .filter(n => n > 100 && n < 100000);
                 return numbers.length > 0 ? Math.max(...numbers) : 0;
             }
             return 0;
@@ -5321,8 +3796,8 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
 
         if (!targetAmount) {
             const errSnap = await masterPage.screenshot();
-            await bot.sendPhoto(chatId, errSnap, { 
-                caption: `[DIAGNOSTIC] Detected Balance: ${rawBalance}. Too low for withdrawal.` 
+            await bot.sendPhoto(chatId, errSnap, {
+                caption: `[DIAGNOSTIC] Detected Balance: ${rawBalance}. Too low for withdrawal.`
             }, { filename: 'low_balance.png' });
             throw new Error(`Balance ${rawBalance} is too low.`);
         }
@@ -5349,7 +3824,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                             const rect = okBtn.getBoundingClientRect();
                             ['mousedown', 'mouseup', 'click'].forEach(type => {
                                 okBtn.dispatchEvent(new MouseEvent(type, {
-                                    view: window, bubbles: true, cancelable: true, 
+                                    view: window, bubbles: true, cancelable: true,
                                     clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2
                                 }));
                             });
@@ -5386,14 +3861,14 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                 const overlays = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"]');
                 overlays.forEach(el => el.remove());
 
-                const textBlockers = Array.from(document.querySelectorAll('div')).filter(el => 
+                const textBlockers = Array.from(document.querySelectorAll('div')).filter(el =>
                     el.innerText?.includes('Saka Yanzu') || el.innerText?.includes('Don Allah sauke App')
                 );
                 textBlockers.forEach(b => b.remove());
 
-                const mainBtn = Array.from(document.querySelectorAll('*')).find(b => 
-                    (b.innerText?.includes('WITHDRAW NOW') || b.innerText?.includes('SACAR AGORA')) && 
-                    b.offsetHeight > 0 && 
+                const mainBtn = Array.from(document.querySelectorAll('*')).find(b =>
+                    (b.innerText?.includes('WITHDRAW NOW') || b.innerText?.includes('SACAR AGORA')) &&
+                    b.offsetHeight > 0 &&
                     window.getComputedStyle(b).display !== 'none'
                 );
 
@@ -5413,19 +3888,19 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                 }
             });
 
-            await p.mouse.click(206, 320).catch(() => {}); 
+            await p.mouse.click(206, 320).catch(() => {});
             await delay(3000);
 
             // 3. PASSWORD ENTRY & LOCK IN
             const passInput = p.locator('input[type="password"], .modal-body input, [placeholder*="password"], [placeholder*="senha"]').last();
             await passInput.waitFor({ state: 'visible', timeout: 15000 });
             await passInput.click();
-            await p.evaluate(el => el.value = '', await passInput.elementHandle()); 
+            await p.evaluate(el => el.value = '', await passInput.elementHandle());
             if (!WSJOBS_WITHDRAW_PIN) {
                 throw new Error('Missing WSJOBS_WITHDRAW_PIN configuration.');
             }
             await passInput.type(WSJOBS_WITHDRAW_PIN, { delay: 100 });
-            await p.keyboard.press('Tab'); 
+            await p.keyboard.press('Tab');
             await delay(1500);
 
             console.log(`[TAB ${i + 1}] Sitting at Confirm Modal.`);
@@ -5450,8 +3925,8 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                     modalBlockers.forEach(el => el.remove());
 
                     const elements = Array.from(document.querySelectorAll('button, div, span'));
-                    const finalBtn = elements.reverse().find(b => 
-                        (b.innerText?.includes('Tabbatar Cirewa') || b.innerText?.includes('Confirm')) && 
+                    const finalBtn = elements.reverse().find(b =>
+                        (b.innerText?.includes('Tabbatar Cirewa') || b.innerText?.includes('Confirm')) &&
                         b.offsetHeight > 0
                     );
 
@@ -5473,15 +3948,15 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                             target.dispatchEvent(new TouchEvent('touchstart', { cancelable: true, bubbles: true, touches: [touchObj], targetTouches: [touchObj], changedTouches: [touchObj] }));
                             target.dispatchEvent(new TouchEvent('touchend', { cancelable: true, bubbles: true, touches: [], targetTouches: [], changedTouches: [touchObj] }));
                         } catch(e) {}
-                        
+
                         target.click();
                     }
                 });
 
                 // Phase C: Physical Backup Tap
-                await p.mouse.click(300, 720).catch(() => {}); 
-                await p.mouse.click(300, 700).catch(() => {}); 
-                
+                await p.mouse.click(300, 720).catch(() => {});
+                await p.mouse.click(300, 700).catch(() => {});
+
                 console.log(`[TAB ${i + 1}] Strike Executed`);
             } catch (err) {
                 console.log(`[TAB ${i + 1}] Strike Error: ${err.message}`);
@@ -5499,17 +3974,17 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await delay(5000);
 
         const finalSnap = await masterPage.screenshot({ type: 'png' });
-        
+
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-        await bot.sendPhoto(chatId, finalSnap, 
+        await bot.sendPhoto(chatId, finalSnap,
             { caption: `[SUCCESS] Mass Withdrawal Strike (${TOTAL_TABS} Tabs) submitted.` },
             { filename: 'withdraw_final.png' }
         );
 
     } catch (err) {
         console.log(`[WITHDRAW ERROR]: ${err.message}`);
-        await bot.sendMessage(chatId, `[WITHDRAW ERROR]: ${err.message}`).catch(() => {}); 
-        
+        await bot.sendMessage(chatId, `[WITHDRAW ERROR]: ${err.message}`).catch(() => {});
+
         if (context) {
             try {
                 // Safely grab screenshot of the master tab if it failed
@@ -5541,7 +4016,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
     }
 });
 
-        
+
 
 bot.onText(/\/upscale/i, async (msg) => {
     const chatId = msg.chat.id.toString();
@@ -5568,8 +4043,8 @@ bot.onText(/\/upscale/i, async (msg) => {
 
         // Use Sharp to upscale to 4K (3840px width)
         const outputBuffer = await sharp(inputBuffer)
-            .resize({ 
-                width: 3840, 
+            .resize({
+                width: 3840,
                 kernel: sharp.kernel.lanczos3 // Highest quality downscaling/upscaling algorithm
             })
             .sharpen() // Add HD crispness
@@ -5599,7 +4074,7 @@ bot.on('message', async (msg) => {
     if (!msg.text || msg.text.startsWith('/')) return;
 
 
-        
+
 
         // --- 2. UPGRADED WT BURNER CONVERSATION FLOW ---
     if (wtSessions[chatId] && wtSessions[chatId].step) {
@@ -5615,7 +4090,7 @@ bot.on('message', async (msg) => {
         if (session.step === 'PASSWORD') {
             session.password = msg.text.trim();
             bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-            
+
             session.step = 'TARGET_OR_AWAITING';
             bot.sendMessage(chatId, `[WT BURNER] Password accepted.\n\nSend the **Target Number (Suffix)** you want to strike. You can keep sending new numbers for the next 15 minutes!`, { parse_mode: 'Markdown' });
             return;
@@ -5624,13 +4099,13 @@ bot.on('message', async (msg) => {
         if (session.step === 'TARGET_OR_AWAITING') {
             session.target = msg.text.trim().replace(/[^0-9]/g, '');
             session.step = 'EXECUTING'; // Lock it so you can't double-fire accidentally
-            
+
             // Clear the 15-minute timer if this is a follow-up strike
             if (session.timer) clearTimeout(session.timer);
-            
+
             let statusMsg = await bot.sendMessage(chatId, `[WT BURNER] Locking onto target: ${session.target}...`);
             const updateStatus = async (text) => bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
-            
+
             let pages = [];
             let initialBalanceNum = 0;
 
@@ -5639,7 +4114,7 @@ bot.on('message', async (msg) => {
                 if (!session.browser) {
                     await updateStatus('[WT BURNER] Launching clean Firefox Burner Engine...');
                     process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
-                    
+
                     session.browser = await launchPlaywrightBrowser({
                         headless: true,
                         args: ['--no-sandbox', '--disable-setuid-sandbox']
@@ -5687,12 +4162,12 @@ bot.on('message', async (msg) => {
                 // --- 2. PRECISION BALANCE SCRAPER ---
                 await masterTab.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
                 await delay(3000);
-                
+
                 initialBalanceNum = await masterTab.evaluate(() => {
                     const allText = document.body.innerText;
                     const decimalMatches = allText.match(/\d+\.\d{2}/g);
                     if (decimalMatches) return Math.max(...decimalMatches.map(n => parseFloat(n)));
-                    
+
                     const generalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
                     if (generalMatches) {
                         const numbers = generalMatches.map(n => parseFloat(n.replace(/,/g, ''))).filter(n => n > 100 && n < 100000);
@@ -5718,7 +4193,7 @@ bot.on('message', async (msg) => {
                 if (targetCount === 0) throw new Error(`0 targets found for ${session.target}.`);
 
                 // Double the tabs per target to match the new /task logic
-                const totalTabs = targetCount * 2; 
+                const totalTabs = targetCount * 2;
                 await updateStatus(`[WT BURNER] Found ${targetCount} targets. Spawning ${totalTabs - 1} clone tabs...`);
 
                 for (let i = 1; i < totalTabs; i++) {
@@ -5799,7 +4274,7 @@ bot.on('message', async (msg) => {
                     const allText = document.body.innerText;
                     const decimalMatches = allText.match(/\d+\.\d{2}/g);
                     if (decimalMatches) return Math.max(...decimalMatches.map(n => parseFloat(n)));
-                    
+
                     const generalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
                     if (generalMatches) {
                         const numbers = generalMatches.map(n => parseFloat(n.replace(/,/g, ''))).filter(n => n > 100 && n < 100000);
@@ -5827,7 +4302,7 @@ bot.on('message', async (msg) => {
                         await p.close().catch(()=>{});
                     }
                 }
-                
+
                 session.step = 'TARGET_OR_AWAITING';
 
                 // Reset the 15-minute timebomb
@@ -5843,8 +4318,8 @@ bot.on('message', async (msg) => {
         }
     }
 
-                
-    
+
+
 
 
 
@@ -5862,7 +4337,7 @@ async function initializeWhatsApp(chatId, targetPhoneNumber) {
         authStrategy: new RemoteAuth({
             clientId: 'ultar_bot_session',
             store: store,
-            backupSyncIntervalMs: 300000 
+            backupSyncIntervalMs: 300000
         }),
         puppeteer: {
             headless: true,
@@ -5886,12 +4361,12 @@ async function initializeWhatsApp(chatId, targetPhoneNumber) {
     waClient = new Client(clientConfig);
 
     // THE LATCH: Prevents the bot from spamming you with duplicate codes
-    let codeSent = false; 
+    let codeSent = false;
 
     waClient.on('code', (code) => {
         if (codeSent) return; // If the latch is locked, ignore the duplicate request
         codeSent = true;      // Lock the latch immediately after receiving the first code
-        
+
         const formattedCode = code.match(/.{1,4}/g)?.join('-') || code;
         bot.sendMessage(chatId, `[PAIRING CODE GENERATED]\n\nYour code is: \`${formattedCode}\`\n\nEnter this code in your WhatsApp notification.`, { parse_mode: 'Markdown' });
     });

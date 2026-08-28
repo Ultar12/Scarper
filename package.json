@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-code": "^2.1.235",
-    "@distube/ytdl-core": "^4.14.4",
     "axios": "^1.6.8",
     "cheerio": "^1.0.0",
     "dotenv": "^16.4.5",
@@ -21,7 +20,6 @@
     "node-telegram-bot-api": "^0.66.0",
     "pdf-parse": "^1.1.1",
     "pg": "^8.11.5",
-    "play-dl": "^1.9.7",
     "playwright-core": "latest",
     "puppeteer-core": "^25.0.4",
     "puppeteer-extra": "^3.3.6",
@@ -29,13 +27,10 @@
     "puppeteer-screen-recorder": "^3.0.3",
     "qrcode": "^1.5.3",
     "sharp": "^0.33.3",
-    "soundcloud-downloader": "^1.0.0",
     "webdriverio": "^8.32.0",
     "whatsapp-web.js": "^1.23.0",
     "ws": "^8.20.1",
-    "wwebjs-postgres": "^1.0.0",
-    "youtube-dl-exec": "^3.0.0",
-    "yt-search": "^2.12.2"
+    "wwebjs-postgres": "^1.0.0"
   },
   "engines": {
     "node": "20.x"
