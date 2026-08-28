@@ -3152,7 +3152,7 @@ const updateStatus = async (text) => {
 
  
 
-bot.onText(/\/withdraw\s+task/i, async (msg) => {
+async function runWsjobsWithdrawalTask(msg) {
     const chatId = msg.chat.id.toString();
     const adminId = process.env.ADMIN_ID || '7710721646';
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
@@ -3402,9 +3402,53 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         }
         if (browser) await browser.close().catch(() => {});
     }
+}
+
+// The menu button requests explicit confirmation before submitting a withdrawal.
+bot.onText(/^Withdraw$/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
+
+    await bot.sendMessage(chatId,
+        'This will open the Wsjobs withdrawal task and submit the configured withdrawal amount across its tabs. Confirm to continue.',
+        { reply_markup: { inline_keyboard: [[
+            { text: 'Confirm Withdraw', callback_data: 'wsjobs_withdraw_confirm' },
+            { text: 'Cancel', callback_data: 'wsjobs_withdraw_cancel' }
+        ]] } }
+    );
 });
 
+bot.on('callback_query', async (query) => {
+    const chatId = String(query.message?.chat?.id || '');
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (!chatId || (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId)))) {
+        await bot.answerCallbackQuery(query.id).catch(() => {});
+        return;
+    }
 
+    if (query.data === 'wsjobs_withdraw_cancel') {
+        await bot.answerCallbackQuery(query.id, { text: 'Withdrawal cancelled.' }).catch(() => {});
+        await bot.editMessageText('Withdrawal cancelled.', {
+            chat_id: chatId,
+            message_id: query.message.message_id,
+            reply_markup: { inline_keyboard: [] }
+        }).catch(() => {});
+        return;
+    }
+
+    if (query.data === 'wsjobs_withdraw_confirm') {
+        await bot.answerCallbackQuery(query.id, { text: 'Withdrawal confirmed.' }).catch(() => {});
+        await bot.editMessageText('Withdrawal confirmed. Starting the Wsjobs withdrawal task...', {
+            chat_id: chatId,
+            message_id: query.message.message_id,
+            reply_markup: { inline_keyboard: [] }
+        }).catch(() => {});
+        await runWsjobsWithdrawalTask({ chat: { id: chatId } });
+    }
+});
+
+bot.onText(/\/withdraw\s+task/i, runWsjobsWithdrawalTask);
 
 // --- WSJOBS AUTOMATIC PAIRING FLOW ---
 function parseWsjobsPairInput(rawInput) {
