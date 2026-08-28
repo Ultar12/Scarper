@@ -3158,63 +3158,29 @@ async function runWsjobsWithdrawalTask(msg) {
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
 
     const TOTAL_TABS = 5;
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting Firefox for Secure ${TOTAL_TABS}-Tab Withdrawal...`);
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting Chrome for Secure ${TOTAL_TABS}-Tab Withdrawal...`);
     const videoDir = path.join(__dirname, 'videos');
     if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
 
     let browser = null;
-    let context = null;
     let pages = [];
 
     try {
-        process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
-
-        browser = await launchPlaywrightBrowser({
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
-
-        context = await browser.newContext({
-            userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
-            viewport: { width: 412, height: 915 },
-            recordVideo: { dir: videoDir, size: { width: 412, height: 915 } }
-        });
+        browser = await launchScraperBrowser();
 
         // ==========================================
         // 1. MASTER TAB BOOT & LOGIN
         // ==========================================
-        const masterPage = await context.newPage();
+        const masterPage = await browser.newPage();
+        await masterPage.setViewport({ width: 412, height: 915 });
         pages.push(masterPage);
-
-        // --- THE HUMAN SNIPER (MODAL KILLER) ---
-        await masterPage.addInitScript(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => false });
-            setInterval(() => {
-                const okBtn = Array.from(document.querySelectorAll('button, [class*="btn"]'))
-                    .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
-                if (okBtn) {
-                    const rect = okBtn.getBoundingClientRect();
-                    ['mousedown', 'mouseup', 'click'].forEach(type => {
-                        okBtn.dispatchEvent(new MouseEvent(type, {
-                            view: window, bubbles: true, cancelable: true,
-                            clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2
-                        }));
-                    });
-                    setTimeout(() => {
-                        const modal = okBtn.closest('div[class*="modal"], div[class*="mask"], .van-overlay');
-                        if (modal) modal.remove();
-                        document.body.style.filter = 'none';
-                        document.body.style.overflow = 'auto';
-                    }, 800);
-                }
-            }, 300);
-        });
+        await injectHumanSniper(masterPage);
 
         await bot.editMessageText('[SYSTEM] Navigating to Account & Logging in...', { chat_id: chatId, message_id: statusMsg.message_id });
         await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
         await delay(4000);
 
-        await loginToWsjobs(masterPage);
+        await loginToWsjobsPuppeteer(masterPage);
 
         // Teleport directly to the new withdraw page
         await masterPage.goto(wsjobsUrl(WSJOBS_WITHDRAW_PATH), { waitUntil: 'domcontentloaded' });
@@ -3256,31 +3222,10 @@ async function runWsjobsWithdrawalTask(msg) {
             if (i === 0) {
                 p = masterPage; 
             } else {
-                p = await context.newPage();
+                p = await browser.newPage();
+                await p.setViewport({ width: 412, height: 915 });
                 pages.push(p);
-                // Inject sniper into clone tabs
-                await p.addInitScript(() => {
-                    Object.defineProperty(navigator, 'webdriver', { get: () => false });
-                    setInterval(() => {
-                        const okBtn = Array.from(document.querySelectorAll('button, [class*="btn"]'))
-                            .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
-                        if (okBtn) {
-                            const rect = okBtn.getBoundingClientRect();
-                            ['mousedown', 'mouseup', 'click'].forEach(type => {
-                                okBtn.dispatchEvent(new MouseEvent(type, {
-                                    view: window, bubbles: true, cancelable: true,
-                                    clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2
-                                }));
-                            });
-                            setTimeout(() => {
-                                const modal = okBtn.closest('div[class*="modal"], div[class*="mask"], .van-overlay');
-                                if (modal) modal.remove();
-                                document.body.style.filter = 'none';
-                                document.body.style.overflow = 'auto';
-                            }, 800);
-                        }
-                    }, 300);
-                });
+                await injectHumanSniper(p);
                 
                 await p.goto(wsjobsUrl(WSJOBS_WITHDRAW_PATH), { waitUntil: 'domcontentloaded' });
                 await delay(4000);
@@ -3317,10 +3262,26 @@ async function runWsjobsWithdrawalTask(msg) {
             await delay(2500);
 
             // 3. PASSWORD ENTRY & LOCK IN (101010)
-            const passInput = p.locator('input').last(); // Targets the input field inside the modal
-            await passInput.waitFor({ state: 'visible', timeout: 15000 });
+            await p.waitForFunction(() => Array.from(document.querySelectorAll('input')).some(input => {
+                const rect = input.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+            }), { timeout: 15000 });
+            const inputHandles = await p.$$('input');
+            let passInput = null;
+            for (const candidate of inputHandles.reverse()) {
+                if (await candidate.boundingBox().catch(() => null)) {
+                    passInput = candidate;
+                    break;
+                }
+            }
+            if (!passInput) throw new Error(`Tab ${i + 1}: withdrawal PIN input was not visible.`);
             await passInput.click();
-            await passInput.fill('101010'); // Hardcoded as requested
+            await passInput.press('Control+A').catch(async () => {
+                await p.keyboard.down('Control');
+                await p.keyboard.press('A');
+                await p.keyboard.up('Control');
+            });
+            await passInput.type('101010'); // Existing configured withdrawal PIN flow
             
             await delay(1000);
 
@@ -3373,33 +3334,14 @@ async function runWsjobsWithdrawalTask(msg) {
         console.log(`[WITHDRAW ERROR]: ${err.message}`);
         await bot.sendMessage(chatId, `[WITHDRAW ERROR]: ${err.message}`).catch(() => {});
 
-        if (context) {
-            try {
-                // Safely grab screenshot of the master tab if it failed
-                const errSnap = await pages[0].screenshot({ type: 'png' }).catch(() => null);
-                if (errSnap) {
-                    await bot.sendPhoto(chatId, errSnap, { caption: `[DIAGNOSTIC] Screen state at failure.` }).catch(() => {});
-                }
-            } catch (e) {}
-        }
+        try {
+            const errSnap = await pages[0]?.screenshot({ type: 'png' }).catch(() => null);
+            if (errSnap) {
+                await bot.sendPhoto(chatId, errSnap, { caption: `[DIAGNOSTIC] Chrome screen state at failure.` }).catch(() => {});
+            }
+        } catch (e) {}
     } finally {
-        if (context) {
-            try {
-                const activePages = context.pages();
-                const videoPaths = [];
-                for (const p of activePages) {
-                    const v = p.video();
-                    if (v) {
-                        const vp = await v.path().catch(() => null);
-                        if (vp) videoPaths.push(vp);
-                    }
-                }
-                await context.close().catch(() => {});
-                for (const vp of videoPaths) {
-                    if (fs.existsSync(vp)) fs.unlinkSync(vp);
-                }
-            } catch (e) {}
-        }
+        for (const p of pages) await p.close().catch(() => {});
         if (browser) await browser.close().catch(() => {});
     }
 }
