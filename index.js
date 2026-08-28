@@ -4187,14 +4187,39 @@ function parseWsjobsPairInput(rawInput) {
 async function readWsjobsPairState(page) {
     return page.evaluate(() => {
         const body = document.body?.innerText || '';
-        const match = body.match(/Pair\s*Code[\s\S]{0,140}?\b([A-Z0-9]{4}(?:[-\s]?[A-Z0-9]{4})?)\b/i);
-        const code = match ? match[1].replace(/\s+/g, '-').toUpperCase() : null;
+        const demoCodes = new Set([
+            'KEEP-THIS',
+            '11111111',
+            '00000000',
+            'ABCDEFGH',
+            'ABCD-EFGH',
+            'XXXXXXXX',
+            'XXXX-XXXX'
+        ]);
+        const normalize = (value) => String(value || '').replace(/\s+/g, '-').toUpperCase();
+        const isRealCode = (value) => {
+            const normalized = normalize(value);
+            return Boolean(normalized)
+                && !demoCodes.has(normalized)
+                && !/^([A-Z0-9])\1{7}$/.test(normalized.replace('-', ''));
+        };
+
+        // Read only the short text immediately following the Pair Code label.
+        // This prevents unrelated 8-character text elsewhere on the dashboard
+        // from being mistaken for the current pairing code.
+        const label = Array.from(document.querySelectorAll('*')).find(el =>
+            el.offsetParent !== null && /^Pair\s*Code$/i.test(el.innerText?.trim() || '')
+        );
+        const nearbyText = label?.parentElement?.innerText || body;
+        const candidates = nearbyText.match(/\b[A-Z0-9]{4}(?:[-\s]?[A-Z0-9]{4})?\b/gi) || [];
+        const code = candidates.map(normalize).find(isRealCode) || null;
         return {
             code,
             body,
-            ready: /Pair\s*code\s*ready/i.test(body)
+            ready: /Pair\s*code\s*ready/i.test(body),
+            placeholderDetected: candidates.some(candidate => !isRealCode(candidate))
         };
-    }).catch(() => ({ code: null, body: '', ready: false }));
+    }).catch(() => ({ code: null, body: '', ready: false, placeholderDetected: false }));
 }
 
 async function clickWsjobsCountry(page, countryCode) {
@@ -4450,12 +4475,14 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
             for (let attempt = 0; attempt < 45; attempt++) {
                 await delay(1000);
                 const state = await readWsjobsPairState(page);
+                // KEEP-THIS/11111111 and repeated placeholder characters are
+                // ignored; wait until the website exposes a real code.
                 if (state.code) {
                     pairCode = state.code;
                     break;
                 }
             }
-            if (!pairCode) throw new Error(`Pairing code was not generated for stage ${stage}.`);
+            if (!pairCode) throw new Error(`A real pairing code was not generated for stage ${stage}.`);
 
             await updateStatus(
                 `[PAIRING ${stage}/4] Code ready for +${phoneInfo.countryCode} ${localNumber}.\n\n` +
@@ -4476,13 +4503,17 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
             let disappearedChecks = 0;
             const deadline = Date.now() + 180000;
             while (Date.now() < deadline) {
-                await delay(1000);
+                await delay(500);
                 const state = await readWsjobsPairState(page);
-                if (!state.code) disappearedChecks++;
-                else disappearedChecks = 0;
-                if (disappearedChecks >= 3) break;
+                if (!state.code) {
+                    disappearedChecks++;
+                    // The real code is gone. The website has completed this
+                    // link, so immediately begin the next number sequence.
+                    break;
+                }
+                disappearedChecks = 0;
             }
-            if (disappearedChecks < 3) throw new Error(`Stage ${stage} timed out waiting for the pairing code to disappear.`);
+            if (disappearedChecks < 1) throw new Error(`Stage ${stage} timed out waiting for the pairing code to disappear.`);
 
             await updateStatus(`[PAIRING ${stage}/4] +${phoneInfo.countryCode} ${localNumber} linked successfully. Preparing the next number...`);
             await delay(1200);
