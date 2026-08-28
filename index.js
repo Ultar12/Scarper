@@ -18,6 +18,7 @@ dotenv.config({ path: path.join(__dirname, '.env'), override: false });
 const WSJOBS_BASE_URL = (process.env.WSJOBS_BASE_URL || 'https://ws.g.pro').replace(/\/+$/, '');
 const WSJOBS_LOGIN_PATH = '/login';
 const WSJOBS_ACCOUNT_PATH = '/account';
+const WSJOBS_POINTS_PER_DOLLAR = 10000;
 const WSJOBS_TASK_PATH = '/task';
 const WSJOBS_WITHDRAW_PATH = '/withdraw';
 const WSJOBS_USERNAME = process.env.WSJOBS_USERNAME || '';
@@ -1970,7 +1971,9 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                 `Tab ${result.tabNumber}: ${result.status}${result.message ? ` (${result.message})` : ''}`
             ).join('\n');
             const targetsClaimedStr = claimedNumbers.join('\n');
-            await updateStatus(`[SYSTEM] Loop ${loopCount} Result:\n\nTargets Hit:\n${targetsClaimedStr}\n\nFeedback:\n${feedbackSummary}\n\nToday Points: ${startingPoints} → ${finalTodayPoints}\nLoop Points Earned: ${loopPointsEarned}\nTotal Points Earned: ${totalPoints}`);
+            const loopDollarsEarned = loopPointsEarned / WSJOBS_POINTS_PER_DOLLAR;
+            const totalDollarsEarned = totalPoints / WSJOBS_POINTS_PER_DOLLAR;
+            await updateStatus(`[SYSTEM] Loop ${loopCount} Result:\n\nTargets Hit:\n${targetsClaimedStr}\n\nFeedback:\n${feedbackSummary}\n\nToday Points: ${startingPoints} → ${finalTodayPoints}\nLoop Points Earned: $${loopDollarsEarned.toFixed(2)} (${loopPointsEarned} points)\nTotal Earned: $${totalDollarsEarned.toFixed(2)} (${totalPoints} points)`);
 
             // A new loop is allowed only when every tab explicitly reported
             // success. Failures and timeouts stop without inventing successes.
@@ -2017,8 +2020,9 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             : 'No tab feedback recorded.';
         const pointsPerTaskText = lastPointsPerTask === null
             ? 'Unavailable'
-            : lastPointsPerTask.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
-        await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nVerified successful tabs: ${totalSuccess}\nPoints Earned: ${totalPoints}\nPoints Per Successful Task: ${pointsPerTaskText}\nBalance: ${formattedBalance}\n\nLast tab feedback:\n${finalFeedbackSummary}`);
+            : `$${(lastPointsPerTask / WSJOBS_POINTS_PER_DOLLAR).toFixed(2)} (${lastPointsPerTask.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} points)`;
+        const dollarsEarnedText = `$${(totalPoints / WSJOBS_POINTS_PER_DOLLAR).toFixed(2)} (${totalPoints.toLocaleString()} points)`;
+        await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nVerified successful tabs: ${totalSuccess}\nEarned: ${dollarsEarnedText}\nPer Successful Task: ${pointsPerTaskText}\nBalance: ${formattedBalance}\n\nLast tab feedback:\n${finalFeedbackSummary}`);
 
         const finalSnap = await masterPage.screenshot({ type: 'png' }).catch(() => null);
 
@@ -2026,7 +2030,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             await bot.sendMessage(chatId, `[SYSTEM] Strike Protocol Complete. Screenshot capture timed out; final balance: ${formattedBalance}.`);
         } else {
             await bot.sendPhoto(chatId, finalSnap, {
-            caption: `*Strike Protocol Complete*\nSuffix: \`${targetSuffix}\`\nVerified Successful Tabs: \`${totalSuccess}\`\nPoints Earned: \`${totalPoints}\`\nPoints Per Successful Task: \`${pointsPerTaskText}\`\nBalance: \`${formattedBalance}\`\n\nLast Tab Feedback:\n${finalFeedbackSummary}`,
+            caption: `*Strike Protocol Complete*\nSuffix: \`${targetSuffix}\`\nVerified Successful Tabs: \`${totalSuccess}\`\nEarned: \`${dollarsEarnedText}\`\nPer Successful Task: \`${pointsPerTaskText}\`\nBalance: \`${formattedBalance}\`\n\nLast Tab Feedback:\n${finalFeedbackSummary}`,
             parse_mode: 'Markdown'
         });
         }
