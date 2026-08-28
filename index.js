@@ -202,6 +202,7 @@ function launchPlaywrightBrowser(options = {}) {
 function launchScraperBrowser() {
     const launchOptions = {
         headless: true,
+        protocolTimeout: 120000,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
     };
     const chromePath = getChromePath();
@@ -1640,8 +1641,11 @@ async function readWsjobsTaskFeedbackPuppeteer(page) {
         if (lower.includes('temporarily unable to send')) {
             return { status: 'failed', message: failedMessage };
         }
-        if (/send\s+successful|successfully\s+sent|task\s+sent\s+successfully/i.test(text)) {
+        if (/send\s+successful|successfully\s+sent|task\s+sent\s+successfully|successful.*send|send.*completed/i.test(text)) {
             return { status: 'success', message: 'Send successful' };
+        }
+        if (/temporarily\s+unable|unable\s+to\s+send|try\s+another\s+number/i.test(text)) {
+            return { status: 'failed', message: failedMessage };
         }
         return null;
     });
@@ -1931,9 +1935,12 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             await updateStatus(`[SYSTEM] Loop ${loopCount}: Waiting for feedback from all ${activeTabsCount} tab(s)...`);
             const feedbackResults = [];
             for (let idx = 0; idx < activePages.length; idx++) {
-                feedbackResults.push(await waitForWsjobsTaskFeedbackPuppeteer(
-                    activePages[idx], idx + 1, 30000
-                ));
+                await updateStatus(`[SYSTEM] Loop ${loopCount}: Waiting for feedback from Tab ${idx + 1}/${activeTabsCount}...`);
+                const result = await waitForWsjobsTaskFeedbackPuppeteer(
+                    activePages[idx], idx + 1, 15000
+                );
+                feedbackResults.push(result);
+                await updateStatus(`[SYSTEM] Loop ${loopCount}: Tab ${idx + 1}/${activeTabsCount} reported ${result.status}.`);
             }
             lastFeedbackResults = feedbackResults;
             const successfulFeedback = feedbackResults.filter(result => result.status === 'success').length;
@@ -2006,12 +2013,16 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             : 'No tab feedback recorded.';
         await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nVerified successful tabs: ${totalSuccess}\nPoints Earned: ${totalPoints}\nBalance: ${formattedBalance}\n\nLast tab feedback:\n${finalFeedbackSummary}`);
 
-        const finalSnap = await masterPage.screenshot({ type: 'png' });
+        const finalSnap = await masterPage.screenshot({ type: 'png' }).catch(() => null);
 
-        await bot.sendPhoto(chatId, finalSnap, {
+        if (!finalSnap) {
+            await bot.sendMessage(chatId, `[SYSTEM] Strike Protocol Complete. Screenshot capture timed out; final balance: ${formattedBalance}.`);
+        } else {
+            await bot.sendPhoto(chatId, finalSnap, {
             caption: `*Strike Protocol Complete*\nSuffix: \`${targetSuffix}\`\nVerified Successful Tabs: \`${totalSuccess}\`\nPoints Earned: \`${totalPoints}\`\nBalance: \`${formattedBalance}\`\n\nLast Tab Feedback:\n${finalFeedbackSummary}`,
             parse_mode: 'Markdown'
         });
+        }
         
         await bot.deleteMessage(chatId, msgId).catch(() => {});
 
@@ -2513,13 +2524,18 @@ async function runWsjobsWithdrawalTask(msg) {
         const balanceText = finalBalance === null
             ? 'Unavailable'
             : finalBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        const finalSnap = await masterPage.screenshot({ type: 'png' });
+        const finalSnap = await masterPage.screenshot({ type: 'png' }).catch(() => null);
 
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-        await bot.sendPhoto(chatId, finalSnap,
-            { caption: `[SUCCESS] Mass Withdrawal Strike (${TOTAL_TABS} Tabs) submitted.\\nBalance: ${balanceText}${refreshError ? `\\nAccount refresh note: ${refreshError}` : ''}` },
-            { filename: 'withdraw_final.png' }
-        );
+        const completionText = `[SUCCESS] Mass Withdrawal Strike (${TOTAL_TABS} Tabs) submitted.\\nBalance: ${balanceText}${refreshError ? `\\nAccount refresh note: ${refreshError}` : ''}`;
+        if (finalSnap) {
+            await bot.sendPhoto(chatId, finalSnap,
+                { caption: completionText },
+                { filename: 'withdraw_final.png' }
+            );
+        } else {
+            await bot.sendMessage(chatId, `${completionText}\\nScreenshot capture timed out.`);
+        }
 
     } catch (err) {
         console.log(`[WITHDRAW ERROR]: ${err.message}`);
