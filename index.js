@@ -19,6 +19,14 @@ const WSJOBS_BASE_URL = (process.env.WSJOBS_BASE_URL || 'https://ws.g.pro').repl
 const WSJOBS_LOGIN_PATH = '/login';
 const WSJOBS_ACCOUNT_PATH = '/account';
 const WSJOBS_POINTS_PER_DOLLAR = 10000;
+
+function formatWsjobsPointsBalance(points) {
+    const numericPoints = typeof points === 'number'
+        ? points
+        : parseFloat(String(points ?? '').replace(/,/g, ''));
+    if (!Number.isFinite(numericPoints)) return String(points ?? 'Unavailable');
+    return `$${(numericPoints / WSJOBS_POINTS_PER_DOLLAR).toFixed(2)} (${numericPoints.toLocaleString()} points)`;
+}
 const WSJOBS_TASK_PATH = '/task';
 const WSJOBS_WITHDRAW_PATH = '/withdraw';
 const WSJOBS_USERNAME = process.env.WSJOBS_USERNAME || '';
@@ -2011,10 +2019,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
         if (currentBalance === null) {
             throw new Error('Could not read the current account balance after the task finished.');
         }
-        const formattedBalance = currentBalance.toLocaleString(undefined, {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2
-        });
+        const formattedBalance = formatWsjobsPointsBalance(currentBalance);
         const finalFeedbackSummary = lastFeedbackResults.length
             ? lastFeedbackResults.map(result => `Tab ${result.tabNumber}: ${result.status}`).join('\n')
             : 'No tab feedback recorded.';
@@ -2314,7 +2319,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
 
     // --- 3. FINAL CLEAN OUTPUT ---
     await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
-    await bot.sendMessage(chatId, `Wsjobs: ${wsjobsBal}`).catch(() => {});
+    await bot.sendMessage(chatId, `Wsjobs Balance: ${formatWsjobsPointsBalance(wsjobsBal)}`).catch(() => {});
 });
 
 
@@ -2532,9 +2537,7 @@ async function runWsjobsWithdrawalTask(msg) {
         }
 
         const finalBalance = await readWsjobsCurrentBalancePuppeteer(masterPage);
-        const balanceText = finalBalance === null
-            ? 'Unavailable'
-            : finalBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const balanceText = formatWsjobsPointsBalance(finalBalance);
         const finalSnap = await masterPage.screenshot({ type: 'png' }).catch(() => null);
 
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
