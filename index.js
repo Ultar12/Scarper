@@ -1594,7 +1594,7 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
 
 
 ;
-                    
+
 async function readWsjobsCurrentBalancePuppeteer(page) {
     return await page.evaluate(() => {
         const allText = document.body?.innerText || '';
@@ -1704,7 +1704,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    const targetSuffix = match[1]; 
+    const targetSuffix = match[1];
     let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Strike Protocol: ${targetSuffix} ⚡\nInitializing tabs...`);
     const msgId = statusMsg.message_id;
 
@@ -1761,7 +1761,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
 
         await updateStatus('[SYSTEM] Synchronizing Account State...');
         await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
-        
+
         await masterPage.waitForSelector('input, button, .account-card, .van-cell', { timeout: 15000 }).catch(()=>{});
         await loginToWsjobsPuppeteer(masterPage);
 
@@ -1769,9 +1769,9 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
 
         while (isLooping) {
             await updateStatus(`[SYSTEM] Loop ${loopCount}: Scanning for target suffix ${targetSuffix}...`);
-            
+
             await masterPage.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded' });
-            
+
             // SMART WAIT: Wait until the Send Task buttons actually appear
             await masterPage.waitForFunction(() => {
                 return Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
@@ -1792,12 +1792,12 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             const targetCount = await masterPage.evaluate((suffix) => {
                 const allSendBtns = Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
                     .filter(el => /Send Task|SEND/i.test(el.innerText?.trim()) && el.offsetHeight > 0);
-                
+
                 let found = 0;
                 for (let btn of allSendBtns) {
                     let curr = btn;
                     let matched = false;
-                    for (let i = 0; i < 8; i++) { 
+                    for (let i = 0; i < 8; i++) {
                         if (curr && curr.innerText?.includes(suffix)) {
                             matched = true;
                             break;
@@ -1836,91 +1836,49 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             }
             await delay(1500);
 
-            // Build one canonical target list from the master task page. Each
-            // target is then assigned to exactly one tab by phone number, rather
-            // than by a positional card index that can change between tabs.
-            const targetNumbers = await masterPage.evaluate((suffix) => {
-                const visible = (el) => {
-                    const rect = el.getBoundingClientRect();
-                    const style = getComputedStyle(el);
-                    return rect.width > 0 && rect.height > 0
-                        && style.visibility !== 'hidden' && style.display !== 'none';
-                };
-                const buttons = Array.from(document.querySelectorAll(
-                    'button, [role="button"], [class*="btn"], [class*="button"]'
-                )).filter(el => visible(el) && /^send(?:\s+task)?$/i.test(
-                    (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim()
-                ));
-                const numbers = [];
-                for (const button of buttons) {
-                    let card = button.parentElement;
-                    for (let level = 0; level < 10 && card; level++, card = card.parentElement) {
-                        const ownButtons = Array.from(card.querySelectorAll(
-                            'button, [role="button"], [class*="btn"], [class*="button"]'
-                        )).filter(el => visible(el) && /^send(?:\s+task)?$/i.test(
-                            (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim()
-                        ));
-                        if (ownButtons.length !== 1 || ownButtons[0] !== button) continue;
-                        const text = (card.innerText || '').replace(/\s+/g, ' ');
-                        const candidates = text.match(/\+\s*\d[\d\s().*-]{6,}\d/g) || [];
-                        const candidate = candidates.find(value => {
-                            const digits = value.replace(/\D/g, '');
-                            return digits.length >= 8 && digits.length <= 15 && digits.endsWith(suffix);
-                        });
-                        if (candidate) {
-                            const number = `+${candidate.replace(/\D/g, '')}`;
-                            if (!numbers.includes(number)) numbers.push(number);
-                        }
-                        break;
-                    }
-                }
-                return numbers;
-            }, targetSuffix);
-            const activeTargetNumbers = targetNumbers.slice(0, activeTabsCount);
-            if (activeTargetNumbers.length !== activeTabsCount) {
-                throw new Error(`Only ${activeTargetNumbers.length}/${activeTabsCount} unique matching task number(s) were verified on the task page.`);
-            }
-
-            // CLAIM NUMBERS & LOG WHO TOOK WHAT. Each tab searches for its
-            // assigned canonical number, so two tabs cannot intentionally claim
-            // the same card when the page order changes.
+            // CLAIM NUMBERS & LOG WHO TOOK WHAT
             await updateStatus(`[SYSTEM] Loop ${loopCount}: Claiming targets in synchronized order...`);
             const claimedNumbers = [];
             for (let idx = 0; idx < activePages.length; idx++) {
                 const p = activePages[idx];
-                const assignedNumber = activeTargetNumbers[idx];
-                claimedNumbers.push(await p.evaluate((targetNumber) => {
-                    const visible = (el) => {
-                        const rect = el.getBoundingClientRect();
-                        const style = getComputedStyle(el);
-                        return rect.width > 0 && rect.height > 0
-                            && style.visibility !== 'hidden' && style.display !== 'none';
-                    };
-                    const buttons = Array.from(document.querySelectorAll(
-                        'button, [role="button"], [class*="btn"], [class*="button"]'
-                    )).filter(el => visible(el) && /^send(?:\s+task)?$/i.test(
-                        (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim()
-                    ));
-                    for (const button of buttons) {
-                        let card = button.parentElement;
-                        for (let level = 0; level < 10 && card; level++, card = card.parentElement) {
-                            const ownButtons = Array.from(card.querySelectorAll(
-                                'button, [role="button"], [class*="btn"], [class*="button"]'
-                            )).filter(el => visible(el) && /^send(?:\s+task)?$/i.test(
-                                (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim()
-                            ));
-                            if (ownButtons.length !== 1 || ownButtons[0] !== button) continue;
-                            const text = (card.innerText || '').replace(/\s+/g, ' ');
-                            const candidates = text.match(/\+\s*\d[\d\s().*-]{6,}\d/g) || [];
-                            const match = candidates.find(value => `+${value.replace(/\D/g, '')}` === targetNumber);
-                            if (!match) break;
-                            button.click();
-                            button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                            return targetNumber;
+                claimedNumbers.push(await p.evaluate((suffix, index) => {
+                    const btns = Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
+                        .filter(el => /Send Task|SEND/i.test(el.innerText?.trim()) && el.offsetHeight > 0);
+
+                    let matches = 0;
+                    for (let btn of btns) {
+                        let curr = btn;
+                        let matched = false;
+                        for (let i = 0; i < 8; i++) {
+                            if (curr && curr.innerText?.includes(suffix)) {
+                                matched = true;
+                                break;
+                            }
+                            if (curr) curr = curr.parentElement;
+                        }
+
+                        if (matched) {
+                            if (matches === index) {
+                                // Extract and canonicalize the phone number from
+                                // this card so duplicate claims can be rejected.
+                                const textMatch = (curr.innerText || '').match(/\+?\s*\d[\d\s().-]{7,}\d/g);
+                                const normalizedNumber = textMatch
+                                    ? textMatch[0].replace(/\D/g, '')
+                                    : '';
+                                if (normalizedNumber.length < 8 || normalizedNumber.length > 15) {
+                                    return 'Unknown';
+                                }
+                                const foundNumber = `+${normalizedNumber}`;
+
+                                btn.click();
+                                btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                                return foundNumber;
+                            }
+                            matches++;
                         }
                     }
-                    return 'Unknown';
-                }, assignedNumber));
+                    return "Unknown";
+                }, targetSuffix, idx));
             }
             const unknownClaims = claimedNumbers.filter(number => number === 'Unknown').length;
             if (unknownClaims > 0) {
@@ -2072,7 +2030,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             parse_mode: 'Markdown'
         });
         }
-        
+
         await bot.deleteMessage(chatId, msgId).catch(() => {});
 
     } catch (err) {
@@ -2089,7 +2047,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
         }
     }
 });
-                  
+
 
 
 
@@ -2365,7 +2323,7 @@ const updateStatus = async (text) => {
 
 
 
- 
+
 
 async function injectWsjobsHumanSniper(page) {
     await page.evaluateOnNewDocument(() => {
@@ -2459,13 +2417,13 @@ async function runWsjobsWithdrawalTask(msg) {
         for (let i = 0; i < TOTAL_TABS; i++) {
             let p;
             if (i === 0) {
-                p = masterPage; 
+                p = masterPage;
             } else {
                 p = await browser.newPage();
                 await p.setViewport({ width: 412, height: 915 });
                 pages.push(p);
                 await injectWsjobsHumanSniper(p);
-                
+
                 await p.goto(wsjobsUrl(WSJOBS_WITHDRAW_PATH), { waitUntil: 'domcontentloaded' });
                 await delay(4000);
             }
@@ -2521,7 +2479,7 @@ async function runWsjobsWithdrawalTask(msg) {
                 await p.keyboard.up('Control');
             });
             await passInput.type('101010'); // Existing configured withdrawal PIN flow
-            
+
             await delay(1000);
 
             console.log(`[TAB ${i + 1}] Sitting at Confirm Modal.`);
@@ -3085,7 +3043,7 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
 
 
 
-                
+
 
 // --- UNIFIED MESSAGE LISTENER ---
 bot.on('message', async (msg) => {
