@@ -2964,7 +2964,55 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
 
 ;
                     
-  // Matches exactly: /task <number>
+async function readWsjobsTodayPointsPuppeteer(page) {
+    return await page.evaluate(() => {
+        const extractNumber = (text) => {
+            const matches = String(text || '').match(/\b\d[\d,]*\b/g) || [];
+            return matches.length ? parseInt(matches[matches.length - 1].replace(/,/g, ''), 10) : null;
+        };
+        const bodyText = document.body?.innerText || '';
+        const directMatch = bodyText.match(/Today\s+Points\s*[:：]?\s*([\d,]+)/i)
+            || bodyText.match(/([\d,]+)\s*Today\s+Points/i);
+        if (directMatch) return parseInt(directMatch[1].replace(/,/g, ''), 10);
+
+        const label = Array.from(document.querySelectorAll('*')).find(el =>
+            el.offsetParent !== null && /^Today\s+Points$/i.test(el.innerText?.trim() || '')
+        );
+        if (!label) return null;
+        for (const candidate of [label.parentElement, label.parentElement?.parentElement, label]) {
+            const value = extractNumber(candidate?.innerText || '');
+            if (value !== null) return value;
+        }
+        return null;
+    });
+}
+
+async function readWsjobsTaskFeedbackPuppeteer(page) {
+    return await page.evaluate(() => {
+        const text = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
+        const lower = text.toLowerCase();
+        const failedMessage = 'This WhatsApp number is temporarily unable to send. Please wait or try another number.';
+        if (lower.includes('temporarily unable to send')) {
+            return { status: 'failed', message: failedMessage };
+        }
+        if (/send\s+successful|successfully\s+sent|task\s+sent\s+successfully/i.test(text)) {
+            return { status: 'success', message: 'Send successful' };
+        }
+        return null;
+    });
+}
+
+async function waitForWsjobsTaskFeedbackPuppeteer(page, tabNumber, timeoutMs = 30000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const feedback = await readWsjobsTaskFeedbackPuppeteer(page).catch(() => null);
+        if (feedback) return { tabNumber, ...feedback };
+        await delay(500);
+    }
+    return { tabNumber, status: 'timeout', message: 'No success/failure feedback appeared.' };
+}
+
+// Matches exactly: /task <number>
 bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -2981,6 +3029,9 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
     let pages = [];
     let totalPoints = 0;
     let totalSuccess = 0;
+    let initialTodayPoints = null;
+    let finalTodayPoints = null;
+    let lastFeedbackResults = [];
     let loopCount = 1;
 
     try {
@@ -3032,19 +3083,13 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
 
             await delay(1000);
 
-            // Fetch True Starting Balance
-            const startingPoints = await masterPage.evaluate(() => {
-                const match = document.body.innerText.match(/(\d+)\s*Today Points/i);
-                if (match) return parseInt(match[1], 10);
-                
-                const els = Array.from(document.querySelectorAll('*'));
-                const tpLabel = els.find(el => el.innerText?.trim() === 'Today Points');
-                if (tpLabel && tpLabel.parentElement) {
-                    const numText = tpLabel.parentElement.innerText.replace(/[^\d]/g, '');
-                    if (numText) return parseInt(numText, 10);
-                }
-                return 0;
-            });
+            // Read the current Today Points before this loop. The first value is
+            // preserved as the true baseline for the final report.
+            const startingPoints = await readWsjobsTodayPointsPuppeteer(masterPage);
+            if (startingPoints === null) {
+                throw new Error('Could not read Today Points before the task tabs started.');
+            }
+            if (initialTodayPoints === null) initialTodayPoints = startingPoints;
 
             // BULLETPROOF SCAN: Climb the DOM tree to find the phone number
             const targetCount = await masterPage.evaluate((suffix) => {
@@ -3130,80 +3175,105 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                     return "Unknown";
                 }, targetSuffix, idx);
             }));
+            const unknownClaims = claimedNumbers.filter(number => number === 'Unknown').length;
+            if (unknownClaims > 0) {
+                throw new Error(`Only ${activeTabsCount - unknownClaims}/${activeTabsCount} tab(s) claimed a matching task.`);
+            }
 
-            // WAIT FOR ALL CONFIRM MODALS TO BE READY
-            await updateStatus(`[SYSTEM] Loop ${loopCount}: Synchronizing Confirmation Modals...`);
-            await Promise.all(activePages.map(p => p.waitForFunction(() => {
-                return Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
-                    .some(el => /confirm/i.test(el.innerText?.trim()));
-            }, { timeout: 15000 }).catch(()=>{})));
+            // WAIT FOR EVERY CONFIRM MODAL TO BE READY. Do not suppress a
+            // missing modal: that would make the final report claim tabs ran
+            // when only a subset actually submitted.
+            await updateStatus(`[SYSTEM] Loop ${loopCount}: Synchronizing ${activeTabsCount} confirmation modal(s)...`);
+            const readyStates = await Promise.all(activePages.map(async (p) => {
+                return await p.waitForFunction(() => Array.from(
+                    document.querySelectorAll('button, [class*="btn"], [class*="button"]')
+                ).some(el => /confirm/i.test(el.innerText?.trim()) && el.offsetHeight > 0), {
+                    timeout: 15000
+                }).then(() => true).catch(() => false);
+            }));
+            const readyCount = readyStates.filter(Boolean).length;
+            if (readyCount !== activeTabsCount) {
+                throw new Error(`Only ${readyCount}/${activeTabsCount} tab(s) reached the Confirm step.`);
+            }
 
-            await delay(1000); // Give modals a split second to animate in fully
+            await delay(1000); // Give every modal a moment to finish animating.
 
-            // SIMULTANEOUS MICROSECOND STRIKE 
-            await updateStatus(`[SYSTEM] Loop ${loopCount}: STRIKING CONFIRM SIMULTANEOUSLY...`);
-            await Promise.all(activePages.map(p => p.evaluate(() => {
+            // Trigger Confirm once on every active tab and verify each click.
+            await updateStatus(`[SYSTEM] Loop ${loopCount}: Confirming all ${activeTabsCount} tab(s)...`);
+            const clickedStates = await Promise.all(activePages.map(p => p.evaluate(() => {
                 const btns = Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
                     .filter(el => /confirm/i.test(el.innerText?.trim()) && el.offsetHeight > 0);
-                
-                const confirmBtn = btns.pop(); 
-                if (confirmBtn) {
-                    confirmBtn.click();
-                    confirmBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                }
+                const confirmBtn = btns[btns.length - 1];
+                if (!confirmBtn) return false;
+                confirmBtn.click();
+                confirmBtn.dispatchEvent(new MouseEvent('click', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window
+                }));
+                return true;
             })));
+            const clickedCount = clickedStates.filter(Boolean).length;
+            if (clickedCount !== activeTabsCount) {
+                throw new Error(`Only ${clickedCount}/${activeTabsCount} tab(s) received Confirm.`);
+            }
 
-            // WAIT FOR BACKEND TO PROCESS (No more DOM polling for toasts)
-            await updateStatus(`[SYSTEM] Loop ${loopCount}: Processing on backend. Waiting 8 seconds...`);
-            await delay(8000); 
+            // WAIT FOR FEEDBACK FROM EVERY ACTIVE TAB. A fixed sleep could report
+            // zero while tabs were still processing, or miss slower tabs entirely.
+            await updateStatus(`[SYSTEM] Loop ${loopCount}: Waiting for feedback from all ${activeTabsCount} tab(s)...`);
+            const feedbackResults = await Promise.all(activePages.map((p, idx) =>
+                waitForWsjobsTaskFeedbackPuppeteer(p, idx + 1, 30000)
+            ));
+            lastFeedbackResults = feedbackResults;
+            const successfulFeedback = feedbackResults.filter(result => result.status === 'success').length;
+            const failedFeedback = feedbackResults.filter(result => result.status === 'failed').length;
+            const timedOutFeedback = feedbackResults.filter(result => result.status === 'timeout').length;
 
-            // REFRESH MASTER PAGE TO GET TRUE BALANCE
-            await updateStatus(`[SYSTEM] Loop ${loopCount}: Refreshing page to fetch true accounting data...`);
-            await masterPage.reload({ waitUntil: 'domcontentloaded' });
-            await delay(4000); // Wait for numbers to render
+            // REFRESH THE MASTER TASK PAGE ONLY AFTER EVERY TAB HAS REPORTED.
+            await updateStatus(`[SYSTEM] Loop ${loopCount}: All tabs reported. Refreshing /task for Today Points...`);
+            await masterPage.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+            await delay(4000);
+            finalTodayPoints = await readWsjobsTodayPointsPuppeteer(masterPage);
+            if (finalTodayPoints === null) {
+                throw new Error('Could not read Today Points after all task tabs finished.');
+            }
 
-            const endingPoints = await masterPage.evaluate(() => {
-                const match = document.body.innerText.match(/(\d+)\s*Today Points/i);
-                if (match) return parseInt(match[1], 10);
-                
-                const els = Array.from(document.querySelectorAll('*'));
-                const tpLabel = els.find(el => el.innerText?.trim() === 'Today Points');
-                if (tpLabel && tpLabel.parentElement) {
-                    const numText = tpLabel.parentElement.innerText.replace(/[^\d]/g, '');
-                    if (numText) return parseInt(numText, 10);
-                }
-                return 0;
-            });
+            // The displayed total is always the refreshed final value minus the
+            // first value captured before the first task tab started.
+            const loopPointsEarned = finalTodayPoints - startingPoints;
+            totalPoints = finalTodayPoints - initialTodayPoints;
+            totalSuccess += successfulFeedback;
 
-            // EXACT MATH ACCOUNTING
-            const loopPointsEarned = endingPoints - startingPoints;
-            let loopSuccesses = Math.floor(loopPointsEarned / 520);
-            
-            // Failsafe: if the balance didn't change but it actually sent, it prevents negatives
-            if (loopSuccesses < 0) loopSuccesses = 0; 
-
-            totalSuccess += loopSuccesses;
-            totalPoints += loopPointsEarned;
-
+            const feedbackSummary = feedbackResults.map(result =>
+                `Tab ${result.tabNumber}: ${result.status}${result.message ? ` (${result.message})` : ''}`
+            ).join('\n');
             const targetsClaimedStr = claimedNumbers.join('\n');
-            await updateStatus(`[SYSTEM] Loop ${loopCount} Result:\n\nTargets Hit:\n${targetsClaimedStr}\n\nSuccesses: ${loopSuccesses}/${activeTabsCount}\nPoints Earned: ${loopPointsEarned}`);
+            await updateStatus(`[SYSTEM] Loop ${loopCount} Result:\n\nTargets Hit:\n${targetsClaimedStr}\n\nFeedback:\n${feedbackSummary}\n\nToday Points: ${startingPoints} → ${finalTodayPoints}\nLoop Points Earned: ${loopPointsEarned}\nTotal Points Earned: ${totalPoints}`);
 
-            // THE 1-SECOND LOOP LOGIC
-            if (loopSuccesses === activeTabsCount && activeTabsCount > 0) {
-                await updateStatus(`[SYSTEM] Flawless victory! Waiting 1 second and restarting...`);
+            // A new loop is allowed only when every tab explicitly reported
+            // success. Failures and timeouts stop without inventing successes.
+            if (successfulFeedback === activeTabsCount && failedFeedback === 0 && timedOutFeedback === 0) {
+                await updateStatus(`[SYSTEM] All ${activeTabsCount} tab(s) succeeded. Waiting 1 second and restarting...`);
                 await delay(1000);
                 loopCount++;
             } else {
-                isLooping = false; 
+                isLooping = false;
             }
         }
 
-        await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nTotal Sent: ${totalSuccess}\nTotal Points Earned: ${totalPoints}`);
+        if (finalTodayPoints === null || initialTodayPoints === null) {
+            throw new Error('Today Points were not available for final accounting.');
+        }
+        totalPoints = finalTodayPoints - initialTodayPoints;
+        const finalFeedbackSummary = lastFeedbackResults.length
+            ? lastFeedbackResults.map(result => `Tab ${result.tabNumber}: ${result.status}`).join('\n')
+            : 'No tab feedback recorded.';
+        await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nVerified successful tabs: ${totalSuccess}\nToday Points: ${initialTodayPoints} → ${finalTodayPoints}\nPoints Earned: ${totalPoints}\n\nLast tab feedback:\n${finalFeedbackSummary}`);
         
         const finalSnap = await masterPage.screenshot({ type: 'png' });
         
         await bot.sendPhoto(chatId, finalSnap, { 
-            caption: `*Strike Protocol Complete* ⚡\nSuffix: \`${targetSuffix}\`\nTotal Successes: \`${totalSuccess}\`\nPoints Earned: \`${totalPoints}\``,
+            caption: `*Strike Protocol Complete*\nSuffix: \`${targetSuffix}\`\nVerified Successful Tabs: \`${totalSuccess}\`\nToday Points: \`${initialTodayPoints} → ${finalTodayPoints}\`\nPoints Earned: \`${totalPoints}\`\n\nLast Tab Feedback:\n${finalFeedbackSummary}`,
             parse_mode: 'Markdown'
         });
         
