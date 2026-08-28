@@ -3004,6 +3004,21 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
 
 ;
                     
+async function readWsjobsCurrentBalancePuppeteer(page) {
+    return await page.evaluate(() => {
+        const allText = document.body?.innerText || '';
+        const decimalMatches = allText.match(/\d+\.\d{2}/g);
+        if (decimalMatches) {
+            return Math.max(...decimalMatches.map(value => parseFloat(value)));
+        }
+        const generalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g) || [];
+        const numbers = generalMatches
+            .map(value => parseFloat(value.replace(/,/g, '')))
+            .filter(value => value > 100 && value < 1000000);
+        return numbers.length ? Math.max(...numbers) : null;
+    }).catch(() => null);
+}
+
 async function readWsjobsTodayPointsPuppeteer(page) {
     return await page.evaluate(() => {
         const extractNumber = (text) => {
@@ -3110,6 +3125,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
     let totalSuccess = 0;
     let initialTodayPoints = null;
     let finalTodayPoints = null;
+    let currentBalance = null;
     let lastFeedbackResults = [];
     let loopCount = 1;
 
@@ -3349,15 +3365,40 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             throw new Error('Today Points were not available for final accounting.');
         }
         totalPoints = finalTodayPoints - initialTodayPoints;
+
+        // Fetch the current account balance only after every task tab has
+        // reported and the points refresh is complete.
+        await updateStatus('[SYSTEM] All task tabs finished. Refreshing account balance...');
+        await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
+        });
+        await delay(4000);
+        if (new URL(masterPage.url()).pathname.endsWith(WSJOBS_LOGIN_PATH)) {
+            await loginToWsjobsPuppeteer(masterPage);
+            await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), {
+                waitUntil: 'domcontentloaded',
+                timeout: 30000
+            });
+            await delay(3000);
+        }
+        currentBalance = await readWsjobsCurrentBalancePuppeteer(masterPage);
+        if (currentBalance === null) {
+            throw new Error('Could not read the current account balance after the task finished.');
+        }
+        const formattedBalance = currentBalance.toLocaleString(undefined, {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
         const finalFeedbackSummary = lastFeedbackResults.length
             ? lastFeedbackResults.map(result => `Tab ${result.tabNumber}: ${result.status}`).join('\n')
             : 'No tab feedback recorded.';
-        await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nVerified successful tabs: ${totalSuccess}\nToday Points: ${initialTodayPoints} → ${finalTodayPoints}\nPoints Earned: ${totalPoints}\n\nLast tab feedback:\n${finalFeedbackSummary}`);
-        
+        await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nVerified successful tabs: ${totalSuccess}\nPoints Earned: ${totalPoints}\nBalance: ${formattedBalance}\n\nLast tab feedback:\n${finalFeedbackSummary}`);
+
         const finalSnap = await masterPage.screenshot({ type: 'png' });
-        
-        await bot.sendPhoto(chatId, finalSnap, { 
-            caption: `*Strike Protocol Complete*\nSuffix: \`${targetSuffix}\`\nVerified Successful Tabs: \`${totalSuccess}\`\nToday Points: \`${initialTodayPoints} → ${finalTodayPoints}\`\nPoints Earned: \`${totalPoints}\`\n\nLast Tab Feedback:\n${finalFeedbackSummary}`,
+
+        await bot.sendPhoto(chatId, finalSnap, {
+            caption: `*Strike Protocol Complete*\nSuffix: \`${targetSuffix}\`\nVerified Successful Tabs: \`${totalSuccess}\`\nPoints Earned: \`${totalPoints}\`\nBalance: \`${formattedBalance}\`\n\nLast Tab Feedback:\n${finalFeedbackSummary}`,
             parse_mode: 'Markdown'
         });
         
