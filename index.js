@@ -3149,6 +3149,9 @@ const updateStatus = async (text) => {
 };
 
 
+
+ 
+
 bot.onText(/\/withdraw\s+task/i, async (msg) => {
     const chatId = msg.chat.id.toString();
     const adminId = process.env.ADMIN_ID || '7710721646';
@@ -3187,7 +3190,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         await masterPage.addInitScript(() => {
             Object.defineProperty(navigator, 'webdriver', { get: () => false });
             setInterval(() => {
-                const okBtn = Array.from(document.querySelectorAll('*'))
+                const okBtn = Array.from(document.querySelectorAll('button, [class*="btn"]'))
                     .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
                 if (okBtn) {
                     const rect = okBtn.getBoundingClientRect();
@@ -3198,7 +3201,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                         }));
                     });
                     setTimeout(() => {
-                        const modal = okBtn.closest('div[class*="modal"], div[class*="mask"], div[class*="popup"]');
+                        const modal = okBtn.closest('div[class*="modal"], div[class*="mask"], .van-overlay');
                         if (modal) modal.remove();
                         document.body.style.filter = 'none';
                         document.body.style.overflow = 'auto';
@@ -3207,46 +3210,43 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             }, 300);
         });
 
-        await bot.editMessageText('[SYSTEM] Navigating to Account...', { chat_id: chatId, message_id: statusMsg.message_id });
+        await bot.editMessageText('[SYSTEM] Navigating to Account & Logging in...', { chat_id: chatId, message_id: statusMsg.message_id });
         await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
         await delay(4000);
 
         await loginToWsjobs(masterPage);
 
-        await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
+        // Teleport directly to the new withdraw page
+        await masterPage.goto(wsjobsUrl(WSJOBS_WITHDRAW_PATH), { waitUntil: 'domcontentloaded' });
         await delay(5000);
 
-        // --- 2. PRECISION BALANCE SCRAPER ---
+        // --- 2. PRECISION BALANCE SCRAPER (NEW UI) ---
         const rawBalance = await masterPage.evaluate(() => {
             const allText = document.body.innerText;
+            // Target the "Available: 10175.00" text directly
+            const availMatch = allText.match(/Available:\s*([\d,.]+)/i);
+            if (availMatch) {
+                return parseFloat(availMatch[1].replace(/,/g, ''));
+            }
+            // Fallback scanner
             const decimalMatches = allText.match(/\d+\.\d{2}/g);
-            if (decimalMatches) {
-                const nums = decimalMatches.map(n => parseFloat(n));
-                return Math.max(...nums);
-            }
-            const generalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
-            if (generalMatches) {
-                const numbers = generalMatches
-                    .map(n => n.replace(/,/g, ''))
-                    .map(n => parseFloat(n))
-                    .filter(n => n > 100 && n < 100000);
-                return numbers.length > 0 ? Math.max(...numbers) : 0;
-            }
+            if (decimalMatches) return Math.max(...decimalMatches.map(n => parseFloat(n)));
             return 0;
         });
 
-        const tiers = [50000, 26000, 23000, 20000, 18000, 15000];
+        // New Menu Tiers based on the screenshot
+        const tiers = [100000, 50000, 40000, 30000, 20000, 10000];
         const targetAmount = tiers.find(t => rawBalance >= t);
 
         if (!targetAmount) {
             const errSnap = await masterPage.screenshot();
             await bot.sendPhoto(chatId, errSnap, {
-                caption: `[DIAGNOSTIC] Detected Balance: ${rawBalance}. Too low for withdrawal.`
+                caption: `[DIAGNOSTIC] Detected Balance: ${rawBalance}. Too low for minimum 10,000 withdrawal.`
             }, { filename: 'low_balance.png' });
             throw new Error(`Balance ${rawBalance} is too low.`);
         }
 
-        await bot.editMessageText(`[SYSTEM] Target Acquired: ${targetAmount}. Processing ${TOTAL_TABS} tabs sequentially...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+        await bot.editMessageText(`[SYSTEM] Target Acquired: ${targetAmount.toLocaleString()}. Processing ${TOTAL_TABS} tabs sequentially...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
 
         // ==========================================
         // 3. SEQUENTIAL TAB PREPARATION (ONE BY ONE)
@@ -3254,7 +3254,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         for (let i = 0; i < TOTAL_TABS; i++) {
             let p;
             if (i === 0) {
-                p = masterPage; // Reuse the master tab we just logged in with
+                p = masterPage; 
             } else {
                 p = await context.newPage();
                 pages.push(p);
@@ -3262,7 +3262,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                 await p.addInitScript(() => {
                     Object.defineProperty(navigator, 'webdriver', { get: () => false });
                     setInterval(() => {
-                        const okBtn = Array.from(document.querySelectorAll('*'))
+                        const okBtn = Array.from(document.querySelectorAll('button, [class*="btn"]'))
                             .find(el => el.innerText?.trim() === 'OK' && el.offsetHeight > 0);
                         if (okBtn) {
                             const rect = okBtn.getBoundingClientRect();
@@ -3273,7 +3273,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                                 }));
                             });
                             setTimeout(() => {
-                                const modal = okBtn.closest('div[class*="modal"], div[class*="mask"], div[class*="popup"]');
+                                const modal = okBtn.closest('div[class*="modal"], div[class*="mask"], .van-overlay');
                                 if (modal) modal.remove();
                                 document.body.style.filter = 'none';
                                 document.body.style.overflow = 'auto';
@@ -3281,71 +3281,48 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
                         }
                     }, 300);
                 });
+                
+                await p.goto(wsjobsUrl(WSJOBS_WITHDRAW_PATH), { waitUntil: 'domcontentloaded' });
+                await delay(4000);
             }
 
             console.log(`[TAB ${i + 1}] Processing...`);
 
-            await p.goto(wsjobsUrl(WSJOBS_WITHDRAW_PATH), { waitUntil: 'domcontentloaded' });
-            await delay(4000);
-
-            // 1. Click the Amount Chip
+            // 1. Click the Amount Chip (e.g. "10,000")
             await p.evaluate((amt) => {
-                const chips = Array.from(document.querySelectorAll('div, span, p, button, [class*="item"]'));
-                const targetChip = chips.find(c => c.innerText?.trim() === amt.toString() && c.offsetHeight > 0);
+                const amtStr = amt.toLocaleString('en-US'); // Formats to "10,000"
+                const chips = Array.from(document.querySelectorAll('div, span, button, [class*="item"]'));
+                const targetChip = chips.find(c => c.innerText?.trim() === amtStr && c.offsetHeight > 0);
                 if (targetChip) {
                     targetChip.click();
                     targetChip.dispatchEvent(new Event('change', { bubbles: true }));
                 }
             }, targetAmount);
 
-            await delay(3000);
+            await delay(2000);
 
-            // 2. NUCLEAR BUTTON STRIKE (WITHDRAW NOW)
+            // 2. NUCLEAR BUTTON STRIKE (Submit Withdrawal)
             await p.evaluate(() => {
-                const overlays = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"]');
-                overlays.forEach(el => el.remove());
-
-                const textBlockers = Array.from(document.querySelectorAll('div')).filter(el =>
-                    el.innerText?.includes('Saka Yanzu') || el.innerText?.includes('Don Allah sauke App')
-                );
-                textBlockers.forEach(b => b.remove());
-
-                const mainBtn = Array.from(document.querySelectorAll('*')).find(b =>
-                    (b.innerText?.includes('WITHDRAW NOW') || b.innerText?.includes('SACAR AGORA')) &&
-                    b.offsetHeight > 0 &&
-                    window.getComputedStyle(b).display !== 'none'
-                );
+                const mainBtn = Array.from(document.querySelectorAll('button, div, span, [class*="btn"]'))
+                    .reverse()
+                    .find(b => b.innerText?.trim() === 'Submit Withdrawal' && b.offsetHeight > 0);
 
                 if (mainBtn) {
-                    const rect = mainBtn.getBoundingClientRect();
-                    const x = rect.left + rect.width / 2;
-                    const y = rect.top + rect.height / 2;
-
-                    const createEvent = (type) => new MouseEvent(type, {
-                        bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, buttons: 1
-                    });
-
-                    mainBtn.dispatchEvent(createEvent('mousedown'));
-                    mainBtn.dispatchEvent(createEvent('mouseup'));
-                    mainBtn.dispatchEvent(createEvent('click'));
+                    const ev = { bubbles: true, cancelable: true, view: window };
+                    ['mousedown', 'mouseup', 'click'].forEach(t => mainBtn.dispatchEvent(new MouseEvent(t, ev)));
                     mainBtn.click();
                 }
             });
 
-            await p.mouse.click(206, 320).catch(() => {});
-            await delay(3000);
+            await delay(2500);
 
-            // 3. PASSWORD ENTRY & LOCK IN
-            const passInput = p.locator('input[type="password"], .modal-body input, [placeholder*="password"], [placeholder*="senha"]').last();
+            // 3. PASSWORD ENTRY & LOCK IN (101010)
+            const passInput = p.locator('input').last(); // Targets the input field inside the modal
             await passInput.waitFor({ state: 'visible', timeout: 15000 });
             await passInput.click();
-            await p.evaluate(el => el.value = '', await passInput.elementHandle());
-            if (!WSJOBS_WITHDRAW_PIN) {
-                throw new Error('Missing WSJOBS_WITHDRAW_PIN configuration.');
-            }
-            await passInput.type(WSJOBS_WITHDRAW_PIN, { delay: 100 });
-            await p.keyboard.press('Tab');
-            await delay(1500);
+            await passInput.fill('101010'); // Hardcoded as requested
+            
+            await delay(1000);
 
             console.log(`[TAB ${i + 1}] Sitting at Confirm Modal.`);
         }
@@ -3353,53 +3330,20 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         // ==========================================
         // 4. SYNCHRONIZED MASS STRIKE (PROMISE.ALL)
         // ==========================================
-        await bot.editMessageText(`[SYSTEM] All ${TOTAL_TABS} tabs loaded. Firing simultaneous confirm strike!`, { chat_id: chatId, message_id: statusMsg.message_id });
+        await bot.editMessageText(`[SYSTEM] All ${TOTAL_TABS} tabs loaded. Firing simultaneous "Continue" strike!`, { chat_id: chatId, message_id: statusMsg.message_id });
 
         await Promise.all(pages.map(async (p, i) => {
             try {
-                // Phase A: Native Playwright Tap
-                try {
-                    const confirmBtn = p.locator('text=/Tabbatar Cirewa|Confirm|Confirmar/i').last();
-                    await confirmBtn.tap({ force: true, delay: 150, timeout: 3000 });
-                } catch (e) {}
-
-                // Phase B: JS Mobile Touch Strike
                 await p.evaluate(() => {
-                    const modalBlockers = document.querySelectorAll('.van-overlay, .modal-mask, [class*="mask"]');
-                    modalBlockers.forEach(el => el.remove());
-
-                    const elements = Array.from(document.querySelectorAll('button, div, span'));
-                    const finalBtn = elements.reverse().find(b =>
-                        (b.innerText?.includes('Tabbatar Cirewa') || b.innerText?.includes('Confirm')) &&
-                        b.offsetHeight > 0
-                    );
+                    const elements = Array.from(document.querySelectorAll('button, div, span, [class*="btn"]'));
+                    const finalBtn = elements.reverse().find(b => b.innerText?.trim() === 'Continue' && b.offsetHeight > 0);
 
                     if (finalBtn) {
-                        let target = finalBtn;
-                        if (target.tagName.toLowerCase() === 'SPAN' && target.parentElement) {
-                            target = target.parentElement;
-                        }
-
-                        const rect = target.getBoundingClientRect();
-                        const x = rect.left + rect.width / 2;
-                        const y = rect.top + rect.height / 2;
-
-                        const evData = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
-                        ['mousedown', 'mouseup', 'click'].forEach(t => target.dispatchEvent(new MouseEvent(t, evData)));
-
-                        try {
-                            const touchObj = new Touch({ identifier: Date.now(), target: target, clientX: x, clientY: y, radiusX: 2.5, radiusY: 2.5, rotationAngle: 10, force: 0.5 });
-                            target.dispatchEvent(new TouchEvent('touchstart', { cancelable: true, bubbles: true, touches: [touchObj], targetTouches: [touchObj], changedTouches: [touchObj] }));
-                            target.dispatchEvent(new TouchEvent('touchend', { cancelable: true, bubbles: true, touches: [], targetTouches: [], changedTouches: [touchObj] }));
-                        } catch(e) {}
-
-                        target.click();
+                        const evData = { bubbles: true, cancelable: true, view: window };
+                        ['mousedown', 'mouseup', 'click'].forEach(t => finalBtn.dispatchEvent(new MouseEvent(t, evData)));
+                        finalBtn.click();
                     }
                 });
-
-                // Phase C: Physical Backup Tap
-                await p.mouse.click(300, 720).catch(() => {});
-                await p.mouse.click(300, 700).catch(() => {});
 
                 console.log(`[TAB ${i + 1}] Strike Executed`);
             } catch (err) {
@@ -3407,7 +3351,7 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
             }
         }));
 
-        await delay(5000);
+        await delay(6000);
 
         // ==========================================
         // 5. SUCCESS REFRESH, CAPTURE & DELIVERY
@@ -3459,55 +3403,6 @@ bot.onText(/\/withdraw\s+task/i, async (msg) => {
         if (browser) await browser.close().catch(() => {});
     }
 });
-
-
-
-bot.onText(/\/upscale/i, async (msg) => {
-    const chatId = msg.chat.id.toString();
-    if (chatId !== ADMIN_ID) return;
-
-    if (!msg.reply_to_message || !msg.reply_to_message.photo) {
-        return bot.sendMessage(chatId, '[ERROR] Reply to an image with /upscale');
-    }
-
-    let statusMsg = await bot.sendMessage(chatId, '[SYSTEM] 32GB RAM Engine: Initializing 4K Upscale...');
-
-    try {
-        const photo = msg.reply_to_message.photo[msg.reply_to_message.photo.length - 1];
-        const fileLink = await bot.getFileLink(photo.file_id);
-
-        // Fetch image into buffer
-        const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
-        const inputBuffer = Buffer.from(response.data, 'binary');
-
-        await bot.editMessageText('[SYSTEM] Processing Lanczos3 Super-Sampling (4K)...', {
-            chat_id: chatId,
-            message_id: statusMsg.message_id
-        });
-
-        // Use Sharp to upscale to 4K (3840px width)
-        const outputBuffer = await sharp(inputBuffer)
-            .resize({
-                width: 3840,
-                kernel: sharp.kernel.lanczos3 // Highest quality downscaling/upscaling algorithm
-            })
-            .sharpen() // Add HD crispness
-            .toFormat('png')
-            .toBuffer();
-
-        await bot.sendDocument(chatId, outputBuffer, {
-            filename: 'upscaled_4k.png',
-            caption: '*Upscale Complete (Local 32GB Engine)*\nResolution: 3840px (4K HD)'
-        });
-
-        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-
-    } catch (err) {
-        bot.sendMessage(chatId, `[ERROR] Local upscale failed: ${err.message}`);
-    }
-});
-
-
 
 
 
