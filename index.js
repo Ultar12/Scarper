@@ -694,11 +694,10 @@ async function runAutoTaskScanner(chatId) {
     let targetsToStrike = [];
 
     try {
-        // RADAR uses the same Puppeteer/Chrome stack as the current /task flow.
+        // RADAR must use the browser owned by Task Mode. It opens a new
+        // scanning tab, but never launches a second Chrome process.
         if (!(await isPuppeteerBrowserHealthy(globalTaskBrowser))) {
-            if (globalTaskBrowser) await globalTaskBrowser.close().catch(() => {});
-            console.log('[RADAR] Cold Boot: Launching Chrome task browser...');
-            globalTaskBrowser = await launchScraperBrowser();
+            throw new Error('Shared Task Mode Chrome browser is not available. Start Task Mode first.');
         }
 
         scanPage = await globalTaskBrowser.newPage();
@@ -3105,6 +3104,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
     };
 
     let browser = null;
+    let ownsBrowser = false;
     let pages = [];
     let totalPoints = 0;
     let totalSuccess = 0;
@@ -3114,7 +3114,14 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
     let loopCount = 1;
 
     try {
-        browser = await launchScraperBrowser();
+        if (await isPuppeteerBrowserHealthy(globalTaskBrowser)) {
+            browser = globalTaskBrowser;
+            console.log('[TASK] Reusing shared Chrome browser for /task tabs.');
+        } else {
+            browser = await launchScraperBrowser();
+            ownsBrowser = true;
+            console.log('[TASK] Launched dedicated Chrome browser for direct /task.');
+        }
 
         // Human Sniper to automatically kill random popups/modals
         const injectHumanSniper = async (page) => {
@@ -3359,8 +3366,14 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
     } catch (err) {
         await bot.sendMessage(chatId, `[STRIKE FAILED]: ${err.message}`);
     } finally {
-        if (browser) {
+        if (ownsBrowser && browser) {
             await browser.close().catch(() => {});
+        } else {
+            // Keep the shared Chrome session alive for RADAR and later /task
+            // requests, but remove this command's temporary tabs.
+            for (const page of pages) {
+                await page.close().catch(() => {});
+            }
         }
     }
 });
@@ -3694,6 +3707,10 @@ bot.onText(/^(?:Task|task)$/i, async (msg) => {
     const adminId = process.env.ADMIN_ID || '7710721646';
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
 
+    if (!(await isPuppeteerBrowserHealthy(globalTaskBrowser))) {
+        console.log('[TASK MODE] Launching shared Chrome browser...');
+        globalTaskBrowser = await launchScraperBrowser();
+    }
     taskModeActive = true;
     isRadarScanning = false; // Force unlock the radar in case of a previous crash
     resetTaskModeTimer(chatId);
