@@ -3263,11 +3263,18 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                         }
                         
                         if (matched) {
-                            if (matches === index) { 
-                                // Extract the specific number being clicked
-                                const textMatch = curr.innerText.match(/\+\d{8,15}/);
-                                const foundNumber = textMatch ? textMatch[0] : `Suffix ${suffix}`;
-                                
+                            if (matches === index) {
+                                // Extract and canonicalize the phone number from
+                                // this card so duplicate claims can be rejected.
+                                const textMatch = (curr.innerText || '').match(/\+?\s*\d[\d\s().-]{7,}\d/g);
+                                const normalizedNumber = textMatch
+                                    ? textMatch[0].replace(/\D/g, '')
+                                    : '';
+                                if (normalizedNumber.length < 8 || normalizedNumber.length > 15) {
+                                    return 'Unknown';
+                                }
+                                const foundNumber = `+${normalizedNumber}`;
+
                                 btn.click(); 
                                 btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
                                 return foundNumber; 
@@ -3280,7 +3287,21 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             }
             const unknownClaims = claimedNumbers.filter(number => number === 'Unknown').length;
             if (unknownClaims > 0) {
-                throw new Error(`Only ${activeTabsCount - unknownClaims}/${activeTabsCount} tab(s) claimed a matching task.`);
+                throw new Error(`Only ${activeTabsCount - unknownClaims}/${activeTabsCount} tab(s) claimed a matching task; exact phone numbers could not be verified.`);
+            }
+
+            const claimIndexByNumber = new Map();
+            const duplicateClaims = [];
+            claimedNumbers.forEach((number, index) => {
+                const normalized = String(number).replace(/\D/g, '');
+                if (claimIndexByNumber.has(normalized)) {
+                    duplicateClaims.push(`${number} (Tabs ${claimIndexByNumber.get(normalized) + 1} and ${index + 1})`);
+                } else {
+                    claimIndexByNumber.set(normalized, index);
+                }
+            });
+            if (duplicateClaims.length > 0) {
+                throw new Error(`Duplicate task claim detected before Confirm: ${duplicateClaims.join('; ')}.`);
             }
 
             // WAIT FOR EVERY CONFIRM MODAL TO BE READY. Do not suppress a
