@@ -210,6 +210,18 @@ function launchScraperBrowser() {
     return puppeteer.launch(launchOptions);
 }
 
+async function isPuppeteerBrowserHealthy(browser) {
+    if (!browser) return false;
+    if (typeof browser.isConnected === 'function') return browser.isConnected();
+    if (typeof browser.connected === 'boolean') return browser.connected;
+    try {
+        await browser.version();
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 // --- 1. HEROKU POSTGRESQL SETUP ---
 // Heroku requires SSL to be enabled but rejectUnauthorized set to false
 const pool = new Pool({
@@ -683,7 +695,8 @@ async function runAutoTaskScanner(chatId) {
 
     try {
         // RADAR uses the same Puppeteer/Chrome stack as the current /task flow.
-        if (!globalTaskBrowser || !globalTaskBrowser.isConnected()) {
+        if (!(await isPuppeteerBrowserHealthy(globalTaskBrowser))) {
+            if (globalTaskBrowser) await globalTaskBrowser.close().catch(() => {});
             console.log('[RADAR] Cold Boot: Launching Chrome task browser...');
             globalTaskBrowser = await launchScraperBrowser();
         }
