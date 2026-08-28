@@ -673,100 +673,92 @@ function resetTaskModeTimer(chatId) {
 
 // --- AUTONOMOUS TASK RADAR ENGINE (SEQUENTIAL MULTI-TARGET) ---
 async function runAutoTaskScanner(chatId) {
-    // Abort if task mode is off, if a strike is running, or if the radar is already busy
+    // Abort if task mode is off, if a strike is running, or if the radar is already busy.
     if (!taskModeActive || isTaskExecuting || isRadarScanning) return;
 
-    isRadarScanning = true; // Lock the radar
+    isRadarScanning = true;
 
-    let scanContext = null;
     let scanPage = null;
     let targetsToStrike = [];
 
     try {
-        // --- 1. THE COLD BOOT FIX ---
-        // If the browser isn't running yet, the radar will start it autonomously
+        // RADAR uses the same Puppeteer/Chrome stack as the current /task flow.
         if (!globalTaskBrowser || !globalTaskBrowser.isConnected()) {
-            console.log('[RADAR] Cold Boot: Launching Master Task Browser...');
-            process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
-            globalTaskBrowser = await launchPlaywrightBrowser({
-                headless: true,
-                args: ['--no-sandbox', '--disable-setuid-sandbox']
-            });
+            console.log('[RADAR] Cold Boot: Launching Chrome task browser...');
+            globalTaskBrowser = await launchScraperBrowser();
         }
 
-        scanContext = await globalTaskBrowser.newContext({
-            userAgent: 'Mozilla/5.0 (Android 13; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0',
-            viewport: { width: 412, height: 915 }
+        scanPage = await globalTaskBrowser.newPage();
+        await scanPage.setViewport({ width: 412, height: 915 });
+
+        // Start from the task route. If the site redirects to login, the Puppeteer
+        // helper completes login and this scanner returns to /task immediately.
+        await scanPage.goto(wsjobsUrl(WSJOBS_TASK_PATH), {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
+        });
+        await delay(2000);
+        await loginToWsjobsPuppeteer(scanPage);
+        await scanPage.goto(wsjobsUrl(WSJOBS_TASK_PATH), {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
         });
 
-        scanPage = await scanContext.newPage();
+        // Wait for the current task board instead of assuming a fixed load time.
+        await scanPage.waitForFunction(() => Array.from(
+            document.querySelectorAll('button, [class*="btn"], [class*="button"]')
+        ).some(el => /Send Task|SEND/i.test(el.innerText?.trim()) && el.offsetHeight > 0), {
+            timeout: 15000
+        }).catch(() => {});
+        await delay(1000);
 
-        // --- 2. THE INCOGNITO LOGIN FIX ---
-        // The radar must log in quickly so the site actually shows it the tasks
-        await scanPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await delay(3000);
-
-        await loginToWsjobs(scanPage);
-
-        // Now teleport to the task board as an authenticated user
-        await scanPage.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await delay(4000);
-
-        // --- 3. DOM FREQUENCY ANALYZER ---
+        // Count available matching task cards using the same DOM strategy as /task.
         const counts = await scanPage.evaluate(() => {
-            const btns = Array.from(document.querySelectorAll('*')).filter(el =>
-                el.innerText?.trim().toUpperCase() === 'SEND' && el.offsetParent !== null
-            );
+            const sendButtons = Array.from(document.querySelectorAll(
+                'button, [class*="btn"], [class*="button"]'
+            )).filter(el => /Send Task|SEND/i.test(el.innerText?.trim()) && el.offsetHeight > 0);
+            const tracker = {};
 
-            let tracker = {};
-            for (let btn of btns) {
-                let txt = btn.parentElement?.parentElement?.innerText || '';
-                let cleanTxt = txt.replace(/\s+/g, ' ');
-
-                let numMatch = cleanTxt.match(/[\d\*]{5,}(\d{2})/);
-                let suffix = numMatch ? numMatch[1] : (cleanTxt.match(/\d{2}(?=\D*$)/) || [])[0];
-
-                if (suffix) {
-                    tracker[suffix] = (tracker[suffix] || 0) + 1;
+            for (const button of sendButtons) {
+                let current = button;
+                let cardText = '';
+                for (let level = 0; level < 8 && current; level++, current = current.parentElement) {
+                    cardText = current.innerText || '';
+                    if (/\d[\d\s*()-]{3,}\d/.test(cardText)) break;
                 }
+
+                const compactText = cardText.replace(/\s+/g, ' ');
+                const numberMatch = compactText.match(/[\d*]{5,}(\d{2})/);
+                const suffix = numberMatch
+                    ? numberMatch[1]
+                    : (compactText.match(/\d{2}(?=\D*$)/) || [])[0];
+                if (suffix) tracker[suffix] = (tracker[suffix] || 0) + 1;
             }
             return tracker;
         });
 
-        // --- 4. QUEUE BUILDER ---
+        // The latest /task flow can work with 1–4 available tabs. Any positive
+        // count is therefore eligible; the old count >= 3 rule is obsolete.
         for (const [suffix, count] of Object.entries(counts)) {
-            if (count >= 3) {
-                targetsToStrike.push({ suffix, count });
-            }
+            if (count > 0) targetsToStrike.push({ suffix, count });
         }
-
         targetsToStrike.sort((a, b) => b.count - a.count);
-
     } catch (err) {
         console.log(`[RADAR ERROR] Scanner failed: ${err.message}`);
     } finally {
-        if (scanContext) await scanContext.close().catch(() => {});
+        if (scanPage) await scanPage.close().catch(() => {});
     }
 
-
-
-            // --- 5. SEQUENTIAL EXECUTION QUEUE ---
+    // --- SEQUENTIAL EXECUTION QUEUE ---
     if (targetsToStrike.length > 0) {
-        const queueList = targetsToStrike.map(t => t.suffix).join(', ');
+        const queueList = targetsToStrike.map(t => `${t.suffix} (${t.count})`).join(', ');
+        console.log(`[RADAR DETECTED] Found eligible task suffixes: ${queueList}. Starting the normal /task flow...`);
 
-        // SILENT LOG: Replaced Telegram message with Heroku console log
-        console.log(`[RADAR DETECTED] Found ${targetsToStrike.length} valid clusters: ${queueList}. Locking queue and initiating sequential strikes...`);
-
-        for (let target of targetsToStrike) {
+        for (const target of targetsToStrike) {
             if (!taskModeActive) break;
-
             resetTaskModeTimer(chatId);
+            console.log(`[RADAR QUEUE] Triggering /task ${target.suffix} with ${target.count} available target(s).`);
 
-            // SILENT LOG: Replaced Telegram message with Heroku console log
-            console.log(`[RADAR QUEUE] Triggering strike for suffix: ${target.suffix} (${target.count} targets)`);
-
-            // This invisibly triggers your normal /task command, which WILL still send the
-            // "[SYSTEM] Strike Protocol" message and the final screenshot to your chat.
             bot.processUpdate({
                 update_id: Date.now(),
                 message: {
@@ -778,15 +770,12 @@ async function runAutoTaskScanner(chatId) {
                 }
             });
 
-
-            // We removed the while loop. It now waits exactly 60 seconds and fires the next one.
-            console.log(`[RADAR QUEUE] Sleeping for exactly 1 minute before triggering the next target...`);
+            console.log('[RADAR QUEUE] Waiting 1 minute before the next target scan.');
             await new Promise(r => setTimeout(r, 60000));
         }
-
-        console.log(`[RADAR QUEUE] All targets processed. Returning to silent background scan.`);
+        console.log('[RADAR QUEUE] All eligible targets processed. Returning to background scan.');
     } else {
-        console.log(`[RADAR] Scan finished. Targets found, but none had 3 or more occurrences.`);
+        console.log('[RADAR] Scan finished. No eligible matching task targets were found.');
     }
 
     isRadarScanning = false;
@@ -3282,6 +3271,12 @@ bot.onText(/^(?:close|\/close)$/i, async (msg) => {
     }
 
     // 3. Kill Task Mode & Radar
+    if (globalTaskBrowser) {
+        await globalTaskBrowser.close().catch(() => {});
+        globalTaskBrowser = null;
+        isRadarScanning = false;
+        stoppedSomething = true;
+    }
     if (typeof taskModeActive !== 'undefined' && taskModeActive) {
         taskModeActive = false;
         if (typeof taskModeTimer !== 'undefined' && taskModeTimer) clearTimeout(taskModeTimer);
