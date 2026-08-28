@@ -723,7 +723,7 @@ async function runAutoTaskScanner(chatId) {
                 const phoneCandidates = cardText.match(/(?:\+\s*[\d][\d\s().*-]{6,}[\d*]|\*{3,}[\d*]{2,})/g) || [];
                 const phoneCandidate = phoneCandidates.find(candidate => {
                     const digits = candidate.replace(/\D/g, '');
-                    return digits.length >= 8 && digits.length <= 15;
+                    return digits.length >= 8 && digits.length <= 18;
                 });
                 if (!phoneCandidate) continue;
 
@@ -1890,7 +1890,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                             const phoneCandidates = cardText.match(/(?:\+?\s*)?\d[\d\s().-]{7,}\d/g) || [];
                             const normalizedNumber = phoneCandidates
                                 .map(value => value.replace(/\D/g, ''))
-                                .filter(value => value.length >= 8 && value.length <= 15)
+                                .filter(value => value.length >= 8 && value.length <= 18)
                                 .sort((a, b) => b.length - a.length)[0] || '';
                             if (!normalizedNumber) return { number: 'Unknown', diagnostics };
                             const foundNumber = `+${normalizedNumber}`;
