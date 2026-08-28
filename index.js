@@ -3054,33 +3054,41 @@ async function waitForWsjobsTaskFeedbackPuppeteer(page, tabNumber, timeoutMs = 3
 }
 
 async function waitForWsjobsTaskStep(page, tabNumber, step, timeoutMs = 30000) {
-    try {
-        await page.waitForFunction((expectedStep) => {
-            const buttons = Array.from(document.querySelectorAll(
-                'button, [role="button"], [class*="btn"], [class*="button"]'
-            )).filter(el => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const ready = await page.evaluate((expectedStep) => {
+            const visible = (el) => {
                 const rect = el.getBoundingClientRect();
                 const style = getComputedStyle(el);
                 return rect.width > 0 && rect.height > 0
                     && style.visibility !== 'hidden' && style.display !== 'none';
-            });
+            };
+            const buttons = Array.from(document.querySelectorAll(
+                'button, [role="button"], [class*="btn"], [class*="button"]'
+            )).filter(visible);
             return expectedStep === 'task'
-                ? buttons.some(el => /^send(?:\s+task)?$/i.test((el.innerText || '').replace(/\s+/g, ' ').trim()))
-                : buttons.some(el => /confirm/i.test((el.innerText || '').trim()));
-        }, { timeout: timeoutMs }, step);
-    } catch (error) {
-        const diagnostics = await page.evaluate(() => ({
-            url: location.href,
-            title: document.title,
-            buttons: Array.from(document.querySelectorAll('button, [role="button"], [class*="btn"], [class*="button"]'))
-                .filter(el => el.offsetParent !== null)
-                .map(el => (el.innerText || '').replace(/\s+/g, ' ').trim())
-                .filter(Boolean)
-                .slice(0, 20),
-            body: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 300)
-        })).catch(() => ({ url: 'unavailable', title: '', buttons: [], body: '' }));
-        throw new Error(`Tab ${tabNumber} timed out waiting for ${step} readiness after ${timeoutMs}ms. URL=${diagnostics.url}; buttons=${JSON.stringify(diagnostics.buttons)}; body=${JSON.stringify(diagnostics.body)}`);
+                ? buttons.some(el => /\bsend(?:\s+task)?\b/i.test(
+                    (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim()
+                ))
+                : buttons.some(el => /\bconfirm\b/i.test(
+                    (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim()
+                ));
+        }, step).catch(() => false);
+        if (ready) return;
+        await delay(250);
     }
+
+    const diagnostics = await page.evaluate(() => ({
+        url: location.href,
+        title: document.title,
+        buttons: Array.from(document.querySelectorAll('button, [role="button"], [class*="btn"], [class*="button"]'))
+            .filter(el => el.offsetParent !== null)
+            .map(el => (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim())
+            .filter(Boolean)
+            .slice(0, 20),
+        body: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 300)
+    })).catch(() => ({ url: 'unavailable', title: '', buttons: [], body: '' }));
+    throw new Error(`Tab ${tabNumber} timed out waiting for ${step} readiness after ${timeoutMs}ms. URL=${diagnostics.url}; buttons=${JSON.stringify(diagnostics.buttons)}; body=${JSON.stringify(diagnostics.body)}`);
 }
 
 // Matches exactly: /task <number>
