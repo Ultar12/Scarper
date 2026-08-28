@@ -4199,20 +4199,82 @@ async function readWsjobsPairState(page) {
 
 async function clickWsjobsCountry(page, countryCode) {
     const code = String(countryCode);
-    const opened = await page.evaluate(() => {
+    const selectorResult = await page.evaluate(() => {
         const visible = (el) => {
             const rect = el.getBoundingClientRect();
-            return rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+            const style = getComputedStyle(el);
+            return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
         };
-        const candidates = Array.from(document.querySelectorAll('button, [role="button"], [aria-haspopup="listbox"], div, span'))
-            .filter(visible)
-            .filter((el) => /^\+\d{1,4}$/.test((el.innerText || '').trim()));
-        const target = candidates[0];
-        if (!target) return false;
-        (target.closest('button, [role="button"]') || target).click();
-        return true;
+        const describe = (el) => {
+            const rect = el.getBoundingClientRect();
+            return {
+                tag: el.tagName.toLowerCase(),
+                text: (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+                className: String(el.className || '').slice(0, 100),
+                role: el.getAttribute('role') || '',
+                ariaHaspopup: el.getAttribute('aria-haspopup') || '',
+                left: Math.round(rect.left),
+                top: Math.round(rect.top),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height)
+            };
+        };
+
+        const phoneInput = Array.from(document.querySelectorAll(
+            'input[placeholder*="Phone Number" i], input[type="tel"]'
+        )).find(visible);
+        if (!phoneInput) return { opened: false, reason: 'phone-input-not-found', candidates: [] };
+
+        const phoneRect = phoneInput.getBoundingClientRect();
+        const codePattern = /\+\s*\d{1,4}/;
+        const candidates = Array.from(document.querySelectorAll(
+            'button, [role="button"], [aria-haspopup], input, div, span'
+        )).filter(visible).filter((el) => {
+            if (el === phoneInput || el.tagName === 'INPUT') return false;
+            const rect = el.getBoundingClientRect();
+            const verticallyAligned = rect.bottom >= phoneRect.top && rect.top <= phoneRect.bottom;
+            const immediatelyLeft = rect.right <= phoneRect.left + 8 && rect.right >= phoneRect.left - 180;
+            const usefulSize = rect.width >= 36 && rect.height >= 20;
+            return verticallyAligned && immediatelyLeft && usefulSize;
+        });
+
+        const ranked = candidates.map((el, index) => {
+            const rect = el.getBoundingClientRect();
+            const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+            const metadata = `${text} ${el.getAttribute('aria-label') || ''} ${el.className || ''}`;
+            const hasCountryCode = codePattern.test(metadata);
+            const hasSelectorHint = /country|phone|dial|calling|flag/i.test(metadata);
+            return {
+                el,
+                index,
+                score: (hasCountryCode ? 100000 : 0) + (hasSelectorHint ? 10000 : 0) + Math.round(rect.width * rect.height),
+                rect
+            };
+        }).sort((a, b) => b.score - a.score);
+
+        const target = ranked[0]?.el;
+        if (!target) {
+            return {
+                opened: false,
+                reason: 'left-of-phone-control-not-found',
+                candidates: candidates.slice(0, 12).map(describe)
+            };
+        }
+
+        target.click();
+        return {
+            opened: true,
+            target: describe(target),
+            candidates: ranked.slice(0, 8).map(({ el }) => describe(el))
+        };
     });
-    if (!opened) throw new Error('Could not find the current country selector box.');
+
+    if (!selectorResult?.opened) {
+        const diagnostic = selectorResult?.candidates?.length
+            ? ` Nearby controls: ${JSON.stringify(selectorResult.candidates)}`
+            : '';
+        throw new Error(`Could not find the current country selector box.${diagnostic}`);
+    }
 
     const searchSelector = 'input[placeholder*="Search country" i], input[placeholder*="ISO" i], input[placeholder*="code" i]';
     await page.waitForSelector(searchSelector, { visible: true, timeout: 10000 });
