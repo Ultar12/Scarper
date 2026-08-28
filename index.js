@@ -942,6 +942,851 @@ async function scrapeRecentOTPNumbers() {
 
 
 
+// --- Restored pairing API hooks from commit 39ea60125a195086fdc991d2477bec342ddfc94c ---
+let sharedRaganorkBrowser = null;
+const activeRaganorkTabs = new Map(); // Now tracks an object: { page, reqId }
+let raganorkBrowserTimer = null;
+
+app.post('/api/raganork-hook', async (req, res) => {
+    // 1. Safety Check
+    if (!req.body || !req.body.number || !req.body.callbackUrl) {
+        return res.status(400).json({ success: false, error: "Missing number or callbackUrl in request body." });
+    }
+
+    const { number, callbackUrl } = req.body;
+    let input = number.toString().trim();
+
+    // --- 2. THE SMART PARSER ---
+    let countryCode = '234';
+    let localNum = input.replace(/[^0-9]/g, '');
+
+    if (input.includes(' ')) {
+        const parts = input.split(/\s+/);
+        countryCode = parts[0].replace(/[^0-9]/g, '');
+        localNum = parts.slice(1).join('').replace(/[^0-9]/g, '');
+    } else {
+        const cleanNum = input.replace(/[^0-9]/g, '');
+        if (cleanNum.startsWith('0')) {
+            countryCode = '234';
+            localNum = cleanNum.substring(1);
+        } else {
+            const globalCodes = [
+                '880', '254', '256', '263', '225', '221', '228', '233', '971', '966',
+                '234', '58', '91', '92', '62', '55', '44', '27', '20', '1'
+            ];
+            let found = false;
+            for (let code of globalCodes) {
+                if (cleanNum.startsWith(code) && cleanNum.length > code.length + 5) {
+                    countryCode = code;
+                    localNum = cleanNum.substring(code.length);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                countryCode = '234';
+                localNum = cleanNum;
+            }
+        }
+    }
+
+    const fullNumber = `${countryCode}${localNum}`;
+    const myReqId = Date.now(); // Unique timestamp ID for this specific API call
+
+    // Cancel the browser shutdown timer if it was counting down
+    if (raganorkBrowserTimer) {
+        clearTimeout(raganorkBrowserTimer);
+        raganorkBrowserTimer = null;
+    }
+
+    // Instantly respond to prevent Heroku Timeout
+    res.json({
+        success: true,
+        message: `Sequence initiated for +${fullNumber}.`,
+        callback_target: callbackUrl
+    });
+
+    let page = null;
+
+    try {
+        // --- 3. BROWSER WARM-UP ---
+        if (!sharedRaganorkBrowser || !sharedRaganorkBrowser.isConnected()) {
+            console.log("[SYSTEM] Launching Master Browser for Raganork API...");
+            sharedRaganorkBrowser = await puppeteer.launch({
+                headless: true,
+                executablePath: getChromePath(),
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+            });
+        }
+
+        // --- 4. REFRESH EXISTING TAB OR CREATE NEW ---
+        if (activeRaganorkTabs.has(fullNumber)) {
+            const session = activeRaganorkTabs.get(fullNumber);
+
+            // Check if the tab actually exists and hasn't been closed
+            if (session.page && !session.page.isClosed()) {
+                console.log(`[SYSTEM] Duplicate request detected for +${fullNumber}. Refreshing existing tab...`);
+                page = session.page;
+
+                // Update the Map with the NEW reqId so the old process knows to abort
+                activeRaganorkTabs.set(fullNumber, { page: page, reqId: myReqId });
+
+                // Refresh the tab instead of killing it
+                await page.reload({ waitUntil: 'networkidle2' });
+            } else {
+                // Tab was dead, make a new one
+                page = await sharedRaganorkBrowser.newPage();
+                activeRaganorkTabs.set(fullNumber, { page: page, reqId: myReqId });
+                await page.setUserAgent('Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+                await page.setViewport({ width: 412, height: 915 });
+                await page.goto('https://session.rgnk.site/pairing-code', { waitUntil: 'networkidle2' });
+            }
+        } else {
+            // Completely new number, make a new tab
+            page = await sharedRaganorkBrowser.newPage();
+            activeRaganorkTabs.set(fullNumber, { page: page, reqId: myReqId });
+            await page.setUserAgent('Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36');
+            await page.setViewport({ width: 412, height: 915 });
+            await page.goto('https://session.rgnk.site/pairing-code', { waitUntil: 'networkidle2' });
+        }
+
+        // --- SILENT ABORT HELPER ---
+        // We will call this inside our loops. If a new request takes over our tab, we silently kill this old script.
+        const isOverridden = () => {
+            const currentSession = activeRaganorkTabs.get(fullNumber);
+            return !currentSession || currentSession.reqId !== myReqId;
+        };
+
+        await new Promise(r => setTimeout(r, 4000));
+        if (isOverridden()) return; // Stop executing if we've been refreshed
+
+        // --- DOM INJECTION ---
+        const injected = await page.evaluate((cc) => {
+            const selectEl = document.querySelector('select');
+            if (selectEl) {
+                const targetOpt = Array.from(selectEl.options).find(opt => opt.text.includes(cc) || opt.value.includes(cc));
+                if (targetOpt) {
+                    selectEl.value = targetOpt.value;
+                    selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+                    selectEl.dispatchEvent(new Event('input', { bubbles: true }));
+                    return true;
+                }
+            }
+            return false;
+        }, countryCode);
+
+        if (!injected) throw new Error(`Failed to inject country code +${countryCode}.`);
+        await new Promise(r => setTimeout(r, 1000));
+        if (isOverridden()) return;
+
+        // --- NUMBER INPUT ---
+        const inputSelector = 'input[placeholder*="phone"], input[type="tel"], input[type="number"]';
+        await page.waitForSelector(inputSelector, { timeout: 10000 });
+        await page.focus(inputSelector);
+
+        await page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            el.value = '';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+        }, inputSelector);
+
+        await page.keyboard.type(localNum, { delay: 100 });
+        await page.evaluate((sel) => document.querySelector(sel).dispatchEvent(new Event('change', { bubbles: true })), inputSelector);
+        await new Promise(r => setTimeout(r, 1000));
+
+        // --- PHYSICAL STRIKE ---
+        const btnCords = await page.evaluate(() => {
+            const btns = Array.from(document.querySelectorAll('button, div, span'));
+            const getBtn = btns.reverse().find(b => b.innerText?.toUpperCase().includes('GET CODE') && b.offsetHeight > 0);
+            return getBtn ? { x: getBtn.getBoundingClientRect().left + (getBtn.getBoundingClientRect().width / 2), y: getBtn.getBoundingClientRect().top + (getBtn.getBoundingClientRect().height / 2) } : null;
+        });
+
+        if (btnCords) await page.mouse.click(btnCords.x, btnCords.y);
+        else {
+            await page.evaluate(() => {
+                const getBtn = Array.from(document.querySelectorAll('button, div')).reverse().find(b => b.innerText?.toUpperCase().includes('GET CODE'));
+                if (getBtn) getBtn.click();
+            });
+        }
+        await page.keyboard.press('Enter');
+
+        // --- PHASE 1: WEBHOOK PAIRING CODE ---
+        let pairingCode = null;
+        for (let i = 0; i < 30; i++) {
+            if (isOverridden()) return; // Abort loop if refreshed
+            await new Promise(r => setTimeout(r, 1000));
+            pairingCode = await page.evaluate(() => {
+                const header = Array.from(document.querySelectorAll('*')).find(el => el.innerText?.includes('Pairing Code Received'));
+                if (!header) return null;
+                const found = Array.from(document.querySelectorAll('input, textarea, div, span, p')).find(el => (el.value || el.innerText || "").trim().length === 8 && /^[A-Z0-9]{8}$/.test((el.value || el.innerText).trim()));
+                return found ? (found.value || found.innerText).trim() : null;
+            });
+            if (pairingCode) break;
+        }
+
+        if (isOverridden()) return;
+
+        if (pairingCode) {
+            await axios.post(callbackUrl, {
+                status: "pairing_code",
+                number: `+${fullNumber}`,
+                code: pairingCode
+            }).catch(e => console.log(`[API] Webhook 1 failed for ${localNum}:`, e.message));
+        } else {
+            throw new Error("Pairing code timed out.");
+        }
+
+        // --- PHASE 2: WEBHOOK SESSION ID ---
+        let sessionId = null;
+        for (let i = 0; i < 120; i++) {
+            if (isOverridden()) return; // Abort loop if refreshed
+            await new Promise(r => setTimeout(r, 1000));
+            sessionId = await page.evaluate(() => {
+                const found = Array.from(document.querySelectorAll('input, textarea, div, span, p')).find(el => (el.value || el.innerText || "").includes('RGNK~'));
+                if (found) {
+                    const m = (found.value || found.innerText).match(/RGNK~[a-zA-Z0-9]+/);
+                    return m ? m[0] : null;
+                }
+                return null;
+            });
+            if (sessionId) break;
+        }
+
+        if (isOverridden()) return;
+
+        if (sessionId) {
+            await axios.post(callbackUrl, {
+                status: "session_id",
+                number: `+${fullNumber}`,
+                sessionId: sessionId
+            }).catch(e => console.log(`[API] Webhook 2 failed for ${localNum}:`, e.message));
+        } else {
+            throw new Error("Timeout waiting for Session ID.");
+        }
+
+    } catch (err) {
+        // Did it crash because a new request reloaded the page from underneath us?
+        const currentSession = activeRaganorkTabs.get(fullNumber);
+        if (currentSession && currentSession.reqId !== myReqId) {
+            // Yes. Silently ignore the crash, because the new request is handling it now.
+            return;
+        }
+
+        // It was a real error, send the webhook.
+        await axios.post(callbackUrl, {
+            status: "error",
+            number: input,
+            error: err.message
+        }).catch(() => {});
+
+    } finally {
+        // ONLY clean up the tab if this exact request is still the active owner
+        const currentSession = activeRaganorkTabs.get(fullNumber);
+        if (currentSession && currentSession.reqId === myReqId) {
+            if (page && !page.isClosed()) await page.close().catch(() => {});
+            activeRaganorkTabs.delete(fullNumber);
+        }
+
+        // If no more tabs are open across the whole app, wait 10 seconds and kill Chrome
+        if (activeRaganorkTabs.size === 0 && sharedRaganorkBrowser) {
+            raganorkBrowserTimer = setTimeout(async () => {
+                if (activeRaganorkTabs.size === 0 && sharedRaganorkBrowser) {
+                    console.log("[SYSTEM] All Raganork tasks finished. Shutting down Master Browser.");
+                    await sharedRaganorkBrowser.close().catch(() => {});
+                    sharedRaganorkBrowser = null;
+                }
+            }, 10000);
+        }
+    }
+});
+
+
+global.waitingClients = new Map();
+
+
+      app.post('/api/play-hook', async (req, res) => {
+    const { query } = req.body;
+
+    if (!query) {
+        return res.status(400).json({ error: "Missing query." });
+    }
+
+    try {
+        const scdl = require('soundcloud-downloader').default;
+
+        let clientId;
+        try {
+            clientId = await scdl.getClientID();
+        } catch (e) {
+            return res.status(503).json({ error: 'Could not connect to SoundCloud.' });
+        }
+
+        const searchRes = await scdl.search({
+            query: query,
+            resourceType: 'tracks',
+            limit: 5,
+            client_id: clientId
+        });
+
+        const tracks = searchRes?.collection;
+        if (!tracks || tracks.length === 0) {
+            return res.status(404).json({ error: 'No results found on SoundCloud.' });
+        }
+
+        let lastError = null;
+
+        for (const track of tracks) {
+            try {
+                const trackUrl = track.permalink_url;
+                const freshClientId = await scdl.getClientID();
+                const trackInfo = await scdl.getInfo(trackUrl, freshClientId);
+                const transcodings = trackInfo.media?.transcodings || [];
+
+                if (transcodings.length === 0) {
+                    lastError = 'No audio streams available.';
+                    continue;
+                }
+
+                const mp3Path = path.join(__dirname, `api_audio_${Date.now()}.mp3`);
+
+                const progressiveMp3 = transcodings.find(t =>
+                    t.format.protocol === 'progressive' &&
+                    t.format.mime_type === 'audio/mpeg'
+                );
+
+                if (progressiveMp3) {
+                    const streamRes = await axios.get(
+                        `${progressiveMp3.url}?client_id=${freshClientId}`,
+                        { timeout: 15000, validateStatus: s => s < 500 }
+                    );
+
+                    if (streamRes.status === 404 || !streamRes.data?.url) {
+                        lastError = 'Stream URL expired (404).';
+                        continue;
+                    }
+
+                    const audioRes = await axios({
+                        method: 'GET',
+                        url: streamRes.data.url,
+                        responseType: 'stream',
+                        timeout: 120000
+                    });
+
+                    const writer = fs.createWriteStream(mp3Path);
+                    await new Promise((resolve, reject) => {
+                        audioRes.data.pipe(writer)
+                            .on('finish', resolve)
+                            .on('error', reject);
+                    });
+
+                } else {
+                    const hlsTranscoding = transcodings.find(t => t.format.protocol === 'hls');
+                    if (!hlsTranscoding) {
+                        lastError = 'No compatible stream found.';
+                        continue;
+                    }
+
+                    const streamRes = await axios.get(
+                        `${hlsTranscoding.url}?client_id=${freshClientId}`,
+                        { timeout: 15000, validateStatus: s => s < 500 }
+                    );
+
+                    if (streamRes.status === 404 || !streamRes.data?.url) {
+                        lastError = 'HLS URL expired (404).';
+                        continue;
+                    }
+
+                    await execPromise(
+                        `ffmpeg -y -i "${streamRes.data.url}" -vn -codec:a libmp3lame -q:a 2 "${mp3Path}"`
+                    );
+                }
+
+                const stats = fs.statSync(mp3Path);
+                if (stats.size < 5000) {
+                    if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
+                    lastError = 'Downloaded file was empty.';
+                    continue;
+                }
+
+                res.setHeader('Content-Type', 'audio/mpeg');
+                res.setHeader('Content-Disposition', 'attachment; filename="audio.mp3"');
+                res.setHeader('Content-Length', stats.size);
+
+                const readStream = fs.createReadStream(mp3Path);
+                readStream.pipe(res);
+
+                readStream.on('end', () => {
+                    if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
+                });
+
+                readStream.on('error', (err) => {
+                    console.error('[API AUDIO STREAM ERROR]', err.message);
+                    if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
+                    if (!res.headersSent) res.status(500).json({ error: err.message });
+                    else res.end();
+                });
+
+                return;
+
+            } catch (trackErr) {
+                lastError = trackErr.message;
+                continue;
+            }
+        }
+
+        if (!res.headersSent) {
+            res.status(500).json({ error: `All tracks failed. Last error: ${lastError}` });
+        }
+
+    } catch (err) {
+        console.error('[API PLAY AUDIO ERROR]', err.message);
+        if (!res.headersSent) {
+            res.status(500).json({ error: err.message });
+        }
+    }
+});
+
+
+// --- EXTERNAL LYRICS API ENDPOINT ---
+app.get('/api/lyrics', async (req, res) => {
+    const rawQuery = req.query.q;
+
+    if (!rawQuery) {
+        return res.status(400).json({ success: false, error: "Missing query parameter 'q'." });
+    }
+
+    try {
+        // 1. SMART RESOLVER (iTunes)
+        let searchTarget = rawQuery;
+        try {
+            const itunesRes = await axios.get(`https://itunes.apple.com/search?term=${encodeURIComponent(rawQuery)}&entity=song&limit=1`);
+            if (itunesRes.data && itunesRes.data.results && itunesRes.data.results.length > 0) {
+                const trackInfo = itunesRes.data.results[0];
+                searchTarget = `${trackInfo.trackName} ${trackInfo.artistName}`;
+            } else {
+                searchTarget = rawQuery.replace(/\b(by|lyrics)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+            }
+        } catch (e) {
+            searchTarget = rawQuery.replace(/\b(by|lyrics)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+        }
+
+        // 2. FETCH & SORT (LRCLIB)
+        const response = await axios.get(`https://lrclib.net/api/search?q=${encodeURIComponent(searchTarget)}`);
+        const data = response.data;
+
+        if (!data || data.length === 0) {
+            return res.status(404).json({ success: false, error: `Could not find lyrics for "${rawQuery}".` });
+        }
+
+        const validTracks = data.filter(t => t.plainLyrics && t.plainLyrics.trim().length > 0);
+
+        if (validTracks.length === 0) {
+            return res.status(404).json({ success: false, error: `Found the song, but no text lyrics are available.` });
+        }
+
+        // Sort descending by duration to grab the full song, not the snippet
+        validTracks.sort((a, b) => (b.duration || 0) - (a.duration || 0));
+        const track = validTracks[0];
+
+        // 3. RESPOND
+        res.status(200).json({
+            success: true,
+            title: track.trackName,
+            artist: track.artistName,
+            lyrics: track.plainLyrics
+        });
+
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+
+
+// --- EXTERNAL DOWNLOAD API SERVICE ---
+app.get('/api/download', async (req, res) => {
+    const url = req.query.url;
+
+    if (!url) {
+        return res.status(400).json({ error: "Missing 'url' parameter." });
+    }
+
+    try {
+                // --- 1. PRIMARY TIKTOK LOGIC ---
+        if (url.includes('tiktok.com')) {
+            try {
+                const response = await axios.get(`https://www.tikwm.com/api/?url=${url}&hd=1`);
+                const data = response.data.data;
+
+                if (data) {
+                    // Extract the full caption with hashtags
+                    const originalCaption = data.title || "";
+
+                    // --- IMAGE CAROUSEL HANDLING ---
+                    if (data.images && data.images.length > 0) {
+                        return res.status(200).json({
+                            type: "images",
+                            urls: data.images,
+                            caption: originalCaption // Added caption to the JSON output!
+                        });
+                    }
+
+                    // --- VIDEO HANDLING ---
+                    const videoUrl = data.hdplay || data.play;
+                    if (videoUrl) {
+                        const videoStream = await axios({
+                            method: 'GET',
+                            url: videoUrl,
+                            responseType: 'stream',
+                            headers: {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
+                                'Referer': 'https://www.tiktok.com/'
+                            }
+                        });
+
+                        // Inject the caption into the HTTP Headers safely
+                        // We use encodeURIComponent so emojis/hashtags don't break the header rules
+                        res.setHeader('X-Media-Caption', encodeURIComponent(originalCaption));
+                        res.setHeader('Content-Type', 'video/mp4');
+
+                        return videoStream.data.pipe(res);
+                    }
+                }
+            } catch (tikError) {
+                console.log("[API ERROR] TikWM failed. Falling back to yt-dlp...");
+            }
+        }
+
+
+        // --- 2. YOUTUBE TERMUX WORKER LOGIC ---
+        if (url.includes('youtube.com') || url.includes('youtu.be')) {
+            if (!global.termuxSocket || global.termuxSocket.readyState !== 1) {
+                return res.status(503).json({ error: "Termux Worker is offline" });
+            }
+
+            const reqId = 'req_' + Date.now();
+            global.waitingClients = global.waitingClients || new Map();
+
+            // Fire headers FIRST before anything else
+            res.writeHead(200, {
+                'Content-Type': 'video/mp4',
+                'Transfer-Encoding': 'chunked',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no'
+            });
+
+            if (res.socket) res.socket.setKeepAlive(true, 15000);
+
+            global.waitingClients.set(reqId, { res, heartbeat: null });
+
+            global.termuxSocket.send(JSON.stringify({
+                action: 'download',
+                url: url,
+                isVideo: true,
+                chatId: 'API_USER',
+                msgId: reqId
+            }));
+
+            setTimeout(() => {
+                if (global.waitingClients.has(reqId)) {
+                    global.waitingClients.delete(reqId);
+                    try { res.end(); } catch(e) {}
+                }
+            }, 600000);
+
+            return;
+        }
+
+        // --- 3. THE FRONTLINE: YT-DLP ---
+        const videoPath = path.join(__dirname, `api_dl_${Date.now()}.mp4`);
+        let ytdlpSuccess = false;
+
+        try {
+            // FORCE yt-dlp to grab a pre-merged, standard MP4
+            await youtubedl(url, {
+                output: videoPath,
+                format: 'best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best',
+                noWarnings: true
+            });
+            ytdlpSuccess = true;
+
+        } catch (ytErr) {
+
+            // --- 4. UNIVERSAL HEADLESS RESCUE ENGINE (API VERSION) ---
+            console.log(`[SYSTEM] yt-dlp failed on ${url}. Engaging API Rescue Engine...`);
+
+            let rescueBrowser = null;
+            try {
+                rescueBrowser = await puppeteer.launch({
+                    headless: true,
+                    executablePath: getChromePath(),
+                    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+                });
+
+                const rescuePage = await rescueBrowser.newPage();
+                await rescuePage.setViewport({ width: 1280, height: 800 });
+
+                // Navigate (Automatically resolves shortlinks like pin.it)
+                await rescuePage.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+
+                // Scroll to force lazy-loaded images/videos to render
+                await rescuePage.evaluate(() => window.scrollBy(0, 500));
+                await rescuePage.waitForTimeout(2000);
+
+                // Execute the Universal DOM Hunter
+                const mediaData = await rescuePage.evaluate(() => {
+                    // Hunt 1: Video tag
+                    const video = document.querySelector('video');
+                    if (video) {
+                        const videoSrc = video.src || video.querySelector('source')?.src;
+                        if (videoSrc && videoSrc.startsWith('http')) return { type: 'video', url: videoSrc };
+                    }
+
+                    // Hunt 2: Pinterest High-Res Override
+                    if (window.location.hostname.includes('pinterest')) {
+                        const imgs = Array.from(document.querySelectorAll('img'));
+                        const mainImg = imgs.find(img => img.src && img.src.includes('i.pinimg.com') && (img.src.includes('736x') || img.src.includes('originals')));
+                        if (mainImg) {
+                            return { type: 'images', urls: [mainImg.src.replace(/736x/, 'originals')] };
+                        }
+                    }
+
+                    // Hunt 3: General Image Grid / Albums
+                    const allImages = Array.from(document.querySelectorAll('img'));
+                    const highResImages = allImages
+                        .filter(img => img.src && img.src.startsWith('http'))
+                        .filter(img => img.naturalWidth > 120 && img.naturalHeight > 120)
+                        .map(img => img.src);
+
+                    const uniqueImages = [...new Set(highResImages)];
+
+                    if (uniqueImages.length > 0) {
+                        return { type: 'images', urls: uniqueImages };
+                    }
+
+                    return null;
+                });
+
+                if (!mediaData) {
+                    throw new Error("API Rescue Engine crawled the page but found zero valid videos or high-resolution images.");
+                }
+
+                // --- RESPOND VIA API ---
+                if (mediaData.type === 'images') {
+                    // Return JSON Array for Photos/Albums
+                    return res.status(200).json({
+                        type: "images",
+                        urls: mediaData.urls
+                    });
+                } else if (mediaData.type === 'video') {
+                    // Stream Raw MP4 for Videos
+                    const videoStream = await axios({
+                        method: 'GET',
+                        url: mediaData.url,
+                        responseType: 'stream',
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+                        }
+                    });
+
+                    res.setHeader('Content-Type', 'video/mp4');
+                    return videoStream.data.pipe(res);
+                }
+
+            } catch (rescueErr) {
+                throw new Error(`yt-dlp failed AND Rescue Engine failed: ${rescueErr.message}`);
+            } finally {
+                if (rescueBrowser) await rescueBrowser.close().catch(() => {});
+            }
+        }
+
+        // --- 5. YT-DLP DELIVERY ---
+        // If yt-dlp successfully grabbed the file, send it via the API
+        if (ytdlpSuccess) {
+            res.download(videoPath, 'downloaded_video.mp4', (err) => {
+                if (fs.existsSync(videoPath)) {
+                    fs.unlinkSync(videoPath);
+                }
+            });
+        }
+
+    } catch (err) {
+        // Global Error Handler for the API Route
+        if (!res.headersSent) {
+            res.status(500).json({ error: `Engine extraction failed: ${err.message}` });
+        } else {
+            res.end();
+        }
+    }
+});
+
+
+
+
+
+app.post('/api/levanter-hook', async (req, res) => {
+    const { number, callbackUrl } = req.body;
+
+    if (!number || !callbackUrl) {
+        return res.status(400).json({ success: false, error: "Missing 'number' or 'callbackUrl'" });
+    }
+
+    // 1. Instantly respond to prevent Heroku timeout
+    res.json({ success: true, message: "Sequence initiated. Results will be sent to callbackUrl." });
+
+    const targetNumber = number.toString().replace(/[^0-9]/g, '');
+    let browser = null;
+
+    try {
+        browser = await puppeteer.launch({
+            headless: true,
+            executablePath: getChromePath(), // Ensure this matches your existing setup
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        });
+
+        const page = await browser.newPage();
+        await page.setViewport({ width: 412, height: 915 });
+
+        // Anti-Ad Shield
+        page.on('framenavigated', async (frame) => {
+            if (frame === page.mainFrame() && !page.url().includes('levanter.site')) {
+                await page.goBack().catch(() => {});
+            }
+        });
+
+        await page.goto('https://levanter.site/', { waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 5000));
+
+        const clickText = async (targetText) => {
+            await page.evaluate((txt) => {
+                const elements = Array.from(document.querySelectorAll('div, span, p, h3, button, a'));
+                const found = elements.reverse().find(el => el.innerText?.trim().includes(txt) && el.offsetHeight > 0);
+                if (found) {
+                    const rect = found.getBoundingClientRect();
+                    const ev = { bubbles: true, cancelable: true, view: window, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+                    ['mousedown', 'mouseup', 'click'].forEach(t => found.dispatchEvent(new MouseEvent(t, ev)));
+                    found.click();
+                }
+            }, targetText);
+            await new Promise(r => setTimeout(r, 2000));
+        };
+
+        // Navigation
+        await clickText('Session');
+
+        await page.evaluate(() => {
+            const skipBtn = Array.from(document.querySelectorAll('button, div, span, a')).reverse().find(el => el.innerText?.trim() === 'Skip' && el.offsetHeight > 0);
+            if (skipBtn) skipBtn.click();
+        });
+        await new Promise(r => setTimeout(r, 2000));
+
+        await page.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('*'));
+            const textElement = elements.find(el => el.innerText?.trim() === 'Receive Session on WhatsApp' && el.children.length === 0);
+            if (textElement && textElement.parentElement) {
+                const siblingBox = textElement.parentElement.querySelector('button, input, [role="checkbox"], div[class*="checkbox"], svg');
+                if (siblingBox) siblingBox.click();
+                textElement.parentElement.click();
+                textElement.click();
+            }
+        });
+        await new Promise(r => setTimeout(r, 1500));
+
+        await clickText('Pairing Code');
+
+        // Input Injection
+        const inputSelector = 'input[placeholder*="1 234"], input[type="tel"]';
+        await page.waitForSelector(inputSelector, { timeout: 10000, visible: true });
+        await page.focus(inputSelector);
+        await page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            el.value = '';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+        }, inputSelector);
+
+        await page.keyboard.type('+' + targetNumber, { delay: 100 });
+
+        await page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        }, inputSelector);
+        await new Promise(r => setTimeout(r, 1000));
+
+        // Submit
+        await page.evaluate(() => {
+            const els = Array.from(document.querySelectorAll('button, div, span'));
+            const btn = els.reverse().find(e => e.innerText?.trim() === 'Get Pairing Code' && e.offsetHeight > 0);
+            if (btn) {
+                const ev = { bubbles: true, cancelable: true, view: window };
+                ['mousedown', 'mouseup', 'click'].forEach(t => btn.dispatchEvent(new MouseEvent(t, ev)));
+                btn.click();
+            }
+        });
+
+        // 1st Extraction: Pairing Code
+        let pairingCode = null;
+        for (let i = 0; i < 30; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            pairingCode = await page.evaluate(() => {
+                const divs = Array.from(document.querySelectorAll('div, span'));
+                const codeDiv = divs.find(el => el.innerText?.length === 8 && /^[A-Z0-9]+$/.test(el.innerText) && el.innerText !== 'LEVANTER');
+                return codeDiv ? codeDiv.innerText.trim() : null;
+            });
+            if (pairingCode) break;
+        }
+
+        if (!pairingCode) throw new Error("Pairing code never generated.");
+
+        // --- WEBHOOK FIRE 1: Send Pairing Code to External Server ---
+        await axios.post(callbackUrl, {
+            status: "pairing_code",
+            number: targetNumber,
+            code: pairingCode
+        }).catch(() => console.log('[API] Failed to deliver pairing code to webhook.'));
+
+        // 2nd Extraction: Session ID
+        let sessionId = null;
+        for (let i = 0; i < 120; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            sessionId = await page.evaluate(() => {
+                const elements = Array.from(document.querySelectorAll('input, textarea, div, span, p'));
+                const validEl = elements.find(el => {
+                    const txt = el.value || el.innerText;
+                    return txt && txt.includes('levanter_');
+                });
+                if (validEl) {
+                    const txt = validEl.value || validEl.innerText;
+                    const match = txt.match(/levanter_[a-zA-Z0-9]+/);
+                    if (match) return match[0];
+                }
+                return null;
+            });
+            if (sessionId) break;
+        }
+
+        if (!sessionId) throw new Error("Timeout waiting for Session ID.");
+
+        // --- WEBHOOK FIRE 2: Send Session ID to External Server ---
+        await axios.post(callbackUrl, {
+            status: "session_id",
+            number: targetNumber,
+            sessionId: sessionId
+        }).catch(() => console.log('[API] Failed to deliver session ID to webhook.'));
+
+    } catch (err) {
+        // --- WEBHOOK FIRE ERROR: Notify server of failure ---
+        await axios.post(callbackUrl, {
+            status: "error",
+            number: targetNumber,
+            error: err.message
+        }).catch(() => {});
+    } finally {
+        if (browser) await browser.close();
+    }
+});
+
+
+
 // --- 4. TELEGRAM COMMAND LISTENERS ---
 
 // --- INTERACTIVE CONTROL PANEL ---
