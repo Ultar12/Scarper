@@ -4187,36 +4187,37 @@ function parseWsjobsPairInput(rawInput) {
 async function readWsjobsPairState(page) {
     return page.evaluate(() => {
         const body = document.body?.innerText || '';
-        const demoCodes = new Set([
-            'KEEP-THIS',
-            '11111111',
-            '00000000',
-            'ABCDEFGH',
-            'ABCD-EFGH',
-            'XXXXXXXX',
-            'XXXX-XXXX'
-        ]);
-        const normalize = (value) => String(value || '').replace(/\s+/g, '-').toUpperCase();
+        // The site currently renders the literal `1111 - 1111` format in the
+        // observed pairing flow. It is a valid displayed code for this site,
+        // so repeated digits must not be rejected as a placeholder.
+        const demoCodes = new Set(['KEEP-THIS']);
+        const normalize = (value) => String(value || '')
+            .toUpperCase()
+            .replace(/\s*[-–—]\s*/g, '-')
+            .replace(/\s+/g, '-');
         const isRealCode = (value) => {
             const normalized = normalize(value);
-            return Boolean(normalized)
-                && !demoCodes.has(normalized)
-                && !/^([A-Z0-9])\1{7}$/.test(normalized.replace('-', ''));
+            return Boolean(normalized) && !demoCodes.has(normalized);
         };
 
         // Read only the short text immediately following the Pair Code label.
         // This prevents unrelated 8-character text elsewhere on the dashboard
         // from being mistaken for the current pairing code.
         const label = Array.from(document.querySelectorAll('*')).find(el =>
-            el.offsetParent !== null && /^Pair\s*Code$/i.test(el.innerText?.trim() || '')
+            el.offsetParent !== null && /^Pair(?:ing)?\s*Code$/i.test(el.innerText?.trim() || '')
         );
-        const nearbyText = label?.parentElement?.innerText || body;
-        const candidates = nearbyText.match(/\b[A-Z0-9]{4}(?:[-\s]?[A-Z0-9]{4})?\b/gi) || [];
+        const nearbyText = [
+            label?.parentElement?.innerText,
+            label?.parentElement?.parentElement?.innerText,
+            label?.parentElement?.parentElement?.parentElement?.innerText,
+            body
+        ].filter(Boolean).join(' ');
+        const candidates = nearbyText.match(/\b(?:[A-Z0-9]{8}|[A-Z0-9]{4}\s*(?:[-–—]\s*|\s+)[A-Z0-9]{4})\b/gi) || [];
         const code = candidates.map(normalize).find(isRealCode) || null;
         return {
             code,
             body,
-            ready: /Pair\s*code\s*ready/i.test(body),
+            ready: /Pair(?:ing)?\s*code\s*ready/i.test(body),
             placeholderDetected: candidates.some(candidate => !isRealCode(candidate))
         };
     }).catch(() => ({ code: null, body: '', ready: false, placeholderDetected: false }));
