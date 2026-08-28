@@ -211,7 +211,7 @@ function launchPlaywrightBrowser(options = {}) {
 function launchScraperBrowser() {
     const launchOptions = {
         headless: true,
-        protocolTimeout: 120000,
+        protocolTimeout: 300000,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
     };
     const chromePath = getChromePath();
@@ -1809,6 +1809,49 @@ bot.onText(/\/start/i, (msg) => {
 });
 
 
+// Command to START automatic Task Mode. The reply keyboard sends the literal
+// text "Task", so this must remain separate from /task <suffix>.
+bot.onText(/^(?:Task|task)$/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
+    taskModeActive = true;
+    isRadarScanning = false;
+    resetTaskModeTimer(chatId);
+    await bot.sendMessage(chatId, '[ACTIVE] Autonomous Task Mode Activated!\n\nRunning initial board scan right now. Will continue to scan every 1.5 minutes.\nType Close to end this mode.', {
+        parse_mode: 'Markdown',
+        reply_markup: { remove_keyboard: true }
+    });
+    runAutoTaskScanner(chatId).catch((error) =>
+        bot.sendMessage(chatId, `[RADAR ERROR] ${error.message}`).catch(() => {})
+    );
+    if (autoScannerInterval) clearInterval(autoScannerInterval);
+    autoScannerInterval = setInterval(() => {
+        runAutoTaskScanner(chatId).catch((error) =>
+            bot.sendMessage(chatId, `[RADAR ERROR] ${error.message}`).catch(() => {})
+        );
+    }, 90000);
+});
+
+// While Task Mode is active, a bare 2- or 3-digit message is forwarded to
+// the existing single-strike handler. Pairing and other flows remain separate.
+bot.on('message', (msg) => {
+    const chatId = msg.chat.id.toString();
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId || !taskModeActive || !msg.text || msg.text.startsWith('/')) return;
+    const suffix = msg.text.trim();
+    if (!/^\d{2,3}$/.test(suffix)) return;
+    if (taskModeTimer) clearTimeout(taskModeTimer);
+    taskModeTimer = setTimeout(() => {
+        taskModeActive = false;
+        bot.sendMessage(chatId, '[SYSTEM] Task Mode automatically ended after 30 minutes of inactivity.').catch(() => {});
+    }, 30 * 60 * 1000);
+    bot.processUpdate({
+        update_id: Math.floor(Math.random() * 1000000),
+        message: { ...msg, text: `/task ${suffix}` }
+    });
+});
+
 // MUSIC FINDER — reply to a Telegram audio, voice note, or video with /find.
 // AudD performs audio fingerprint recognition. Set AUDD_API_TOKEN in the runtime environment.
 const TELEGRAM_FIND_MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;
@@ -2895,7 +2938,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
         const dollarsEarnedText = `$${(totalPoints / WSJOBS_POINTS_PER_DOLLAR).toFixed(2)} (${totalPoints.toLocaleString()} points)`;
         await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nVerified successful tabs: ${totalSuccess}\nEarned: ${dollarsEarnedText}\nPer Successful Task: ${pointsPerTaskText}\nBalance: ${formattedBalance}\n\nLast tab feedback:\n${finalFeedbackSummary}`);
 
-        const finalSnap = await masterPage.screenshot({ type: 'png' }).catch(() => null);
+        const finalSnap = await masterPage.screenshot({ type: 'png', timeout: 60000 }).catch(() => null);
 
         if (!finalSnap) {
             await bot.sendMessage(chatId, `[SYSTEM] Strike Protocol Complete. Screenshot capture timed out; final balance: ${formattedBalance}.`);
@@ -3409,7 +3452,7 @@ async function runWsjobsWithdrawalTask(msg) {
 
         const finalBalance = await readWsjobsCurrentBalancePuppeteer(masterPage);
         const balanceText = formatWsjobsPointsBalance(finalBalance);
-        const finalSnap = await masterPage.screenshot({ type: 'png' }).catch(() => null);
+        const finalSnap = await masterPage.screenshot({ type: 'png', timeout: 60000 }).catch(() => null);
 
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
         const completionText = `[SUCCESS] Mass Withdrawal Strike (${TOTAL_TABS} Tabs) submitted.\nBalance: ${balanceText}${refreshError ? `\nAccount refresh note: ${refreshError}` : ''}`;
@@ -3433,7 +3476,7 @@ async function runWsjobsWithdrawalTask(msg) {
         await bot.sendMessage(chatId, `[WITHDRAW ERROR] ${err.message}`).catch(() => {});
 
         try {
-            const errSnap = await pages[0]?.screenshot({ type: 'png' }).catch(() => null);
+            const errSnap = await pages[0]?.screenshot({ type: 'png', timeout: 60000 }).catch(() => null);
             if (errSnap) {
                 await bot.sendPhoto(chatId, errSnap, { caption: `[WITHDRAW ERROR] Chrome screen state at failure.\n${err.message}` }).catch(() => {});
             }
