@@ -2971,7 +2971,9 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
 });
 
 
-// Matches exactly: /task <number>
+;
+                    
+  // Matches exactly: /task <number>
 bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
@@ -3039,6 +3041,20 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
 
             await delay(1000);
 
+            // Fetch True Starting Balance
+            const startingPoints = await masterPage.evaluate(() => {
+                const match = document.body.innerText.match(/(\d+)\s*Today Points/i);
+                if (match) return parseInt(match[1], 10);
+                
+                const els = Array.from(document.querySelectorAll('*'));
+                const tpLabel = els.find(el => el.innerText?.trim() === 'Today Points');
+                if (tpLabel && tpLabel.parentElement) {
+                    const numText = tpLabel.parentElement.innerText.replace(/[^\d]/g, '');
+                    if (numText) return parseInt(numText, 10);
+                }
+                return 0;
+            });
+
             // BULLETPROOF SCAN: Climb the DOM tree to find the phone number
             const targetCount = await masterPage.evaluate((suffix) => {
                 const allSendBtns = Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
@@ -3048,7 +3064,7 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
                 for (let btn of allSendBtns) {
                     let curr = btn;
                     let matched = false;
-                    for (let i = 0; i < 8; i++) { // Climb up to 8 parent levels
+                    for (let i = 0; i < 8; i++) { 
                         if (curr && curr.innerText?.includes(suffix)) {
                             matched = true;
                             break;
@@ -3086,12 +3102,12 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
                     .some(el => /Send Task|SEND/i.test(el.innerText?.trim()));
             }, { timeout: 15000 }).catch(()=>{})));
             
-            await delay(1000); 
+            await delay(1500); 
 
-            // BULLETPROOF ASSIGN & CLICK: Claim 1 number per tab
-            await updateStatus(`[SYSTEM] Loop ${loopCount}: Claiming 1 number per tab...`);
-            await Promise.all(activePages.map(async (p, idx) => {
-                await p.evaluate((suffix, index) => {
+            // CLAIM NUMBERS & LOG WHO TOOK WHAT
+            await updateStatus(`[SYSTEM] Loop ${loopCount}: Claiming targets...`);
+            const claimedNumbers = await Promise.all(activePages.map(async (p, idx) => {
+                return await p.evaluate((suffix, index) => {
                     const btns = Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
                         .filter(el => /Send Task|SEND/i.test(el.innerText?.trim()) && el.offsetHeight > 0);
                     
@@ -3109,23 +3125,32 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
                         
                         if (matched) {
                             if (matches === index) { 
+                                // Extract the specific number being clicked
+                                const textMatch = curr.innerText.match(/\+\d{8,15}/);
+                                const foundNumber = textMatch ? textMatch[0] : `Suffix ${suffix}`;
+                                
                                 btn.click(); 
                                 btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                                return; 
+                                return foundNumber; 
                             }
                             matches++;
                         }
                     }
+                    return "Unknown";
                 }, targetSuffix, idx);
             }));
 
+            // WAIT FOR ALL CONFIRM MODALS TO BE READY
+            await updateStatus(`[SYSTEM] Loop ${loopCount}: Synchronizing Confirmation Modals...`);
             await Promise.all(activePages.map(p => p.waitForFunction(() => {
                 return Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
                     .some(el => /confirm/i.test(el.innerText?.trim()));
-            }, { timeout: 8000 }).catch(()=>{})));
+            }, { timeout: 15000 }).catch(()=>{})));
 
-            // SIMULTANEOUS MICROSECOND STRIKE on the Confirm Button
-            await updateStatus(`[SYSTEM] Loop ${loopCount}: Tabs ready! Clicking Confirm at exact microseconds...`);
+            await delay(1000); // Give modals a split second to animate in fully
+
+            // SIMULTANEOUS MICROSECOND STRIKE 
+            await updateStatus(`[SYSTEM] Loop ${loopCount}: STRIKING CONFIRM SIMULTANEOUSLY...`);
             await Promise.all(activePages.map(p => p.evaluate(() => {
                 const btns = Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
                     .filter(el => /confirm/i.test(el.innerText?.trim()) && el.offsetHeight > 0);
@@ -3137,46 +3162,44 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
                 }
             })));
 
-            // Site Feedback Check
-            await updateStatus(`[SYSTEM] Loop ${loopCount}: Waiting for site feedback...`);
-            const feedbackResults = await Promise.all(activePages.map(p => p.evaluate(() => {
-                return new Promise(resolve => {
-                    let attempts = 0;
-                    const interval = setInterval(() => {
-                        attempts++;
-                        const text = document.body.innerText;
-                        
-                        if (text.includes('temporarily unable to send')) {
-                            clearInterval(interval);
-                            resolve('error');
-                        } 
-                        else if (text.includes('Send successful') || text.includes('Points have been credited')) {
-                            clearInterval(interval);
-                            resolve('success');
-                        } 
-                        else if (attempts > 50) {
-                            clearInterval(interval);
-                            resolve('timeout');
-                        }
-                    }, 200);
-                });
-            })));
+            // WAIT FOR BACKEND TO PROCESS (No more DOM polling for toasts)
+            await updateStatus(`[SYSTEM] Loop ${loopCount}: Processing on backend. Waiting 8 seconds...`);
+            await delay(8000); 
 
-            let loopSuccesses = 0;
-            let loopErrors = 0;
-            feedbackResults.forEach(res => {
-                if (res === 'success') loopSuccesses++;
-                else if (res === 'error') loopErrors++;
+            // REFRESH MASTER PAGE TO GET TRUE BALANCE
+            await updateStatus(`[SYSTEM] Loop ${loopCount}: Refreshing page to fetch true accounting data...`);
+            await masterPage.reload({ waitUntil: 'domcontentloaded' });
+            await delay(4000); // Wait for numbers to render
+
+            const endingPoints = await masterPage.evaluate(() => {
+                const match = document.body.innerText.match(/(\d+)\s*Today Points/i);
+                if (match) return parseInt(match[1], 10);
+                
+                const els = Array.from(document.querySelectorAll('*'));
+                const tpLabel = els.find(el => el.innerText?.trim() === 'Today Points');
+                if (tpLabel && tpLabel.parentElement) {
+                    const numText = tpLabel.parentElement.innerText.replace(/[^\d]/g, '');
+                    if (numText) return parseInt(numText, 10);
+                }
+                return 0;
             });
 
-            totalSuccess += loopSuccesses;
-            totalPoints += (loopSuccesses * 520);
+            // EXACT MATH ACCOUNTING
+            const loopPointsEarned = endingPoints - startingPoints;
+            let loopSuccesses = Math.floor(loopPointsEarned / 520);
+            
+            // Failsafe: if the balance didn't change but it actually sent, it prevents negatives
+            if (loopSuccesses < 0) loopSuccesses = 0; 
 
-            await updateStatus(`[SYSTEM] Loop ${loopCount} Result: ${loopSuccesses} out of ${activeTabsCount} sent successfully.`);
+            totalSuccess += loopSuccesses;
+            totalPoints += loopPointsEarned;
+
+            const targetsClaimedStr = claimedNumbers.join('\n');
+            await updateStatus(`[SYSTEM] Loop ${loopCount} Result:\n\nTargets Hit:\n${targetsClaimedStr}\n\nSuccesses: ${loopSuccesses}/${activeTabsCount}\nPoints Earned: ${loopPointsEarned}`);
 
             // THE 1-SECOND LOOP LOGIC
             if (loopSuccesses === activeTabsCount && activeTabsCount > 0) {
-                await updateStatus(`[SYSTEM] All sent perfectly! Waiting 1 second and restarting action...`);
+                await updateStatus(`[SYSTEM] Flawless victory! Waiting 1 second and restarting...`);
                 await delay(1000);
                 loopCount++;
             } else {
@@ -3189,7 +3212,7 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
         const finalSnap = await masterPage.screenshot({ type: 'png' });
         
         await bot.sendPhoto(chatId, finalSnap, { 
-            caption: `*Strike Protocol Complete* ⚡\nSuffix: \`${targetSuffix}\`\nSuccesses: \`${totalSuccess}\`\nPoints Earned: \`${totalPoints}\``,
+            caption: `*Strike Protocol Complete* ⚡\nSuffix: \`${targetSuffix}\`\nTotal Successes: \`${totalSuccess}\`\nPoints Earned: \`${totalPoints}\``,
             parse_mode: 'Markdown'
         });
         
@@ -3203,6 +3226,7 @@ bot.onText(/^\/task\s+(\d+)/i, async (msg, match) => {
         }
     }
 });
+                  
 
 
 
