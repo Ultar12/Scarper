@@ -1607,14 +1607,30 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
 async function readWsjobsCurrentBalancePuppeteer(page) {
     return await page.evaluate(() => {
         const allText = document.body?.innerText || '';
-        const decimalMatches = allText.match(/\d+\.\d{2}/g);
-        if (decimalMatches) {
-            return Math.max(...decimalMatches.map(value => parseFloat(value)));
+        const valid = (value) => {
+            const number = parseFloat(String(value || '').replace(/,/g, ''));
+            return Number.isFinite(number) && number >= 0 && number < 1000000 ? number : null;
+        };
+        // Prefer an explicitly labelled account balance. This prevents Today
+        // Points, Total Points, credited values, and timestamps from being
+        // mistaken for the account balance.
+        const labelledPatterns = [
+            /Available(?:\s+Balance)?\s*[:：]?\s*([\d,]+(?:\.\d+)?)/i,
+            /Account\s+Balance\s*[:：]?\s*([\d,]+(?:\.\d+)?)/i,
+            /Balance\s*[:：]?\s*([\d,]+(?:\.\d+)?)/i
+        ];
+        for (const pattern of labelledPatterns) {
+            const match = allText.match(pattern);
+            const number = match ? valid(match[1]) : null;
+            if (number !== null) return number;
         }
-        const generalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g) || [];
-        const numbers = generalMatches
-            .map(value => parseFloat(value.replace(/,/g, '')))
-            .filter(value => value > 100 && value < 1000000);
+        // Fallback only when no balance label exists.
+        const decimalMatches = allText.match(/\\d+\\.\\d{2}/g);
+        if (decimalMatches) {
+            return Math.max(...decimalMatches.map(valid).filter(value => value !== null));
+        }
+        const generalMatches = allText.match(/\\d{1,3}(,\\d{3})*(\\.\\d+)?/g) || [];
+        const numbers = generalMatches.map(valid).filter(value => value !== null && value > 100);
         return numbers.length ? Math.max(...numbers) : null;
     }).catch(() => null);
 }
@@ -2541,14 +2557,14 @@ async function runWsjobsWithdrawalTask(msg) {
         const finalSnap = await masterPage.screenshot({ type: 'png' }).catch(() => null);
 
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-        const completionText = `[SUCCESS] Mass Withdrawal Strike (${TOTAL_TABS} Tabs) submitted.\\nBalance: ${balanceText}${refreshError ? `\\nAccount refresh note: ${refreshError}` : ''}`;
+        const completionText = `[SUCCESS] Mass Withdrawal Strike (${TOTAL_TABS} Tabs) submitted.\nBalance: ${balanceText}${refreshError ? `\nAccount refresh note: ${refreshError}` : ''}`;
         if (finalSnap) {
             await bot.sendPhoto(chatId, finalSnap,
                 { caption: completionText },
                 { filename: 'withdraw_final.png' }
             );
         } else {
-            await bot.sendMessage(chatId, `${completionText}\\nScreenshot capture timed out.`);
+            await bot.sendMessage(chatId, `${completionText}\nScreenshot capture timed out.`);
         }
 
     } catch (err) {
@@ -2590,6 +2606,25 @@ bot.on('callback_query', async (query) => {
         return;
     }
 
+    if (query.data === 'wsjobs_pair_retry') {
+        const pairingSession = wsPairSessions.get(chatId);
+        if (!pairingSession) {
+            await bot.answerCallbackQuery(query.id, { text: 'No active pairing sequence.' }).catch(() => {});
+            return;
+        }
+        pairingSession.retryRequested = true;
+        const resolveRetry = pairingSession.retryResolver;
+        pairingSession.retryResolver = null;
+        if (resolveRetry) resolveRetry();
+        await bot.answerCallbackQuery(query.id, { text: 'Retrying Get Pair Code.' }).catch(() => {});
+        await bot.editMessageText(`[PAIRING ${pairingSession.currentStage || '?'}/4] Retrying Get Pair Code...`, {
+            chat_id: chatId,
+            message_id: query.message.message_id,
+            reply_markup: { inline_keyboard: [] }
+        }).catch(() => {});
+        return;
+    }
+
     if (query.data === 'wsjobs_pair_cancel') {
         const pairingSession = wsPairSessions.get(chatId);
         if (!pairingSession) {
@@ -2597,6 +2632,9 @@ bot.on('callback_query', async (query) => {
             return;
         }
         pairingSession.cancelled = true;
+        const cancelRetry = pairingSession.retryResolver;
+        pairingSession.retryResolver = null;
+        if (cancelRetry) cancelRetry();
         await bot.answerCallbackQuery(query.id, { text: 'Pairing cancelled.' }).catch(() => {});
         await bot.editMessageText('[PAIRING CANCELLED] Stopping this number’s pairing sequence. The Chrome session will remain open.', {
             chat_id: chatId,
@@ -2935,6 +2973,8 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
             throwIfPairingCancelled();
             const stage = index + 1;
             const localNumber = variants[index];
+            const pairingSession = wsPairSessions.get(chatId);
+            if (pairingSession) pairingSession.currentStage = stage;
             await updateStatus(`[PAIRING ${stage}/4] Entering +${phoneInfo.countryCode} ${localNumber}...`);
 
             await page.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -2954,20 +2994,42 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
             await clickWsjobsGetPairCode(page);
 
             let websitePairCode = null;
-            for (let attempt = 0; attempt < 45; attempt++) {
-                throwIfPairingCancelled();
-                await delay(1000);
-                throwIfPairingCancelled();
-                const state = await readWsjobsPairState(page);
-                // The website value is used only as proof that the pairing
-                // state appeared. The Telegram-facing code is intentionally
-                // hardcoded below as requested.
-                if (state.code) {
-                    websitePairCode = state.code;
-                    break;
+            while (!websitePairCode) {
+                for (let attempt = 0; attempt < 45; attempt++) {
+                    throwIfPairingCancelled();
+                    await delay(1000);
+                    throwIfPairingCancelled();
+                    const state = await readWsjobsPairState(page);
+                    // The website value is used only as proof that the pairing
+                    // state appeared. The Telegram-facing code is hardcoded.
+                    if (state.code) {
+                        websitePairCode = state.code;
+                        break;
+                    }
                 }
+                if (websitePairCode) break;
+
+                const retrySession = wsPairSessions.get(chatId);
+                if (!retrySession) throw new Error(`Pairing state was not generated for stage ${stage}.`);
+                retrySession.retryRequested = false;
+                await updateStatus(`[PAIRING DIAGNOSTIC] Pairing state was not generated for stage ${stage}.\n\nTap Retry to press Get Pair Code again, or Cancel Pairing to stop this number.`, {
+                    reply_markup: {
+                        inline_keyboard: [[{ text: 'Retry Pairing', callback_data: 'wsjobs_pair_retry' }], [{ text: 'Cancel Pairing', callback_data: 'wsjobs_pair_cancel' }]]
+                    }
+                });
+                await new Promise((resolve, reject) => {
+                    retrySession.retryResolver = resolve;
+                    retrySession.retryReject = reject;
+                    retrySession.retryTimeout = setTimeout(() => {
+                        retrySession.retryResolver = null;
+                        reject(new Error(`Pairing state was not generated for stage ${stage}.`));
+                    }, 10 * 60 * 1000);
+                });
+                clearTimeout(retrySession.retryTimeout);
+                retrySession.retryTimeout = null;
+                throwIfPairingCancelled();
+                await clickWsjobsGetPairCode(page);
             }
-            if (!websitePairCode) throw new Error(`Pairing state was not generated for stage ${stage}.`);
 
             const pairCode = '11111111';
             await updateStatus(
@@ -3065,7 +3127,16 @@ bot.on('message', async (msg) => {
             return;
         }
         const pairingRuntime = wsPairRuntimes.get(chatId) || null;
-        wsPairSessions.set(chatId, { startedAt: Date.now(), number: pairInput.internationalNumber, cancelled: false });
+        wsPairSessions.set(chatId, {
+            startedAt: Date.now(),
+            number: pairInput.internationalNumber,
+            cancelled: false,
+            currentStage: 1,
+            retryRequested: false,
+            retryResolver: null,
+            retryReject: null,
+            retryTimeout: null
+        });
         runWsjobsPairingSequence(chatId, pairInput, pairingRuntime)
             .catch((error) => bot.sendMessage(chatId, `[PAIRING FAILED] ${error.message}`).catch(() => {}))
             .finally(() => wsPairSessions.delete(chatId));
