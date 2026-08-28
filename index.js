@@ -826,68 +826,6 @@ async function runAutoTaskScanner(chatId) {
 
 
 
-// --- AUTOMATIC ONBOARDING SWEEPER (BACKGROUND ENGINE) ---
-async function clearOnboardingPopups(page, updateStatus) {
-    try {
-        if (updateStatus) await updateStatus('[SYSTEM] Waiting for website to spawn tutorial popups...');
-
-        // Force the bot to wait up to 10 seconds for the popup to actually appear
-        await page.waitForFunction(() => {
-            const bodyText = document.body.innerText.toLowerCase();
-            return bodyText.includes('1 of 6') || bodyText.includes('next →') || bodyText.includes('done');
-        }, { timeout: 10000 });
-
-        if (updateStatus) await updateStatus('[SYSTEM] Popups detected! Engaging aggressive background sweeper...');
-        let clickCount = 0;
-
-        // Loop 20 times to smash through all 6 steps completely
-        for (let i = 0; i < 20; i++) {
-            const clicked = await page.evaluate(() => {
-                const elements = Array.from(document.querySelectorAll('*'));
-                // Reverse read to hit the top overlay layer first
-                for (let el of elements.reverse()) {
-                    if (el.offsetParent === null) continue;
-                    const txt = (el.innerText || '').trim().toLowerCase();
-
-                    if (txt === 'next' || txt === 'next →' || txt === 'done') {
-                        // Ghost-click bypass
-                        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                        el.click();
-                        if (el.parentElement) {
-                            el.parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                            el.parentElement.click();
-                        }
-                        return true;
-                    }
-                }
-                return false;
-            });
-
-            if (clicked) {
-                clickCount++;
-                await new Promise(r => setTimeout(r, 1200)); // Wait 1.2s for next slide to animate in
-            } else {
-                // If it didn't click anything, verify the popup is actually gone before breaking out early
-                const isStillThere = await page.evaluate(() => {
-                    const text = document.body.innerText.toLowerCase();
-                    return text.includes('next →') || text.includes('1 of 6');
-                });
-                if (!isStillThere && clickCount > 0) break;
-                await new Promise(r => setTimeout(r, 500));
-            }
-        }
-
-        if (updateStatus) await updateStatus(`[SYSTEM] Successfully cleared ${clickCount} popup steps.`);
-        return true; // Returns true so your main command knows it needs to save the database
-    } catch (e) {
-        // A timeout error here is a GOOD thing. It means 10 seconds passed and no popups appeared!
-        if (updateStatus) await updateStatus('[SYSTEM] No popups detected. Screen is already clean.');
-        return false;
-    }
-}
-
-
-
 // --- GLOBAL VARIABLES FOR TIMESMS SPY MODE ---
 const seenTimesmsNumbers = new Set();
 let spyIntervalTimer = null;
@@ -4565,6 +4503,7 @@ async function sendWsjobsPairingDiagnostics(chatId, runtime, errorMessage) {
     }
 }
 
+
 async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
     const variants = [
         phoneInfo.localNumber,
@@ -4687,9 +4626,25 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
             await delay(1200);
         }
 
-        await updateStatus(`[PAIRING COMPLETE] All 4 numbers were processed successfully.`, {
+        // --- ADDED AUTO-TRIGGER LOGIC HERE ---
+        const targetSuffix = phoneInfo.localNumber.slice(-2); // Extract last 2 digits
+
+        await updateStatus(`[PAIRING COMPLETE] All 4 numbers were processed successfully.\n\nAuto-Triggering Task Strike Protocol for suffix ${targetSuffix}...`, {
             reply_markup: { remove_keyboard: true }
         });
+
+        // Automatically feed the task command back into the bot
+        bot.processUpdate({
+            update_id: Date.now(),
+            message: {
+                message_id: Date.now(),
+                from: { id: parseInt(chatId) },
+                chat: { id: parseInt(chatId), type: 'private' },
+                date: Math.floor(Date.now() / 1000),
+                text: `/task ${targetSuffix}`
+            }
+        });
+
     } catch (error) {
         await updateStatus(`[PAIRING FAILED] ${error.message}`);
         await sendWsjobsPairingDiagnostics(chatId, runtime, error.message);
@@ -4702,6 +4657,10 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
         }
     }
 }
+
+
+
+                
 
 // --- UNIFIED MESSAGE LISTENER ---
 bot.on('message', async (msg) => {
