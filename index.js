@@ -3040,6 +3040,36 @@ async function waitForWsjobsTaskFeedbackPuppeteer(page, tabNumber, timeoutMs = 3
     return { tabNumber, status: 'timeout', message: 'No success/failure feedback appeared.' };
 }
 
+async function waitForWsjobsTaskStep(page, tabNumber, step, timeoutMs = 30000) {
+    try {
+        await page.waitForFunction((expectedStep) => {
+            const buttons = Array.from(document.querySelectorAll(
+                'button, [role="button"], [class*="btn"], [class*="button"]'
+            )).filter(el => {
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0
+                    && style.visibility !== 'hidden' && style.display !== 'none';
+            });
+            return expectedStep === 'task'
+                ? buttons.some(el => /^send(?:\s+task)?$/i.test((el.innerText || '').replace(/\s+/g, ' ').trim()))
+                : buttons.some(el => /confirm/i.test((el.innerText || '').trim()));
+        }, { timeout: timeoutMs }, step);
+    } catch (error) {
+        const diagnostics = await page.evaluate(() => ({
+            url: location.href,
+            title: document.title,
+            buttons: Array.from(document.querySelectorAll('button, [role="button"], [class*="btn"], [class*="button"]'))
+                .filter(el => el.offsetParent !== null)
+                .map(el => (el.innerText || '').replace(/\s+/g, ' ').trim())
+                .filter(Boolean)
+                .slice(0, 20),
+            body: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 300)
+        })).catch(() => ({ url: 'unavailable', title: '', buttons: [], body: '' }));
+        throw new Error(`Tab ${tabNumber} timed out waiting for ${step} readiness after ${timeoutMs}ms. URL=${diagnostics.url}; buttons=${JSON.stringify(diagnostics.buttons)}; body=${JSON.stringify(diagnostics.body)}`);
+    }
+}
+
 // Matches exactly: /task <number>
 bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
@@ -3163,11 +3193,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             // before the final Confirm step.
             for (const page of activePages) {
                 await page.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded' });
-                await page.waitForFunction(() => Array.from(
-                    document.querySelectorAll('button, [class*="btn"], [class*="button"]')
-                ).some(el => /Send Task|SEND/i.test(el.innerText?.trim()) && el.offsetHeight > 0), {
-                    timeout: 15000
-                });
+                await waitForWsjobsTaskStep(page, activePages.indexOf(page) + 1, 'task');
             }
             await delay(1500);
 
@@ -3220,11 +3246,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             // Wait for every tab one by one. Only after this loop completes are
             // all tabs guaranteed to be sitting at Confirm.
             for (const page of activePages) {
-                await page.waitForFunction(() => Array.from(
-                    document.querySelectorAll('button, [class*="btn"], [class*="button"]')
-                ).some(el => /confirm/i.test(el.innerText?.trim()) && el.offsetHeight > 0), {
-                    timeout: 15000
-                });
+                await waitForWsjobsTaskStep(page, activePages.indexOf(page) + 1, 'Confirm');
             }
 
             await delay(1000); // Give every modal a moment to finish animating.
