@@ -4207,6 +4207,44 @@ async function clickWsjobsGetPairCode(page) {
     if (!clicked) throw new Error('Get Pair Code button was not found or is disabled.');
 }
 
+async function startWsjobsPairingRecording(runtime) {
+    if (!runtime?.page || runtime.recorder) return;
+    const videoDir = path.join(__dirname, 'videos');
+    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir, { recursive: true });
+    runtime.videoPath = path.join(videoDir, `wsjobs_pairing_${Date.now()}.mp4`);
+    runtime.recorder = new PuppeteerScreenRecorder(runtime.page, { fps: 30 });
+    await runtime.recorder.start(runtime.videoPath);
+}
+
+async function sendWsjobsPairingDiagnostics(chatId, runtime, errorMessage) {
+    if (!runtime) return;
+    const screenshot = runtime.page
+        ? await runtime.page.screenshot({ type: 'png' }).catch(() => null)
+        : null;
+
+    if (runtime.recorder) {
+        await runtime.recorder.stop().catch(() => {});
+        runtime.recorder = null;
+    }
+
+    const videoPath = runtime.videoPath;
+    runtime.videoPath = null;
+
+    if (screenshot) {
+        await bot.sendPhoto(chatId, screenshot, {
+            caption: `[PAIRING DIAGNOSTIC] ${errorMessage}`
+        }, { filename: 'wsjobs_pairing_error.png' }).catch(() => {});
+    }
+    if (videoPath && fs.existsSync(videoPath)) {
+        await bot.sendVideo(chatId, videoPath, {
+            caption: `[PAIRING DIAGNOSTIC] Chrome session recording: ${errorMessage}`
+        }).catch(() => {});
+        setTimeout(() => {
+            try { fs.unlinkSync(videoPath); } catch {}
+        }, 5000);
+    }
+}
+
 async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
     const variants = [
         phoneInfo.localNumber,
@@ -4235,6 +4273,8 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
             runtime = { ...(runtime || {}), browser, page, createdAt: Date.now() };
             wsPairRuntimes.set(chatId, runtime);
         }
+
+        await startWsjobsPairingRecording(runtime);
 
         await updateStatus(reusedRuntime
             ? '[PAIRING] Reusing the existing Chrome session on the Wsjobs task page...'
@@ -4324,6 +4364,7 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
         });
     } catch (error) {
         await updateStatus(`[PAIRING FAILED] ${error.message}`);
+        await sendWsjobsPairingDiagnostics(chatId, runtime, error.message);
     } finally {
         if (runtime && browser && page && browser.isConnected?.() !== false && !page.isClosed?.()) {
             runtime.browser = browser;
