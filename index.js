@@ -2491,21 +2491,33 @@ async function runWsjobsWithdrawalTask(msg) {
             }
         }));
 
-        await delay(6000);
+        await delay(2000);
 
         // ==========================================
-        // 5. SUCCESS REFRESH, CAPTURE & DELIVERY
+        // 5. COMPLETION, BALANCE CAPTURE & DELIVERY
         // ==========================================
-        await bot.editMessageText(`[SYSTEM] Strike complete. Refreshing account page...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+        await bot.editMessageText(`[SYSTEM] Strike complete. Capturing balance and screenshot...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
 
-        await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
-        await delay(5000);
+        let refreshError = null;
+        try {
+            await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), {
+                waitUntil: 'domcontentloaded',
+                timeout: 15000
+            });
+            await delay(1500);
+        } catch (error) {
+            refreshError = error.message;
+        }
 
+        const finalBalance = await readWsjobsCurrentBalancePuppeteer(masterPage);
+        const balanceText = finalBalance === null
+            ? 'Unavailable'
+            : finalBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         const finalSnap = await masterPage.screenshot({ type: 'png' });
 
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
         await bot.sendPhoto(chatId, finalSnap,
-            { caption: `[SUCCESS] Mass Withdrawal Strike (${TOTAL_TABS} Tabs) submitted.` },
+            { caption: `[SUCCESS] Mass Withdrawal Strike (${TOTAL_TABS} Tabs) submitted.\\nBalance: ${balanceText}${refreshError ? `\\nAccount refresh note: ${refreshError}` : ''}` },
             { filename: 'withdraw_final.png' }
         );
 
