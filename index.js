@@ -2386,6 +2386,8 @@ async function runWsjobsWithdrawalTask(msg) {
 
     let browser = null;
     let pages = [];
+    let withdrawalRecorder = null;
+    let withdrawalVideoPath = null;
 
     try {
         browser = await launchScraperBrowser();
@@ -2397,6 +2399,9 @@ async function runWsjobsWithdrawalTask(msg) {
         await masterPage.setViewport({ width: 412, height: 915 });
         pages.push(masterPage);
         await injectWsjobsHumanSniper(masterPage);
+        withdrawalVideoPath = path.join(videoDir, `wsjobs_withdraw_${Date.now()}.mp4`);
+        withdrawalRecorder = new PuppeteerScreenRecorder(masterPage, { fps: 30 });
+        await withdrawalRecorder.start(withdrawalVideoPath);
 
         await bot.editMessageText('[SYSTEM] Navigating to Account & Logging in...', { chat_id: chatId, message_id: statusMsg.message_id });
         await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
@@ -2434,7 +2439,7 @@ async function runWsjobsWithdrawalTask(msg) {
             throw new Error(`Balance ${rawBalance} is too low.`);
         }
 
-        await bot.editMessageText(`[SYSTEM] Target Acquired: ${targetAmount.toLocaleString()}. Processing ${TOTAL_TABS} tabs sequentially...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+        await bot.editMessageText(`[SYSTEM] Processing... Target ${targetAmount.toLocaleString()} across ${TOTAL_TABS} Chrome tabs.`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
 
         // ==========================================
         // 3. SEQUENTIAL TAB PREPARATION (ONE BY ONE)
@@ -2558,6 +2563,10 @@ async function runWsjobsWithdrawalTask(msg) {
 
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
         const completionText = `[SUCCESS] Mass Withdrawal Strike (${TOTAL_TABS} Tabs) submitted.\nBalance: ${balanceText}${refreshError ? `\nAccount refresh note: ${refreshError}` : ''}`;
+        if (withdrawalRecorder) {
+            await withdrawalRecorder.stop().catch(() => {});
+            withdrawalRecorder = null;
+        }
         if (finalSnap) {
             await bot.sendPhoto(chatId, finalSnap,
                 { caption: completionText },
@@ -2569,15 +2578,27 @@ async function runWsjobsWithdrawalTask(msg) {
 
     } catch (err) {
         console.log(`[WITHDRAW ERROR]: ${err.message}`);
-        await bot.sendMessage(chatId, `[WITHDRAW ERROR]: ${err.message}`).catch(() => {});
+        if (withdrawalRecorder) await withdrawalRecorder.stop().catch(() => {});
+        withdrawalRecorder = null;
+        await bot.sendMessage(chatId, `[WITHDRAW ERROR] ${err.message}`).catch(() => {});
 
         try {
             const errSnap = await pages[0]?.screenshot({ type: 'png' }).catch(() => null);
             if (errSnap) {
-                await bot.sendPhoto(chatId, errSnap, { caption: `[DIAGNOSTIC] Chrome screen state at failure.` }).catch(() => {});
+                await bot.sendPhoto(chatId, errSnap, { caption: `[WITHDRAW ERROR] Chrome screen state at failure.\n${err.message}` }).catch(() => {});
             }
         } catch (e) {}
+        if (withdrawalVideoPath && fs.existsSync(withdrawalVideoPath)) {
+            await bot.sendVideo(chatId, withdrawalVideoPath, {
+                caption: `[WITHDRAW ERROR] Recorded Chrome session.\n${err.message}`
+            }).catch(() => {});
+            setTimeout(() => { try { fs.unlinkSync(withdrawalVideoPath); } catch {} }, 5000);
+        }
     } finally {
+        if (withdrawalRecorder) await withdrawalRecorder.stop().catch(() => {});
+        if (withdrawalVideoPath && fs.existsSync(withdrawalVideoPath)) {
+            setTimeout(() => { try { fs.unlinkSync(withdrawalVideoPath); } catch {} }, 5000);
+        }
         for (const p of pages) await p.close().catch(() => {});
         if (browser) await browser.close().catch(() => {});
     }
@@ -2994,6 +3015,7 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
             await clickWsjobsGetPairCode(page);
 
             let websitePairCode = null;
+            let automaticGenerationRetries = 0;
             while (!websitePairCode) {
                 for (let attempt = 0; attempt < 45; attempt++) {
                     throwIfPairingCancelled();
@@ -3008,6 +3030,13 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
                     }
                 }
                 if (websitePairCode) break;
+
+                if (automaticGenerationRetries < 2) {
+                    automaticGenerationRetries++;
+                    await updateStatus(`[PAIRING ${stage}/4] Pairing state was not generated. Automatically retrying Get Pair Code (${automaticGenerationRetries}/2)...`);
+                    await clickWsjobsGetPairCode(page);
+                    continue;
+                }
 
                 const retrySession = wsPairSessions.get(chatId);
                 if (!retrySession) throw new Error(`Pairing state was not generated for stage ${stage}.`);
