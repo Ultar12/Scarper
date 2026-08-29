@@ -3138,10 +3138,6 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             throw new Error('Could not read the current account balance after the task finished.');
         }
         const formattedBalance = formatWsjobsPointsBalance(currentBalance);
-        if (autoWithdrawEnabled && Number(currentBalance) >= 10000) {
-            console.log(`[AUTO WITHDRAW] Enabled and balance threshold reached: ${currentBalance} points.`);
-            await runWsjobsWithdrawalTask({ chat: { id: chatId } }, { silent: true });
-        }
         const finalFeedbackSummary = feedbackHistory.length
             ? feedbackHistory.map((result, index) => `Loop ${result.loopNumber || '?'} Tab ${result.tabNumber}: ${result.status}`).join('\n')
             : 'No tab feedback recorded.';
@@ -3160,6 +3156,13 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             caption: `*Strike Protocol Complete*\nSuffix: \`${targetSuffix}\`\nVerified Successful Tabs: \`${totalSuccess}\`\nEarned: \`${dollarsEarnedText}\`\nPer Successful Task: \`${pointsPerTaskText}\`\nBalance: \`${formattedBalance}\`\n\nLast Tab Feedback:\n${finalFeedbackSummary}`,
             parse_mode: 'Markdown'
         });
+        }
+
+        // Send the completed task result first. Only after delivery do we
+        // trigger the optional silent withdrawal.
+        if (autoWithdrawEnabled && Number(currentBalance) >= 10000) {
+            console.log(`[AUTO WITHDRAW] Enabled and balance threshold reached: ${currentBalance} points.`);
+            await runWsjobsWithdrawalTask({ chat: { id: chatId } }, { silent: true });
         }
 
         await bot.deleteMessage(chatId, msgId).catch(() => {});
