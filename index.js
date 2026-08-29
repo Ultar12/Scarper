@@ -2890,8 +2890,11 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             }, targetSuffix);
 
             if (targetCount === 0) {
-                if (loopCount === 1) throw new Error(`Target ${targetSuffix} not found or buttons failed to load.`);
-                await updateStatus(`[SYSTEM] No more valid targets found for ${targetSuffix}. Ending loop.`);
+                const noTargetResult = { tabNumber: 0, status: 'offline', message: 'No task numbers available; target set is complete or offline.', loopNumber: loopCount };
+                lastFeedbackResults = [...lastFeedbackResults, noTargetResult];
+                feedbackHistory.push(noTargetResult);
+                finalTodayPoints = startingPoints;
+                await updateStatus(`[SYSTEM] No task numbers available for ${targetSuffix}. Ending loop and preparing final report.`);
                 break;
             }
 
@@ -2910,9 +2913,33 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
 
             // Synchronize preparation tab by tab. No parallel action happens
             // before the final Confirm step.
+            let noTaskAvailable = false;
             for (const page of activePages) {
                 await page.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded' });
-                await waitForWsjobsTaskStep(page, activePages.indexOf(page) + 1, 'task');
+                try {
+                    await waitForWsjobsTaskStep(page, activePages.indexOf(page) + 1, 'task');
+                } catch (error) {
+                    const accountScreen = await page.evaluate(() => {
+                        const text = document.body?.innerText || '';
+                        return /WhatsApp Account|Get Pair Code|You can link multiple WhatsApp numbers/i.test(text);
+                    }).catch(() => false);
+                    if (!accountScreen) throw error;
+                    const noTaskResult = {
+                        tabNumber: activePages.indexOf(page) + 1,
+                        status: 'offline',
+                        message: 'No task numbers available; target set is complete or offline.',
+                        loopNumber: loopCount
+                    };
+                    lastFeedbackResults = [...lastFeedbackResults, noTaskResult];
+                    feedbackHistory.push(noTaskResult);
+                    noTaskAvailable = true;
+                    break;
+                }
+            }
+            if (noTaskAvailable) {
+                finalTodayPoints = startingPoints;
+                await updateStatus(`[SYSTEM] No task numbers available on the task page. Ending loop and preparing final report.`);
+                break;
             }
             await delay(1500);
 
