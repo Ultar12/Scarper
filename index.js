@@ -699,7 +699,7 @@ const userState = {};
 
 
 // --- AUTOTASK CONTROL ---
-bot.onText(/^\/autotask(?:\s+(on|off))?$/i, async (msg, match) => {
+bot.onText(/^\/at(?:\s+(on|off))?$/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     const adminId = process.env.ADMIN_ID || '7710721646';
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
@@ -718,7 +718,7 @@ bot.onText(/^\/autotask(?:\s+(on|off))?$/i, async (msg, match) => {
 });
 
 // --- AUTOWITHDRAW CONTROL ---
-bot.onText(/^\/autowithdraw(?:\s+(on|off))?$/i, async (msg, match) => {
+bot.onText(/^\/aw(?:\s+(on|off))?$/i, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     const adminId = process.env.ADMIN_ID || '7710721646';
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
@@ -4192,7 +4192,7 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
         const targetSuffix = phoneInfo.localNumber.slice(-2);
 
         if (!autoTaskEnabled) {
-            await updateStatus('[PAIRING COMPLETE] All 4 numbers were processed successfully.\n\nAutoTask is OFF. Use /autotask on to start tasks automatically after pairing.', {
+            await updateStatus('[PAIRING COMPLETE] All 4 numbers were processed successfully.\n\nAutoTask is OFF. Use /at on to start tasks automatically after pairing.', {
                 reply_markup: { remove_keyboard: true }
             });
             return;
