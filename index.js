@@ -231,6 +231,15 @@ async function isPuppeteerBrowserHealthy(browser) {
     }
 }
 
+// All Wsjobs workflows share one Chromium process and use separate tabs.
+async function getSharedWsjobsBrowser() {
+    if (await isPuppeteerBrowserHealthy(globalTaskBrowser)) return globalTaskBrowser;
+    if (globalTaskBrowser) await globalTaskBrowser.close().catch(() => {});
+    globalTaskBrowser = await launchScraperBrowser();
+    console.log('[SYSTEM] Shared Wsjobs Chromium browser launched.');
+    return globalTaskBrowser;
+}
+
 // --- 1. HEROKU POSTGRESQL SETUP ---
 // Heroku requires SSL to be enabled but rejectUnauthorized set to false
 const pool = new Pool({
@@ -2805,14 +2814,9 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
     let loopCount = 1;
 
     try {
-        if (await isPuppeteerBrowserHealthy(globalTaskBrowser)) {
-            browser = globalTaskBrowser;
-            console.log('[TASK] Reusing shared Chrome browser for /task tabs.');
-        } else {
-            browser = await launchScraperBrowser();
-            ownsBrowser = true;
-            console.log('[TASK] Launched dedicated Chrome browser for direct /task.');
-        }
+        browser = await getSharedWsjobsBrowser();
+        ownsBrowser = false;
+        console.log('[TASK] Using shared Chrome browser for /task tabs.');
 
         // Human Sniper to automatically kill random popups/modals
         const injectHumanSniper = async (page) => {
@@ -3330,7 +3334,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
     let balanceErrorScreenshot = null;
 
     try {
-        wBrowser = await launchScraperBrowser();
+        wBrowser = await getSharedWsjobsBrowser();
         const balanceVideoDir = path.join(__dirname, 'videos');
         if (!fs.existsSync(balanceVideoDir)) fs.mkdirSync(balanceVideoDir, { recursive: true });
 
@@ -3411,7 +3415,7 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
         if (wPage && !balanceVideoPath) {
             balanceVideoPath = null;
         }
-        if (wBrowser) await wBrowser.close().catch(() => {});
+        if (wPage) await wPage.close().catch(() => {});
     }
 
     // --- 2. DIAGNOSTIC DELIVERY ---
@@ -3499,7 +3503,7 @@ async function runWsjobsWithdrawalTask(msg, { silent = false } = {}) {
     let withdrawalVideoPath = null;
 
     try {
-        browser = await launchScraperBrowser();
+        browser = await getSharedWsjobsBrowser();
 
         // ==========================================
         // 1. MASTER TAB BOOT & LOGIN
@@ -3710,7 +3714,10 @@ async function runWsjobsWithdrawalTask(msg, { silent = false } = {}) {
             setTimeout(() => { try { fs.unlinkSync(withdrawalVideoPath); } catch {} }, 5000);
         }
         for (const p of pages) await p.close().catch(() => {});
-        if (browser) await browser.close().catch(() => {});
+        // Keep the shared Chromium process alive; only this workflow's tabs close.
+        if (browser === globalTaskBrowser) {
+            console.log('[WITHDRAW] Closed withdrawal tabs; kept shared Chromium alive.');
+        }
     }
 }
 
@@ -4076,7 +4083,7 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
     try {
         const reusedRuntime = Boolean(browser && page && browser.isConnected?.() !== false && !page.isClosed?.());
         if (!reusedRuntime) {
-            browser = await launchScraperBrowser();
+            browser = await getSharedWsjobsBrowser();
             page = await browser.newPage();
             await page.setViewport({ width: 412, height: 915 });
             runtime = { ...(runtime || {}), browser, page, createdAt: Date.now() };
