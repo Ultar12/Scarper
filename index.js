@@ -326,6 +326,61 @@ pool.query(`
 
 
 
+// --- PERSISTENT TASK EARNINGS ---
+const earningsTableReady = pool.query(`
+    CREATE TABLE IF NOT EXISTS wstask_earnings (
+        id BIGSERIAL PRIMARY KEY,
+        earned_usd NUMERIC(12, 4) NOT NULL DEFAULT 0,
+        points INTEGER NOT NULL DEFAULT 0,
+        successful_tabs INTEGER NOT NULL DEFAULT 0,
+        suffix TEXT,
+        task_date TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS wstask_earnings_task_date_idx
+        ON wstask_earnings (task_date);
+`).catch((error) => {
+    console.error('[ERROR] Failed to initialize earnings DB:', error);
+});
+
+function getWsjobsDateKey(date = new Date()) {
+    return date.toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
+}
+
+async function recordWsjobsEarnings({ points, successfulTabs, suffix }) {
+    const numericPoints = Number(points);
+    if (!Number.isFinite(numericPoints) || numericPoints <= 0) return;
+    await earningsTableReady;
+    await pool.query(
+        `INSERT INTO wstask_earnings
+            (earned_usd, points, successful_tabs, suffix, task_date)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [numericPoints / WSJOBS_POINTS_PER_DOLLAR, Math.round(numericPoints), successfulTabs || 0, suffix || null, getWsjobsDateKey()]
+    );
+}
+
+async function readWsjobsEarningsSummary() {
+    await earningsTableReady;
+    const today = getWsjobsDateKey();
+    const yesterday = getWsjobsDateKey(new Date(Date.now() - 24 * 60 * 60 * 1000));
+    const result = await pool.query(
+        `SELECT
+            COALESCE(SUM(earned_usd) FILTER (WHERE task_date = $1), 0) AS today_usd,
+            COALESCE(SUM(earned_usd) FILTER (WHERE task_date = $2), 0) AS yesterday_usd,
+            COALESCE(SUM(points) FILTER (WHERE task_date = $1), 0) AS today_points,
+            COALESCE(SUM(successful_tabs) FILTER (WHERE task_date = $1), 0) AS today_sms,
+            COALESCE(SUM(earned_usd), 0) AS lifetime_usd
+         FROM wstask_earnings`,
+        [today, yesterday]
+    );
+    const row = result.rows[0] || {};
+    return {
+        todayUsd: Number(row.today_usd || 0),
+        yesterdayUsd: Number(row.yesterday_usd || 0),
+        lifetimeUsd: Number(row.lifetime_usd || 0)
+    };
+}
+
 const saveSessionToDB = async (platform, page) => {
     try {
         const cookies = await page.cookies();
@@ -592,6 +647,29 @@ let globalTaskBrowser = null;
 const userState = {};
 
 
+
+// --- SYSTEM STATS COMMAND ---
+bot.onText(/^\/stats$/i, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
+
+    try {
+        const earnings = await readWsjobsEarningsSummary();
+        const money = (value) => `$${Number(value || 0).toFixed(2)} USD`;
+        const statsText = [
+            '╭═══ 𝚂𝚈𝚂𝚃𝙴𝙼 𝚂𝚃𝙰𝚃𝚂 ════⊷',
+            `┃ ❃ Today's Earned: ${money(earnings.todayUsd)}`,
+            `┃ ❃ Yesterday's Earned: ${money(earnings.yesterdayUsd)}`,
+            `┃ ❃ Total Earned: ${money(earnings.lifetimeUsd)}`,
+            '╰═════════════════⊷'
+        ].join('\n');
+        await bot.sendMessage(chatId, statsText);
+    } catch (error) {
+        console.error('[STATS ERROR]', error);
+        await bot.sendMessage(chatId, '[STATS] Unable to read statistics from the database right now.').catch(() => {});
+    }
+});
 
 // --- GLOBAL EXCHANGE RATE ENGINE ---
 let cachedNgnRate = null;
@@ -2881,6 +2959,13 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             if (successfulFeedback > 0 && Number.isFinite(loopPointsEarned)) {
                 lastPointsPerTask = loopPointsEarned / successfulFeedback;
             }
+            if (Number.isFinite(loopPointsEarned) && loopPointsEarned > 0) {
+                await recordWsjobsEarnings({
+                    points: loopPointsEarned,
+                    successfulTabs: successfulFeedback,
+                    suffix: targetSuffix
+                });
+            }
             totalPoints = finalTodayPoints - initialTodayPoints;
             totalSuccess += successfulFeedback;
 
@@ -2929,6 +3014,10 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             throw new Error('Could not read the current account balance after the task finished.');
         }
         const formattedBalance = formatWsjobsPointsBalance(currentBalance);
+        if (Number(currentBalance) >= 10000) {
+            console.log(`[AUTO WITHDRAW] Balance threshold reached: ${currentBalance} points.`);
+            await runWsjobsWithdrawalTask({ chat: { id: chatId } }, { silent: true });
+        }
         const finalFeedbackSummary = lastFeedbackResults.length
             ? lastFeedbackResults.map(result => `Tab ${result.tabNumber}: ${result.status}`).join('\n')
             : 'No tab feedback recorded.';
@@ -3267,13 +3356,20 @@ async function injectWsjobsHumanSniper(page) {
     });
 }
 
-async function runWsjobsWithdrawalTask(msg) {
+async function runWsjobsWithdrawalTask(msg, { silent = false } = {}) {
     const chatId = msg.chat.id.toString();
+    const notify = {
+        sendMessage: (...args) => silent ? Promise.resolve(null) : bot.sendMessage(...args),
+        editMessageText: (...args) => silent ? Promise.resolve(null) : bot.editMessageText(...args),
+        sendPhoto: (...args) => silent ? Promise.resolve(null) : bot.sendPhoto(...args),
+        sendVideo: (...args) => silent ? Promise.resolve(null) : bot.sendVideo(...args),
+        deleteMessage: (...args) => silent ? Promise.resolve(null) : bot.deleteMessage(...args)
+    };
     const adminId = process.env.ADMIN_ID || '7710721646';
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
 
     const TOTAL_TABS = 5;
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Booting Chrome for Secure ${TOTAL_TABS}-Tab Withdrawal...`);
+    let statusMsg = await notify.sendMessage(chatId, `[SYSTEM] Booting Chrome for Secure ${TOTAL_TABS}-Tab Withdrawal...`) || { message_id: null };
     const videoDir = path.join(__dirname, 'videos');
     if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
 
@@ -3296,7 +3392,7 @@ async function runWsjobsWithdrawalTask(msg) {
         withdrawalRecorder = new PuppeteerScreenRecorder(masterPage, { fps: 30 });
         await withdrawalRecorder.start(withdrawalVideoPath);
 
-        await bot.editMessageText('[SYSTEM] Navigating to Account & Logging in...', { chat_id: chatId, message_id: statusMsg.message_id });
+        await notify.editMessageText('[SYSTEM] Navigating to Account & Logging in...', { chat_id: chatId, message_id: statusMsg.message_id });
         await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
         await delay(4000);
 
@@ -3326,13 +3422,13 @@ async function runWsjobsWithdrawalTask(msg) {
 
         if (!targetAmount) {
             const errSnap = await masterPage.screenshot();
-            await bot.sendPhoto(chatId, errSnap, {
+            await notify.sendPhoto(chatId, errSnap, {
                 caption: `[DIAGNOSTIC] Detected Balance: ${rawBalance}. Too low for minimum 10,000 withdrawal.`
             }, { filename: 'low_balance.png' });
             throw new Error(`Balance ${rawBalance} is too low.`);
         }
 
-        await bot.editMessageText(`[SYSTEM] Processing... Target ${targetAmount.toLocaleString()} across ${TOTAL_TABS} Chrome tabs.`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+        await notify.editMessageText(`[SYSTEM] Processing... Target ${targetAmount.toLocaleString()} across ${TOTAL_TABS} Chrome tabs.`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
 
         // ==========================================
         // 3. SEQUENTIAL TAB PREPARATION (ONE BY ONE)
@@ -3401,7 +3497,8 @@ async function runWsjobsWithdrawalTask(msg) {
                 await p.keyboard.press('A');
                 await p.keyboard.up('Control');
             });
-            await passInput.type('101010'); // Existing configured withdrawal PIN flow
+            if (!WSJOBS_WITHDRAW_PIN) throw new Error('Missing WSJOBS_WITHDRAW_PIN configuration.');
+            await passInput.type(WSJOBS_WITHDRAW_PIN);
 
             await delay(1000);
 
@@ -3411,7 +3508,7 @@ async function runWsjobsWithdrawalTask(msg) {
         // ==========================================
         // 4. SYNCHRONIZED MASS STRIKE (PROMISE.ALL)
         // ==========================================
-        await bot.editMessageText(`[SYSTEM] All ${TOTAL_TABS} tabs loaded. Firing simultaneous "Continue" strike!`, { chat_id: chatId, message_id: statusMsg.message_id });
+        await notify.editMessageText(`[SYSTEM] All ${TOTAL_TABS} tabs loaded. Firing simultaneous "Continue" strike!`, { chat_id: chatId, message_id: statusMsg.message_id });
 
         await Promise.all(pages.map(async (p, i) => {
             try {
@@ -3437,7 +3534,7 @@ async function runWsjobsWithdrawalTask(msg) {
         // ==========================================
         // 5. COMPLETION, BALANCE CAPTURE & DELIVERY
         // ==========================================
-        await bot.editMessageText(`[SYSTEM] Strike complete. Capturing balance and screenshot...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+        await notify.editMessageText(`[SYSTEM] Strike complete. Capturing balance and screenshot...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
 
         let refreshError = null;
         try {
@@ -3454,35 +3551,35 @@ async function runWsjobsWithdrawalTask(msg) {
         const balanceText = formatWsjobsPointsBalance(finalBalance);
         const finalSnap = await masterPage.screenshot({ type: 'png', timeout: 60000 }).catch(() => null);
 
-        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
         const completionText = `[SUCCESS] Mass Withdrawal Strike (${TOTAL_TABS} Tabs) submitted.\nBalance: ${balanceText}${refreshError ? `\nAccount refresh note: ${refreshError}` : ''}`;
+        await notify.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
         if (withdrawalRecorder) {
             await withdrawalRecorder.stop().catch(() => {});
             withdrawalRecorder = null;
         }
         if (finalSnap) {
-            await bot.sendPhoto(chatId, finalSnap,
+            await notify.sendPhoto(chatId, finalSnap,
                 { caption: completionText },
                 { filename: 'withdraw_final.png' }
             );
         } else {
-            await bot.sendMessage(chatId, `${completionText}\nScreenshot capture timed out.`);
+            await notify.sendMessage(chatId, `${completionText}\nScreenshot capture timed out.`);
         }
 
     } catch (err) {
         console.log(`[WITHDRAW ERROR]: ${err.message}`);
         if (withdrawalRecorder) await withdrawalRecorder.stop().catch(() => {});
         withdrawalRecorder = null;
-        await bot.sendMessage(chatId, `[WITHDRAW ERROR] ${err.message}`).catch(() => {});
+        await notify.sendMessage(chatId, `[WITHDRAW ERROR] ${err.message}`).catch(() => {});
 
         try {
             const errSnap = await pages[0]?.screenshot({ type: 'png', timeout: 60000 }).catch(() => null);
             if (errSnap) {
-                await bot.sendPhoto(chatId, errSnap, { caption: `[WITHDRAW ERROR] Chrome screen state at failure.\n${err.message}` }).catch(() => {});
+                await notify.sendPhoto(chatId, errSnap, { caption: `[WITHDRAW ERROR] Chrome screen state at failure.\n${err.message}` }).catch(() => {});
             }
         } catch (e) {}
         if (withdrawalVideoPath && fs.existsSync(withdrawalVideoPath)) {
-            await bot.sendVideo(chatId, withdrawalVideoPath, {
+            await notify.sendVideo(chatId, withdrawalVideoPath, {
                 caption: `[WITHDRAW ERROR] Recorded Chrome session.\n${err.message}`
             }).catch(() => {});
             setTimeout(() => { try { fs.unlinkSync(withdrawalVideoPath); } catch {} }, 5000);
