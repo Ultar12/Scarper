@@ -2966,7 +2966,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             if (offlineTabResults.length > 0) {
                 console.log(`[TASK] ${offlineTabResults.length} tab(s) marked offline/unavailable. Ending task sequence.`);
                 lastFeedbackResults = [...lastFeedbackResults, ...offlineTabResults];
-                feedbackHistory.push(...offlineTabResults.map(result => ({ ...result, loopNumber })));
+                feedbackHistory.push(...offlineTabResults.map(result => ({ ...result, loopNumber: loopCount })));
                 finalTodayPoints = startingPoints;
                 await updateStatus(`[SYSTEM] Incomplete target set: ${offlineTabResults.length} tab(s) offline/unavailable. Ending and preparing final report.`);
                 break;
@@ -3032,7 +3032,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                 await updateStatus(`[SYSTEM] Loop ${loopCount}: Tab ${idx + 1}/${activeTabsCount} reported ${result.status}.`);
             }
             lastFeedbackResults = [...offlineTabResults, ...feedbackResults];
-            feedbackHistory.push(...lastFeedbackResults.map(result => ({ ...result, loopNumber })));
+            feedbackHistory.push(...lastFeedbackResults.map(result => ({ ...result, loopNumber: loopCount })));
             const successfulFeedback = feedbackResults.filter(result => result.status === 'success').length;
             const failedFeedback = offlineTabResults.length + feedbackResults.filter(result => result.status === 'failed').length;
             const timedOutFeedback = feedbackResults.filter(result => result.status === 'timeout').length;
