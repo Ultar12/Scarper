@@ -381,6 +381,56 @@ async function readWsjobsEarningsSummary() {
     };
 }
 
+// --- PERSISTENT AUTOTASK SETTING ---
+let autoTaskEnabled = false;
+let autoWithdrawEnabled = false;
+const autoTaskSettingReady = pool.query(`
+    CREATE TABLE IF NOT EXISTS automation_settings (
+        setting_key VARCHAR(50) PRIMARY KEY,
+        enabled BOOLEAN NOT NULL DEFAULT FALSE
+    );
+    INSERT INTO automation_settings (setting_key, enabled)
+    VALUES
+        ('autotask_after_pairing', FALSE),
+        ('autowithdraw_after_task', FALSE)
+    ON CONFLICT (setting_key) DO NOTHING;
+`).then(async () => {
+    const result = await pool.query(
+        `SELECT setting_key, enabled FROM automation_settings
+         WHERE setting_key IN ('autotask_after_pairing', 'autowithdraw_after_task')`
+    );
+    for (const row of result.rows) {
+        if (row.setting_key === 'autotask_after_pairing') autoTaskEnabled = row.enabled === true;
+        if (row.setting_key === 'autowithdraw_after_task') autoWithdrawEnabled = row.enabled === true;
+    }
+    console.log(`[SYSTEM] AutoTask after pairing: ${autoTaskEnabled ? 'ON' : 'OFF'}`);
+    console.log(`[SYSTEM] AutoWithdraw after task: ${autoWithdrawEnabled ? 'ON' : 'OFF'}`);
+}).catch((error) => {
+    console.error('[ERROR] Failed to initialize automation settings:', error);
+});
+
+async function setAutoTaskEnabled(enabled) {
+    await autoTaskSettingReady;
+    await pool.query(
+        `INSERT INTO automation_settings (setting_key, enabled)
+         VALUES ('autotask_after_pairing', $1)
+         ON CONFLICT (setting_key) DO UPDATE SET enabled = EXCLUDED.enabled`,
+        [enabled]
+    );
+    autoTaskEnabled = enabled;
+}
+
+async function setAutoWithdrawEnabled(enabled) {
+    await autoTaskSettingReady;
+    await pool.query(
+        `INSERT INTO automation_settings (setting_key, enabled)
+         VALUES ('autowithdraw_after_task', $1)
+         ON CONFLICT (setting_key) DO UPDATE SET enabled = EXCLUDED.enabled`,
+        [enabled]
+    );
+    autoWithdrawEnabled = enabled;
+}
+
 const saveSessionToDB = async (platform, page) => {
     try {
         const cookies = await page.cookies();
@@ -647,6 +697,44 @@ let globalTaskBrowser = null;
 const userState = {};
 
 
+
+// --- AUTOTASK CONTROL ---
+bot.onText(/^\/autotask(?:\s+(on|off))?$/i, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
+
+    try {
+        await autoTaskSettingReady;
+        const requestedState = match?.[1]?.toLowerCase();
+        if (requestedState === 'on' || requestedState === 'off') {
+            await setAutoTaskEnabled(requestedState === 'on');
+        }
+        await bot.sendMessage(chatId, `[AUTOTASK] Automatically start a task after pairing: ${autoTaskEnabled ? 'ON' : 'OFF'}`);
+    } catch (error) {
+        console.error('[AUTOTASK ERROR]', error);
+        await bot.sendMessage(chatId, '[AUTOTASK] Unable to save the setting to the database.').catch(() => {});
+    }
+});
+
+// --- AUTOWITHDRAW CONTROL ---
+bot.onText(/^\/autowithdraw(?:\s+(on|off))?$/i, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    const adminId = process.env.ADMIN_ID || '7710721646';
+    if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
+
+    try {
+        await autoTaskSettingReady;
+        const requestedState = match?.[1]?.toLowerCase();
+        if (requestedState === 'on' || requestedState === 'off') {
+            await setAutoWithdrawEnabled(requestedState === 'on');
+        }
+        await bot.sendMessage(chatId, `[AUTOWITHDRAW] Automatically withdraw after an eligible task: ${autoWithdrawEnabled ? 'ON' : 'OFF'}`);
+    } catch (error) {
+        console.error('[AUTOWITHDRAW ERROR]', error);
+        await bot.sendMessage(chatId, '[AUTOWITHDRAW] Unable to save the setting to the database.').catch(() => {});
+    }
+});
 
 // --- SYSTEM STATS COMMAND ---
 bot.onText(/^\/stats$/i, async (msg) => {
@@ -2712,6 +2800,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
     let finalTodayPoints = null;
     let currentBalance = null;
     let lastFeedbackResults = [];
+    let feedbackHistory = [];
     let lastPointsPerTask = null;
     let loopCount = 1;
 
@@ -2807,7 +2896,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             }
 
             // Cap the tabs to 4 maximum per run
-            const activeTabsCount = Math.min(targetCount, 4);
+            let activeTabsCount = Math.min(targetCount, 4);
             await updateStatus(`[SYSTEM] Loop ${loopCount}: Found targets. Preparing ${activeTabsCount} tab(s)...`);
 
             while (pages.length < activeTabsCount) {
@@ -2817,7 +2906,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                 pages.push(p);
             }
 
-            const activePages = pages.slice(0, activeTabsCount);
+            let activePages = pages.slice(0, activeTabsCount);
 
             // Synchronize preparation tab by tab. No parallel action happens
             // before the final Confirm step.
@@ -2869,15 +2958,18 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                     return { number: 'Unknown', diagnostics };
                 }, targetSuffix, idx));
             }
-            const unknownClaims = claimedNumbers.filter(result => result.number === 'Unknown').length;
-            if (unknownClaims > 0) {
-                const details = claimedNumbers
-                    .map((result, index) => result.number === 'Unknown'
-                        ? `Tab ${index + 1}: ${JSON.stringify(result.diagnostics)}`
-                        : null)
-                    .filter(Boolean)
-                    .join(' | ');
-                throw new Error(`Only ${activeTabsCount - unknownClaims}/${activeTabsCount} tab(s) claimed a matching task; exact phone numbers could not be verified. ${details}`);
+            const offlineTabResults = claimedNumbers
+                .map((result, index) => result.number === 'Unknown'
+                    ? { tabNumber: index + 1, status: 'offline', message: 'Target number unavailable or already offline.' }
+                    : null)
+                .filter(Boolean);
+            if (offlineTabResults.length > 0) {
+                console.log(`[TASK] ${offlineTabResults.length} tab(s) marked offline/unavailable. Ending task sequence.`);
+                lastFeedbackResults = [...lastFeedbackResults, ...offlineTabResults];
+                feedbackHistory.push(...offlineTabResults.map(result => ({ ...result, loopNumber })));
+                finalTodayPoints = startingPoints;
+                await updateStatus(`[SYSTEM] Incomplete target set: ${offlineTabResults.length} tab(s) offline/unavailable. Ending and preparing final report.`);
+                break;
             }
             const claimedNumberValues = claimedNumbers.map(result => result.number);
 
@@ -2939,9 +3031,10 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                 feedbackResults.push(result);
                 await updateStatus(`[SYSTEM] Loop ${loopCount}: Tab ${idx + 1}/${activeTabsCount} reported ${result.status}.`);
             }
-            lastFeedbackResults = feedbackResults;
+            lastFeedbackResults = [...offlineTabResults, ...feedbackResults];
+            feedbackHistory.push(...lastFeedbackResults.map(result => ({ ...result, loopNumber })));
             const successfulFeedback = feedbackResults.filter(result => result.status === 'success').length;
-            const failedFeedback = feedbackResults.filter(result => result.status === 'failed').length;
+            const failedFeedback = offlineTabResults.length + feedbackResults.filter(result => result.status === 'failed').length;
             const timedOutFeedback = feedbackResults.filter(result => result.status === 'timeout').length;
 
             // REFRESH THE MASTER TASK PAGE ONLY AFTER EVERY TAB HAS REPORTED.
@@ -3014,12 +3107,12 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             throw new Error('Could not read the current account balance after the task finished.');
         }
         const formattedBalance = formatWsjobsPointsBalance(currentBalance);
-        if (Number(currentBalance) >= 10000) {
-            console.log(`[AUTO WITHDRAW] Balance threshold reached: ${currentBalance} points.`);
+        if (autoWithdrawEnabled && Number(currentBalance) >= 10000) {
+            console.log(`[AUTO WITHDRAW] Enabled and balance threshold reached: ${currentBalance} points.`);
             await runWsjobsWithdrawalTask({ chat: { id: chatId } }, { silent: true });
         }
-        const finalFeedbackSummary = lastFeedbackResults.length
-            ? lastFeedbackResults.map(result => `Tab ${result.tabNumber}: ${result.status}`).join('\n')
+        const finalFeedbackSummary = feedbackHistory.length
+            ? feedbackHistory.map((result, index) => `Loop ${result.loopNumber || '?'} Tab ${result.tabNumber}: ${result.status}`).join('\n')
             : 'No tab feedback recorded.';
         const pointsPerTaskText = lastPointsPerTask === null
             ? 'Unavailable'
@@ -4096,8 +4189,14 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
             await delay(1200);
         }
 
-        // --- ADDED AUTO-TRIGGER LOGIC HERE ---
-        const targetSuffix = phoneInfo.localNumber.slice(-2); // Extract last 2 digits
+        const targetSuffix = phoneInfo.localNumber.slice(-2);
+
+        if (!autoTaskEnabled) {
+            await updateStatus('[PAIRING COMPLETE] All 4 numbers were processed successfully.\n\nAutoTask is OFF. Use /autotask on to start tasks automatically after pairing.', {
+                reply_markup: { remove_keyboard: true }
+            });
+            return;
+        }
 
         await updateStatus(`[PAIRING COMPLETE] All 4 numbers were processed successfully.\n\nAuto-Triggering Task Strike Protocol for suffix ${targetSuffix}...`, {
             reply_markup: { remove_keyboard: true }
