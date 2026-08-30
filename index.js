@@ -3532,15 +3532,11 @@ async function runWsjobsWithdrawalTask(msg, { silent = false } = {}) {
     const adminId = process.env.ADMIN_ID || '7710721646';
     if (chatId !== adminId && (typeof AUTHORIZED !== 'undefined' && !AUTHORIZED.includes(chatId))) return;
 
-    const TOTAL_TABS = 5;
-    let statusMsg = await notify.sendMessage(chatId, `[SYSTEM] Booting Chrome for Secure ${TOTAL_TABS}-Tab Withdrawal...`) || { message_id: null };
-    const videoDir = path.join(__dirname, 'videos');
-    if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
+    const TOTAL_TABS = 1;
+    let statusMsg = await notify.sendMessage(chatId, `[SYSTEM] Booting Chrome for single-tab withdrawal...`) || { message_id: null };
 
     let browser = null;
     let pages = [];
-    let withdrawalRecorder = null;
-    let withdrawalVideoPath = null;
 
     try {
         browser = await getSharedWsjobsBrowser();
@@ -3552,10 +3548,6 @@ async function runWsjobsWithdrawalTask(msg, { silent = false } = {}) {
         await masterPage.setViewport({ width: 412, height: 915 });
         pages.push(masterPage);
         await injectWsjobsHumanSniper(masterPage);
-        withdrawalVideoPath = path.join(videoDir, `wsjobs_withdraw_${Date.now()}.mp4`);
-        withdrawalRecorder = new PuppeteerScreenRecorder(masterPage, { fps: 30 });
-        await withdrawalRecorder.start(withdrawalVideoPath);
-
         await notify.editMessageText('[SYSTEM] Navigating to Account & Logging in...', { chat_id: chatId, message_id: statusMsg.message_id });
         await masterPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
         await delay(4000);
@@ -3577,14 +3569,10 @@ async function runWsjobsWithdrawalTask(msg, { silent = false } = {}) {
         const targetAmount = tiers.find(t => rawBalance >= t);
 
         if (!targetAmount) {
-            const errSnap = await masterPage.screenshot();
-            await notify.sendPhoto(chatId, errSnap, {
-                caption: `[DIAGNOSTIC] Detected Balance: ${rawBalance}. Too low for minimum 10,000 withdrawal.`
-            }, { filename: 'low_balance.png' });
-            throw new Error(`Balance ${rawBalance} is too low.`);
+            throw new Error(`Balance ${rawBalance} is too low for the minimum 10,000-point withdrawal.`);
         }
 
-        await notify.editMessageText(`[SYSTEM] Processing... Target ${targetAmount.toLocaleString()} across ${TOTAL_TABS} Chrome tabs.`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+        await notify.editMessageText(`[SYSTEM] Processing... Target ${targetAmount.toLocaleString()} on one Chrome tab.`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
 
         // ==========================================
         // 3. SEQUENTIAL TAB PREPARATION (ONE BY ONE)
@@ -3662,9 +3650,9 @@ async function runWsjobsWithdrawalTask(msg, { silent = false } = {}) {
         }
 
         // ==========================================
-        // 4. SYNCHRONIZED MASS STRIKE (PROMISE.ALL)
+        // 4. SINGLE-TAB STRIKE
         // ==========================================
-        await notify.editMessageText(`[SYSTEM] All ${TOTAL_TABS} tabs loaded. Firing simultaneous "Continue" strike!`, { chat_id: chatId, message_id: statusMsg.message_id });
+        await notify.editMessageText('[SYSTEM] Withdrawal confirmation loaded. Submitting...', { chat_id: chatId, message_id: statusMsg.message_id });
 
         await Promise.all(pages.map(async (p, i) => {
             try {
@@ -3690,7 +3678,7 @@ async function runWsjobsWithdrawalTask(msg, { silent = false } = {}) {
         // ==========================================
         // 5. COMPLETION, BALANCE CAPTURE & DELIVERY
         // ==========================================
-        await notify.editMessageText(`[SYSTEM] Strike complete. Capturing balance and screenshot...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
+        await notify.editMessageText('[SYSTEM] Withdrawal submitted. Reading final balance...', { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
 
         let refreshError = null;
         try {
@@ -3704,47 +3692,15 @@ async function runWsjobsWithdrawalTask(msg, { silent = false } = {}) {
         }
 
         const finalBalance = await readWsjobsCurrentBalancePuppeteer(masterPage);
+        if (finalBalance === null) throw new Error('Final account balance did not load after withdrawal.');
         const balanceText = formatWsjobsPointsBalance(finalBalance);
-        const finalSnap = await masterPage.screenshot({ type: 'png', timeout: 60000 }).catch(() => null);
-
-        const completionText = `[SUCCESS] Mass Withdrawal Strike (${TOTAL_TABS} Tabs) submitted.\nBalance: ${balanceText}${refreshError ? `\nAccount refresh note: ${refreshError}` : ''}`;
-        await notify.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-        if (withdrawalRecorder) {
-            await withdrawalRecorder.stop().catch(() => {});
-            withdrawalRecorder = null;
-        }
-        if (finalSnap) {
-            await notify.sendPhoto(chatId, finalSnap,
-                { caption: completionText },
-                { filename: 'withdraw_final.png' }
-            );
-        } else {
-            await notify.sendMessage(chatId, `${completionText}\nScreenshot capture timed out.`);
-        }
+        const completionText = `[SUCCESS] Withdrawal submitted (1 tab).\nBalance: ${balanceText}${refreshError ? `\nAccount refresh note: ${refreshError}` : ''}`;
+        await notify.editMessageText(completionText, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
 
     } catch (err) {
         console.log(`[WITHDRAW ERROR]: ${err.message}`);
-        if (withdrawalRecorder) await withdrawalRecorder.stop().catch(() => {});
-        withdrawalRecorder = null;
         await notify.sendMessage(chatId, `[WITHDRAW ERROR] ${err.message}`).catch(() => {});
-
-        try {
-            const errSnap = await pages[0]?.screenshot({ type: 'png', timeout: 60000 }).catch(() => null);
-            if (errSnap) {
-                await notify.sendPhoto(chatId, errSnap, { caption: `[WITHDRAW ERROR] Chrome screen state at failure.\n${err.message}` }).catch(() => {});
-            }
-        } catch (e) {}
-        if (withdrawalVideoPath && fs.existsSync(withdrawalVideoPath)) {
-            await notify.sendVideo(chatId, withdrawalVideoPath, {
-                caption: `[WITHDRAW ERROR] Recorded Chrome session.\n${err.message}`
-            }).catch(() => {});
-            setTimeout(() => { try { fs.unlinkSync(withdrawalVideoPath); } catch {} }, 5000);
-        }
     } finally {
-        if (withdrawalRecorder) await withdrawalRecorder.stop().catch(() => {});
-        if (withdrawalVideoPath && fs.existsSync(withdrawalVideoPath)) {
-            setTimeout(() => { try { fs.unlinkSync(withdrawalVideoPath); } catch {} }, 5000);
-        }
         for (const p of pages) await p.close().catch(() => {});
         // Keep the shared Chromium process alive; only this workflow's tabs close.
         if (browser === globalTaskBrowser) {
