@@ -2667,7 +2667,7 @@ bot.onText(/\/levanter\s+(.+)/, async (msg, match) => {
 
 ;
 
-async function readWsjobsCurrentBalancePuppeteer(page) {
+async function readWsjobsCurrentBalanceOncePuppeteer(page) {
     return await page.evaluate(() => {
         const allText = document.body?.innerText || '';
         const valid = (value) => {
@@ -2687,18 +2687,22 @@ async function readWsjobsCurrentBalancePuppeteer(page) {
             const number = match ? valid(match[1]) : null;
             if (number !== null) return number;
         }
+        // If the balance label is present but still displays "—"/"---",
+        // do not fall through to unrelated phone numbers, IDs, or counters.
+        if (/Account\s+Balance|Available(?:\s+Balance)?\s*[:：]/i.test(allText)) return null;
+
         // Fallback only when no balance label exists.
-        const decimalMatches = allText.match(/\\d+\\.\\d{2}/g);
+        const decimalMatches = allText.match(/\d+\.\d{2}/g);
         if (decimalMatches) {
             return Math.max(...decimalMatches.map(valid).filter(value => value !== null));
         }
-        const generalMatches = allText.match(/\\d{1,3}(,\\d{3})*(\\.\\d+)?/g) || [];
+        const generalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g) || [];
         const numbers = generalMatches.map(valid).filter(value => value !== null && value > 100);
         return numbers.length ? Math.max(...numbers) : null;
     }).catch(() => null);
 }
 
-async function readWsjobsTodayPointsPuppeteer(page) {
+async function readWsjobsTodayPointsOncePuppeteer(page) {
     return await page.evaluate(() => {
         const extractNumber = (text) => {
             const matches = String(text || '').match(/\b\d[\d,]*\b/g) || [];
@@ -2713,12 +2717,48 @@ async function readWsjobsTodayPointsPuppeteer(page) {
             el.offsetParent !== null && /^Today\s+Points$/i.test(el.innerText?.trim() || '')
         );
         if (!label) return null;
-        for (const candidate of [label.parentElement, label.parentElement?.parentElement, label]) {
-            const value = extractNumber(candidate?.innerText || '');
-            if (value !== null) return value;
+
+        // Only accept a number explicitly adjacent to the Today Points label.
+        // This avoids treating Total Points, IDs, timestamps, or phone numbers
+        // as Today Points while the value is still rendered as "—".
+        for (const candidate of [label.parentElement, label.parentElement?.parentElement]) {
+            const text = candidate?.innerText || '';
+            const labelledValue = text.match(/Today\s+Points\s*[:：]?\s*([\d,]+)/i)
+                || text.match(/([\d,]+)\s*Today\s+Points/i);
+            if (labelledValue) return parseInt(labelledValue[1].replace(/,/g, ''), 10);
         }
         return null;
     });
+}
+
+async function waitForWsjobsNumericValue(readOnce, label, timeoutMs = 30000) {
+    const deadline = Date.now() + timeoutMs;
+    let lastValue = null;
+    while (Date.now() < deadline) {
+        lastValue = await readOnce().catch(() => null);
+        if (lastValue !== null && lastValue !== undefined && Number.isFinite(Number(lastValue))) {
+            return Number(lastValue);
+        }
+        await delay(1000);
+    }
+    console.log(`[SYSTEM] ${label} did not show a numeric value within ${timeoutMs}ms.`);
+    return null;
+}
+
+async function readWsjobsCurrentBalancePuppeteer(page, options = {}) {
+    return waitForWsjobsNumericValue(
+        () => readWsjobsCurrentBalanceOncePuppeteer(page),
+        'Account balance',
+        options.timeoutMs || 30000
+    );
+}
+
+async function readWsjobsTodayPointsPuppeteer(page, options = {}) {
+    return waitForWsjobsNumericValue(
+        () => readWsjobsTodayPointsOncePuppeteer(page),
+        'Today Points',
+        options.timeoutMs || 30000
+    );
 }
 
 async function readWsjobsTaskFeedbackPuppeteer(page) {
@@ -3072,6 +3112,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             await updateStatus(`[SYSTEM] Loop ${loopCount}: All tabs reported. Refreshing /task for Today Points...`);
             await masterPage.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
             await delay(4000);
+            await delay(3000);
             finalTodayPoints = await readWsjobsTodayPointsPuppeteer(masterPage);
             if (finalTodayPoints === null) {
                 throw new Error('Could not read Today Points after all task tabs finished.');
@@ -3380,32 +3421,12 @@ bot.onText(/^(?:\/balance|Balance)$/i, async (msg) => {
         await wPage.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
         await delay(5000);
 
-        // --- PRECISION BALANCE SCRAPER (The fix for "639" issues) ---
-        wsjobsBal = await wPage.evaluate(() => {
-            const allText = document.body.innerText;
-
-            // Priority 1: Hunt for decimals (Money)
-            const decimalMatches = allText.match(/\d+\.\d{2}/g);
-            if (decimalMatches) {
-                const nums = decimalMatches.map(n => parseFloat(n));
-                const max = Math.max(...nums);
-                return max.toLocaleString(undefined, { minimumFractionDigits: 2 });
-            }
-
-            // Priority 2: Hunt for realistic integers
-            const generalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
-            if (generalMatches) {
-                const numbers = generalMatches
-                    .map(n => n.replace(/,/g, ''))
-                    .map(n => parseFloat(n))
-                    .filter(n => n > 100 && n < 100000);
-
-                if (numbers.length > 0) {
-                    return Math.max(...numbers).toLocaleString(undefined, { minimumFractionDigits: 2 });
-                }
-            }
-            return '0.00';
-        });
+        // Use the same label-aware polling reader used by task completion and
+        // withdrawal. It waits while Account Balance is rendered as "—".
+        const balanceValue = await readWsjobsCurrentBalancePuppeteer(wPage, { timeoutMs: 30000 });
+        wsjobsBal = balanceValue === null
+            ? 'Error'
+            : Number(balanceValue).toLocaleString(undefined, { minimumFractionDigits: 2 });
 
     } catch(e) {
         console.log(`[BALANCE ERROR]: ${e.message}`);
@@ -3529,19 +3550,11 @@ async function runWsjobsWithdrawalTask(msg, { silent = false } = {}) {
         await masterPage.goto(wsjobsUrl(WSJOBS_WITHDRAW_PATH), { waitUntil: 'domcontentloaded' });
         await delay(5000);
 
-        // --- 2. PRECISION BALANCE SCRAPER (NEW UI) ---
-        const rawBalance = await masterPage.evaluate(() => {
-            const allText = document.body.innerText;
-            // Target the "Available: 10175.00" text directly
-            const availMatch = allText.match(/Available:\s*([\d,.]+)/i);
-            if (availMatch) {
-                return parseFloat(availMatch[1].replace(/,/g, ''));
-            }
-            // Fallback scanner
-            const decimalMatches = allText.match(/\d+\.\d{2}/g);
-            if (decimalMatches) return Math.max(...decimalMatches.map(n => parseFloat(n)));
-            return 0;
-        });
+        // --- 2. PRECISION BALANCE SCRAPER (wait for delayed UI value) ---
+        const rawBalance = await readWsjobsCurrentBalancePuppeteer(masterPage, { timeoutMs: 30000 });
+        if (rawBalance === null) {
+            throw new Error('Account balance did not load before withdrawal.');
+        }
 
         // New Menu Tiers based on the screenshot
         const tiers = [100000, 50000, 40000, 30000, 20000, 10000];
@@ -4390,18 +4403,10 @@ bot.on('message', async (msg) => {
                 await masterTab.goto(wsjobsUrl(WSJOBS_ACCOUNT_PATH), { waitUntil: 'domcontentloaded' });
                 await delay(3000);
 
-                initialBalanceNum = await masterTab.evaluate(() => {
-                    const allText = document.body.innerText;
-                    const decimalMatches = allText.match(/\d+\.\d{2}/g);
-                    if (decimalMatches) return Math.max(...decimalMatches.map(n => parseFloat(n)));
-
-                    const generalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
-                    if (generalMatches) {
-                        const numbers = generalMatches.map(n => parseFloat(n.replace(/,/g, ''))).filter(n => n > 100 && n < 100000);
-                        return numbers.length > 0 ? Math.max(...numbers) : 0;
-                    }
-                    return 0;
-                });
+                initialBalanceNum = await readWsjobsCurrentBalancePuppeteer(masterTab, { timeoutMs: 30000 });
+                if (initialBalanceNum === null) {
+                    throw new Error('Initial account balance did not load.');
+                }
 
                 // --- 3. TARGET SCANNING ---
                 await updateStatus('[WT BURNER] Teleporting to Task Board...');
@@ -4497,18 +4502,10 @@ bot.on('message', async (msg) => {
                 await masterTab.reload({ waitUntil: 'domcontentloaded' });
                 await delay(5000);
 
-                const finalBalanceNum = await masterTab.evaluate(() => {
-                    const allText = document.body.innerText;
-                    const decimalMatches = allText.match(/\d+\.\d{2}/g);
-                    if (decimalMatches) return Math.max(...decimalMatches.map(n => parseFloat(n)));
-
-                    const generalMatches = allText.match(/\d{1,3}(,\d{3})*(\.\d+)?/g);
-                    if (generalMatches) {
-                        const numbers = generalMatches.map(n => parseFloat(n.replace(/,/g, ''))).filter(n => n > 100 && n < 100000);
-                        return numbers.length > 0 ? Math.max(...numbers) : 0;
-                    }
-                    return 0;
-                });
+                const finalBalanceNum = await readWsjobsCurrentBalancePuppeteer(masterTab, { timeoutMs: 30000 });
+                if (finalBalanceNum === null) {
+                    throw new Error('Final account balance did not load.');
+                }
 
                 const diff = finalBalanceNum - initialBalanceNum;
                 const profitText = diff > 0 ? diff.toFixed(2) : "0.00";
