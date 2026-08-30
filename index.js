@@ -2851,6 +2851,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
     let lastFeedbackResults = [];
     let feedbackHistory = [];
     let lastPointsPerTask = null;
+    let firstLoopReport = null;
     let loopCount = 1;
 
     try {
@@ -3140,7 +3141,22 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             const targetsClaimedStr = claimedNumberValues.join('\n');
             const loopDollarsEarned = loopPointsEarned / WSJOBS_POINTS_PER_DOLLAR;
             const totalDollarsEarned = totalPoints / WSJOBS_POINTS_PER_DOLLAR;
-            await updateStatus(`[SYSTEM] Loop ${loopCount} Result:\n\nTargets Hit:\n${targetsClaimedStr}\n\nFeedback:\n${feedbackSummary}\n\nToday Points: ${startingPoints} → ${finalTodayPoints}\nLoop Points Earned: $${loopDollarsEarned.toFixed(2)} (${loopPointsEarned} points)\nTotal Earned: $${totalDollarsEarned.toFixed(2)} (${totalPoints} points)`);
+            if (!firstLoopReport) {
+                firstLoopReport = {
+                    targetsClaimedStr,
+                    feedbackSummary,
+                    startingPoints,
+                    finalTodayPoints,
+                    loopDollarsEarned,
+                    loopPointsEarned,
+                    totalDollarsEarned,
+                    totalPoints,
+                    successfulTabs: successfulFeedback
+                };
+            }
+            // Keep this as progress only. The user receives one result message
+            // after the loop sequence ends, not one result per loop.
+            await updateStatus(`[SYSTEM] Loop ${loopCount} completed. Checking for remaining targets...`);
 
             // Start another loop whenever none of the tabs reported a failure.
             // A timeout alone does not stop the loop.
@@ -3179,34 +3195,34 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             throw new Error('Could not read the current account balance after the task finished.');
         }
         const formattedBalance = formatWsjobsPointsBalance(currentBalance);
-        const finalFeedbackSummary = feedbackHistory.length
-            ? feedbackHistory.map((result, index) => `Loop ${result.loopNumber || '?'} Tab ${result.tabNumber}: ${result.status}`).join('\n')
-            : 'No tab feedback recorded.';
-        const pointsPerTaskText = lastPointsPerTask === null
+        const report = firstLoopReport || {
+            targetsClaimedStr: 'No completed loop result.',
+            feedbackSummary: 'No successful task loop completed.',
+            loopDollarsEarned: 0,
+            loopPointsEarned: 0,
+            successfulTabs: 0
+        };
+        const finalFeedbackSummary = report.feedbackSummary;
+        const pointsPerTask = report.successfulTabs > 0
+            ? report.loopPointsEarned / report.successfulTabs
+            : null;
+        const pointsPerTaskText = pointsPerTask === null
             ? 'Unavailable'
-            : `$${(lastPointsPerTask / WSJOBS_POINTS_PER_DOLLAR).toFixed(2)} (${lastPointsPerTask.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} points)`;
-        const dollarsEarnedText = `$${(totalPoints / WSJOBS_POINTS_PER_DOLLAR).toFixed(2)} (${totalPoints.toLocaleString()} points)`;
-        await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nVerified successful tabs: ${totalSuccess}\nEarned: ${dollarsEarnedText}\nPer Successful Task: ${pointsPerTaskText}\nBalance: ${formattedBalance}\n\nLast tab feedback:\n${finalFeedbackSummary}`);
+            : `$${(pointsPerTask / WSJOBS_POINTS_PER_DOLLAR).toFixed(2)} (${pointsPerTask.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} points)`;
+        const dollarsEarnedText = `$${report.loopDollarsEarned.toFixed(2)} (${report.loopPointsEarned.toLocaleString()} points)`;
+        await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nVerified successful tabs: ${report.successfulTabs}\nEarned: ${dollarsEarnedText}\nPer Successful Task: ${pointsPerTaskText}\nBalance: ${formattedBalance}\n\nLast tab feedback:\n${finalFeedbackSummary}`);
 
-        const finalSnap = await masterPage.screenshot({ type: 'png', timeout: 60000 }).catch(() => null);
+        // The edited status message above is the only user-facing task result.
+        // Do not send a second screenshot/caption message for the same task.
 
-        if (!finalSnap) {
-            await bot.sendMessage(chatId, `[SYSTEM] Strike Protocol Complete. Screenshot capture timed out; final balance: ${formattedBalance}.`);
-        } else {
-            await bot.sendPhoto(chatId, finalSnap, {
-            caption: `*Strike Protocol Complete*\nSuffix: \`${targetSuffix}\`\nVerified Successful Tabs: \`${totalSuccess}\`\nEarned: \`${dollarsEarnedText}\`\nPer Successful Task: \`${pointsPerTaskText}\`\nBalance: \`${formattedBalance}\`\n\nLast Tab Feedback:\n${finalFeedbackSummary}`,
-            parse_mode: 'Markdown'
-        });
-        }
-
-        // Send the completed task result first. Only after delivery do we
+        // The completed task result is already delivered. Only after delivery do we
         // trigger the optional silent withdrawal.
         if (autoWithdrawEnabled && Number(currentBalance) >= 50000) {
             console.log(`[AUTO WITHDRAW] Enabled and 50,000-point balance threshold reached: ${currentBalance} points.`);
             await runWsjobsWithdrawalTask({ chat: { id: chatId } }, { silent: true });
         }
 
-        await bot.deleteMessage(chatId, msgId).catch(() => {});
+        // Keep the single final report message visible to the user.
 
     } catch (err) {
         await bot.sendMessage(chatId, `[STRIKE FAILED]: ${err.message}`);
@@ -4199,24 +4215,27 @@ async function runWsjobsPairingSequence(chatId, phoneInfo, runtime) {
             }
 
             const pairCode = '11111111';
-            await updateStatus(
+            const codeReadyText =
                 `[PAIRING ${stage}/4] Code ready for +${phoneInfo.countryCode} ${localNumber}.\n\n` +
                 `Open WhatsApp → Linked devices → Link with phone number.\n` +
                 `After linking, this code will disappear and the next stage will begin.\n\n` +
-                `Code: \`${pairCode}\``,
-                {
-                    parse_mode: 'Markdown',
-                    reply_markup: {
-                            inline_keyboard: [[{
-                                text: `Copy ${pairCode}`,
-                                copy_text: { text: pairCode }
-                            }], [{
-                                text: 'Cancel Pairing',
-                                callback_data: 'wsjobs_pair_cancel'
-                            }]]
-                    }
+                `Code: \`${pairCode}\``;
+            const previousStatusMessageId = statusMsg.message_id;
+            await bot.deleteMessage(chatId, previousStatusMessageId).catch(() => {});
+            statusMsg = await bot.sendMessage(chatId, codeReadyText, {
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [[{
+                        text: `Copy ${pairCode}`,
+                        copy_text: { text: pairCode }
+                    }], [{
+                        text: 'Cancel Pairing',
+                        callback_data: 'wsjobs_pair_cancel'
+                    }]]
                 }
-            );
+            });
+            const activePairingSession = wsPairSessions.get(chatId);
+            if (activePairingSession) activePairingSession.statusMessageId = statusMsg.message_id;
 
             let disappearedChecks = 0;
             const deadline = Date.now() + 180000;
