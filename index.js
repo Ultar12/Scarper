@@ -2851,7 +2851,6 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
     let lastFeedbackResults = [];
     let feedbackHistory = [];
     let lastPointsPerTask = null;
-    let firstLoopReport = null;
     let loopCount = 1;
 
     try {
@@ -3140,22 +3139,8 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             ).join('\n');
             const targetsClaimedStr = claimedNumberValues.join('\n');
             const loopDollarsEarned = loopPointsEarned / WSJOBS_POINTS_PER_DOLLAR;
-            const totalDollarsEarned = totalPoints / WSJOBS_POINTS_PER_DOLLAR;
-            if (!firstLoopReport) {
-                firstLoopReport = {
-                    targetsClaimedStr,
-                    feedbackSummary,
-                    startingPoints,
-                    finalTodayPoints,
-                    loopDollarsEarned,
-                    loopPointsEarned,
-                    totalDollarsEarned,
-                    totalPoints,
-                    successfulTabs: successfulFeedback
-                };
-            }
             // Keep this as progress only. The user receives one result message
-            // after the loop sequence ends, not one result per loop.
+            // after the loop sequence ends, containing all completed loops.
             await updateStatus(`[SYSTEM] Loop ${loopCount} completed. Checking for remaining targets...`);
 
             // Start another loop whenever none of the tabs reported a failure.
@@ -3195,22 +3180,15 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             throw new Error('Could not read the current account balance after the task finished.');
         }
         const formattedBalance = formatWsjobsPointsBalance(currentBalance);
-        const report = firstLoopReport || {
-            targetsClaimedStr: 'No completed loop result.',
-            feedbackSummary: 'No successful task loop completed.',
-            loopDollarsEarned: 0,
-            loopPointsEarned: 0,
-            successfulTabs: 0
-        };
-        const finalFeedbackSummary = report.feedbackSummary;
-        const pointsPerTask = report.successfulTabs > 0
-            ? report.loopPointsEarned / report.successfulTabs
-            : null;
+        const finalFeedbackSummary = feedbackHistory.length
+            ? feedbackHistory.map(result => `Loop ${result.loopNumber || '?'} Tab ${result.tabNumber}: ${result.status}${result.message ? ` (${result.message})` : ''}`).join('\n')
+            : 'No tab feedback recorded.';
+        const pointsPerTask = totalSuccess > 0 ? totalPoints / totalSuccess : null;
         const pointsPerTaskText = pointsPerTask === null
             ? 'Unavailable'
             : `$${(pointsPerTask / WSJOBS_POINTS_PER_DOLLAR).toFixed(2)} (${pointsPerTask.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} points)`;
-        const dollarsEarnedText = `$${report.loopDollarsEarned.toFixed(2)} (${report.loopPointsEarned.toLocaleString()} points)`;
-        await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nVerified successful tabs: ${report.successfulTabs}\nEarned: ${dollarsEarnedText}\nPer Successful Task: ${pointsPerTaskText}\nBalance: ${formattedBalance}\n\nLast tab feedback:\n${finalFeedbackSummary}`);
+        const dollarsEarnedText = `$${(totalPoints / WSJOBS_POINTS_PER_DOLLAR).toFixed(2)} (${totalPoints.toLocaleString()} points)`;
+        await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nVerified successful tabs: ${totalSuccess}\nEarned: ${dollarsEarnedText}\nPer Successful Task: ${pointsPerTaskText}\nBalance: ${formattedBalance}\n\nAll loop feedback:\n${finalFeedbackSummary}`);
 
         // The edited status message above is the only user-facing task result.
         // Do not send a second screenshot/caption message for the same task.
