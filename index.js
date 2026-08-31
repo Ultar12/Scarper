@@ -3195,8 +3195,8 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
 
         // The completed task result is already delivered. Only after delivery do we
         // trigger the optional silent withdrawal.
-        if (autoWithdrawEnabled && Number(currentBalance) >= 50000) {
-            console.log(`[AUTO WITHDRAW] Enabled and 50,000-point balance threshold reached: ${currentBalance} points.`);
+        if (autoWithdrawEnabled && Number(currentBalance) >= 10000) {
+            console.log(`[AUTO WITHDRAW] Enabled and 10,000-point balance threshold reached: ${currentBalance} points.`);
             await runWsjobsWithdrawalTask({ chat: { id: chatId } }, { silent: true });
         }
 
