@@ -2850,7 +2850,6 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
     let currentBalance = null;
     let lastFeedbackResults = [];
     let feedbackHistory = [];
-    let lastPointsPerTask = null;
     let loopCount = 1;
 
     try {
@@ -2889,6 +2888,19 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
         await masterPage.waitForSelector('input, button, .account-card, .van-cell', { timeout: 15000 }).catch(()=>{});
         await loginToWsjobsPuppeteer(masterPage);
 
+        // Capture the baseline once before Loop 1. Do not refresh or read
+        // Today Points between loops because that slows the Send/Confirm cycle.
+        await masterPage.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded' });
+        await masterPage.waitForFunction(() => {
+            return Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
+                .some(el => /Send Task|SEND/i.test(el.innerText?.trim()));
+        }, { timeout: 15000 }).catch(() => {});
+        await delay(1000);
+        initialTodayPoints = await readWsjobsTodayPointsPuppeteer(masterPage);
+        if (initialTodayPoints === null) {
+            throw new Error('Could not read initial Today Points before the task loops started.');
+        }
+
         let isLooping = true;
 
         while (isLooping) {
@@ -2903,14 +2915,6 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             }, { timeout: 15000 }).catch(()=>{});
 
             await delay(1000);
-
-            // Read the current Today Points before this loop. The first value is
-            // preserved as the true baseline for the final report.
-            const startingPoints = await readWsjobsTodayPointsPuppeteer(masterPage);
-            if (startingPoints === null) {
-                throw new Error('Could not read Today Points before the task tabs started.');
-            }
-            if (initialTodayPoints === null) initialTodayPoints = startingPoints;
 
             // BULLETPROOF SCAN: Climb the DOM tree to find the phone number
             const targetCount = await masterPage.evaluate((suffix) => {
@@ -2937,7 +2941,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                 const noTargetResult = { tabNumber: 0, status: 'offline', message: 'No task numbers available; target set is complete or offline.', loopNumber: loopCount };
                 lastFeedbackResults = [...lastFeedbackResults, noTargetResult];
                 feedbackHistory.push(noTargetResult);
-                finalTodayPoints = startingPoints;
+                finalTodayPoints = initialTodayPoints;
                 await updateStatus(`[SYSTEM] No task numbers available for ${targetSuffix}. Ending loop and preparing final report.`);
                 break;
             }
@@ -2955,44 +2959,41 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
 
             let activePages = pages.slice(0, activeTabsCount);
 
-            // Synchronize preparation tab by tab. No parallel action happens
-            // before the final Confirm step.
-            let noTaskAvailable = false;
-            for (const page of activePages) {
+            // Each tab prepares independently. A single slow tab no longer
+            // blocks the other workers from reaching the Send step.
+            const preparationResults = await Promise.all(activePages.map(async (page, idx) => {
                 await page.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded' });
                 try {
-                    await waitForWsjobsTaskStep(page, activePages.indexOf(page) + 1, 'task');
+                    await waitForWsjobsTaskStep(page, idx + 1, 'task');
+                    return null;
                 } catch (error) {
                     const accountScreen = await page.evaluate(() => {
                         const text = document.body?.innerText || '';
                         return /WhatsApp Account|Get Pair Code|You can link multiple WhatsApp numbers/i.test(text);
                     }).catch(() => false);
                     if (!accountScreen) throw error;
-                    const noTaskResult = {
-                        tabNumber: activePages.indexOf(page) + 1,
+                    return {
+                        tabNumber: idx + 1,
                         status: 'offline',
                         message: 'No task numbers available; target set is complete or offline.',
                         loopNumber: loopCount
                     };
-                    lastFeedbackResults = [...lastFeedbackResults, noTaskResult];
-                    feedbackHistory.push(noTaskResult);
-                    noTaskAvailable = true;
-                    break;
                 }
-            }
-            if (noTaskAvailable) {
-                finalTodayPoints = startingPoints;
+            }));
+            const unavailablePreparation = preparationResults.filter(Boolean);
+            if (unavailablePreparation.length > 0) {
+                console.log(`[TASK] ${unavailablePreparation.length} tab(s) report no available task. Ending loop.`);
+                lastFeedbackResults = [...lastFeedbackResults, ...unavailablePreparation];
+                feedbackHistory.push(...unavailablePreparation);
+                finalTodayPoints = initialTodayPoints;
                 await updateStatus(`[SYSTEM] No task numbers available on the task page. Ending loop and preparing final report.`);
                 break;
             }
-            await delay(1500);
+            await delay(500);
 
             // CLAIM NUMBERS & LOG WHO TOOK WHAT
-            await updateStatus(`[SYSTEM] Loop ${loopCount}: Claiming targets in synchronized order...`);
-            const claimedNumbers = [];
-            for (let idx = 0; idx < activePages.length; idx++) {
-                const p = activePages[idx];
-                claimedNumbers.push(await p.evaluate((suffix, index) => {
+            await updateStatus(`[SYSTEM] Loop ${loopCount}: Workers tapping Send...`);
+            const claimedNumbers = await Promise.all(activePages.map((p, idx) => p.evaluate((suffix, index) => {
                     const btns = Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
                         .filter(el => /Send Task|SEND/i.test(el.innerText?.trim()) && el.offsetHeight > 0);
                     let matches = 0;
@@ -3027,8 +3028,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                         matches++;
                     }
                     return { number: 'Unknown', diagnostics };
-                }, targetSuffix, idx));
-            }
+                }, targetSuffix, idx)));
             const offlineTabResults = claimedNumbers
                 .map((result, index) => result.number === 'Unknown'
                     ? { tabNumber: index + 1, status: 'offline', message: 'Target number unavailable or already offline.' }
@@ -3038,7 +3038,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                 console.log(`[TASK] ${offlineTabResults.length} tab(s) marked offline/unavailable. Ending task sequence.`);
                 lastFeedbackResults = [...lastFeedbackResults, ...offlineTabResults];
                 feedbackHistory.push(...offlineTabResults.map(result => ({ ...result, loopNumber: loopCount })));
-                finalTodayPoints = startingPoints;
+                finalTodayPoints = initialTodayPoints;
                 await updateStatus(`[SYSTEM] Incomplete target set: ${offlineTabResults.length} tab(s) offline/unavailable. Ending and preparing final report.`);
                 break;
             }
@@ -3058,17 +3058,12 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                 throw new Error(`Duplicate task claim detected before Confirm: ${duplicateClaims.join('; ')}.`);
             }
 
-            // WAIT FOR EVERY CONFIRM MODAL TO BE READY. Do not suppress a
-            // missing modal: that would make the final report claim tabs ran
-            // when only a subset actually submitted.
-            await updateStatus(`[SYSTEM] Loop ${loopCount}: Synchronizing ${activeTabsCount} confirmation modal(s)...`);
-            // Wait for every tab one by one. Only after this loop completes are
-            // all tabs guaranteed to be sitting at Confirm.
-            for (const page of activePages) {
-                await waitForWsjobsTaskStep(page, activePages.indexOf(page) + 1, 'Confirm');
-            }
-
-            await delay(1000); // Give every modal a moment to finish animating.
+            // Every tab waits for its own Confirm modal concurrently.
+            await updateStatus(`[SYSTEM] Loop ${loopCount}: Workers waiting for ${activeTabsCount} Confirm modal(s)...`);
+            await Promise.all(activePages.map((page, idx) =>
+                waitForWsjobsTaskStep(page, idx + 1, 'Confirm')
+            ));
+            await delay(300); // Let all modal animations settle together.
 
             // Trigger Confirm once on every active tab and verify each click.
             await updateStatus(`[SYSTEM] Loop ${loopCount}: Confirming all ${activeTabsCount} tab(s)...`);
@@ -3090,74 +3085,54 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                 throw new Error(`Only ${clickedCount}/${activeTabsCount} tab(s) received Confirm.`);
             }
 
-            // WAIT FOR FEEDBACK FROM EVERY ACTIVE TAB. A fixed sleep could report
-            // zero while tabs were still processing, or miss slower tabs entirely.
-            await updateStatus(`[SYSTEM] Loop ${loopCount}: Waiting for feedback from all ${activeTabsCount} tab(s)...`);
-            const feedbackResults = [];
-            for (let idx = 0; idx < activePages.length; idx++) {
-                await updateStatus(`[SYSTEM] Loop ${loopCount}: Waiting for feedback from Tab ${idx + 1}/${activeTabsCount}...`);
-                const result = await waitForWsjobsTaskFeedbackPuppeteer(
-                    activePages[idx], idx + 1, 15000
-                );
-                feedbackResults.push(result);
-                await updateStatus(`[SYSTEM] Loop ${loopCount}: Tab ${idx + 1}/${activeTabsCount} reported ${result.status}.`);
-            }
+            // Each worker monitors its own tab. Promise.all waits for the
+            // complete batch, but fast tabs no longer wait behind slow tabs.
+            await updateStatus(`[SYSTEM] Loop ${loopCount}: Workers monitoring ${activeTabsCount} tab(s)...`);
+            const feedbackResults = await Promise.all(activePages.map((page, idx) =>
+                waitForWsjobsTaskFeedbackPuppeteer(page, idx + 1, 15000)
+            ));
+            console.log(`[TASK] Loop ${loopCount} worker feedback: ${feedbackResults.map(result => result.status).join(', ')}`);
             lastFeedbackResults = [...offlineTabResults, ...feedbackResults];
             feedbackHistory.push(...lastFeedbackResults.map(result => ({ ...result, loopNumber: loopCount })));
             const successfulFeedback = feedbackResults.filter(result => result.status === 'success').length;
             const failedFeedback = offlineTabResults.length + feedbackResults.filter(result => result.status === 'failed').length;
             const timedOutFeedback = feedbackResults.filter(result => result.status === 'timeout').length;
 
-            // REFRESH THE MASTER TASK PAGE ONLY AFTER EVERY TAB HAS REPORTED.
-            await updateStatus(`[SYSTEM] Loop ${loopCount}: All tabs reported. Refreshing /task for Today Points...`);
-            await masterPage.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
-            await delay(4000);
-            await delay(3000);
-            finalTodayPoints = await readWsjobsTodayPointsPuppeteer(masterPage);
-            if (finalTodayPoints === null) {
-                throw new Error('Could not read Today Points after all task tabs finished.');
-            }
-
-            // The displayed total is always the refreshed final value minus the
-            // first value captured before the first task tab started.
-            const loopPointsEarned = finalTodayPoints - startingPoints;
-            if (successfulFeedback > 0 && Number.isFinite(loopPointsEarned)) {
-                lastPointsPerTask = loopPointsEarned / successfulFeedback;
-            }
-            if (Number.isFinite(loopPointsEarned) && loopPointsEarned > 0) {
-                await recordWsjobsEarnings({
-                    points: loopPointsEarned,
-                    successfulTabs: successfulFeedback,
-                    suffix: targetSuffix
-                });
-            }
-            totalPoints = finalTodayPoints - initialTodayPoints;
+            // Do not refresh or read Today Points here. This loop only records
+            // tab feedback; accounting is performed once after all loops finish.
             totalSuccess += successfulFeedback;
 
-            const feedbackSummary = feedbackResults.map(result =>
-                `Tab ${result.tabNumber}: ${result.status}${result.message ? ` (${result.message})` : ''}`
-            ).join('\n');
-            const targetsClaimedStr = claimedNumberValues.join('\n');
-            const loopDollarsEarned = loopPointsEarned / WSJOBS_POINTS_PER_DOLLAR;
             // Keep this as progress only. The user receives one result message
             // after the loop sequence ends, containing all completed loops.
             await updateStatus(`[SYSTEM] Loop ${loopCount} completed. Checking for remaining targets...`);
 
-            // Start another loop whenever none of the tabs reported a failure.
-            // A timeout alone does not stop the loop.
-            if (failedFeedback === 0) {
-                await updateStatus(`[SYSTEM] All ${activeTabsCount} tab(s) succeeded. Waiting 1 second and restarting...`);
-                await delay(1000);
+            // Start another loop only when every worker reports success.
+            // Any failure, timeout, or offline target ends the sequence cleanly.
+            if (failedFeedback === 0 && timedOutFeedback === 0 && successfulFeedback === activeTabsCount) {
+                await updateStatus(`[SYSTEM] All ${activeTabsCount} tab(s) succeeded and were recorded. Starting Loop ${loopCount + 1} immediately...`);
                 loopCount++;
             } else {
                 isLooping = false;
             }
         }
 
+        // Read Today Points exactly once after the final loop, then calculate
+        // and persist the aggregate earnings for the complete task sequence.
+        await updateStatus('[SYSTEM] All task loops finished. Reading final Today Points...');
+        await masterPage.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await delay(3000);
+        finalTodayPoints = await readWsjobsTodayPointsPuppeteer(masterPage);
         if (finalTodayPoints === null || initialTodayPoints === null) {
             throw new Error('Today Points were not available for final accounting.');
         }
         totalPoints = finalTodayPoints - initialTodayPoints;
+        if (Number.isFinite(totalPoints) && totalPoints > 0) {
+            await recordWsjobsEarnings({
+                points: totalPoints,
+                successfulTabs: totalSuccess,
+                suffix: targetSuffix
+            });
+        }
 
         // Fetch the current account balance only after every task tab has
         // reported and the points refresh is complete.
