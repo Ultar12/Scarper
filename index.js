@@ -2947,11 +2947,20 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                 await updateStatus(`[SYSTEM] Loop ${loopCount}: Reusing ${activeTabsCount} assigned tab(s); waiting for the next Send state...`);
                 const reuseResults = await Promise.all(activePages.map(async (page, idx) => {
                     try {
-                        await waitForWsjobsTaskStep(page, idx + 1, 'task');
+                        await waitForWsjobsTaskStep(page, idx + 1, 'task', 60000);
                         return null;
                     } catch (error) {
-                        const accountScreen = await page.evaluate(() => /WhatsApp Account|Get Pair Code|You can link multiple WhatsApp numbers/i.test(document.body?.innerText || '')).catch(() => false);
-                        if (!accountScreen) throw error;
+                        const pageState = await page.evaluate(() => ({
+                            path: location.pathname,
+                            text: (document.body?.innerText || '').replace(/\s+/g, ' '),
+                            hasVisibleSend: Array.from(document.querySelectorAll('button, [role="button"], [class*="btn"], [class*="button"]')).some(el => {
+                                const rect = el.getBoundingClientRect();
+                                return rect.width > 0 && rect.height > 0 && /\bsend(?:\s+task)?\b/i.test((el.innerText || el.textContent || '').trim());
+                            })
+                        })).catch(() => ({ path: '', text: '', hasVisibleSend: false }));
+                        const redirectedAway = /\/(?:account|login)\/?$/i.test(pageState.path);
+                        const explicitOfflineScreen = redirectedAway && !pageState.hasVisibleSend;
+                        if (!explicitOfflineScreen) throw error;
                         return { tabNumber: idx + 1, status: 'offline', message: 'Assigned task card is no longer available.' };
                     }
                 }));
@@ -3026,10 +3035,15 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                     await waitForWsjobsTaskStep(page, idx + 1, 'task');
                     return null;
                 } catch (error) {
-                    const accountScreen = await page.evaluate(() => {
-                        const text = document.body?.innerText || '';
-                        return /WhatsApp Account|Get Pair Code|You can link multiple WhatsApp numbers/i.test(text);
-                    }).catch(() => false);
+                    const pageState = await page.evaluate(() => ({
+                        path: location.pathname,
+                        hasVisibleSend: Array.from(document.querySelectorAll('button, [role="button"], [class*="btn"], [class*="button"]')).some(el => {
+                            const rect = el.getBoundingClientRect();
+                            return rect.width > 0 && rect.height > 0 && /\bsend(?:\s+task)?\b/i.test((el.innerText || el.textContent || '').trim());
+                        })
+                    })).catch(() => ({ path: '', hasVisibleSend: false }));
+                    const redirectedAway = /\/(?:account|login)\/?$/i.test(pageState.path);
+                    const accountScreen = redirectedAway && !pageState.hasVisibleSend;
                     if (!accountScreen) throw error;
                     return {
                         tabNumber: idx + 1,
