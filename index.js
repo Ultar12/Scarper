@@ -2933,6 +2933,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
 
         let totalObservedTabs = 0;
         let expectedPointsThroughLoop = 0;
+        const loopRateHistory = [];
         let isLooping = true;
 
         let assignedPages = null;
@@ -3122,6 +3123,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             }
             const claimedNumberValues = claimedNumbers.map(result => result.number);
             const expectedPointsPerTask = getWsjobsExpectedPointsPerTask();
+            loopRateHistory.push({ loopNumber: loopCount, pointsPerTask: expectedPointsPerTask, tabs: activeTabsCount });
             expectedPointsThroughLoop += expectedPointsPerTask * activeTabsCount;
 
             const claimIndexByNumber = new Map();
@@ -3152,12 +3154,10 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                     .filter(el => /confirm/i.test(el.innerText?.trim()) && el.offsetHeight > 0);
                 const confirmBtn = btns[btns.length - 1];
                 if (!confirmBtn) return false;
+                // One native click per tab. Promise.all launches all tab
+                // evaluations together; do not dispatch a second synthetic
+                // click, which can submit Confirm twice on fast pages.
                 confirmBtn.click();
-                confirmBtn.dispatchEvent(new MouseEvent('click', {
-                    bubbles: true,
-                    cancelable: true,
-                    view: window
-                }));
                 return true;
             })));
             const clickedCount = clickedStates.filter(Boolean).length;
@@ -3227,8 +3227,14 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             throw new Error('Today Points were not available for final accounting.');
         }
         totalPoints = finalTodayPoints - initialTodayPoints;
-        const creditedTaskTabs = totalPoints > 0 && totalObservedTabs > totalSuccess
-            ? totalObservedTabs
+        const validRates = [...new Set(loopRateHistory.map(entry => entry.pointsPerTask))];
+        const singleValidRate = validRates.length === 1 ? validRates[0] : null;
+        const exactCreditedTaskCount = singleValidRate && totalPoints > 0
+            && totalPoints % singleValidRate === 0
+            ? totalPoints / singleValidRate
+            : null;
+        const creditedTaskTabs = exactCreditedTaskCount !== null
+            ? exactCreditedTaskCount
             : totalSuccess;
         if (Number.isFinite(totalPoints) && totalPoints > 0) {
             await recordWsjobsEarnings({
@@ -3262,10 +3268,14 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
         const finalFeedbackSummary = feedbackHistory.length
             ? feedbackHistory.map(result => `Loop ${result.loopNumber || '?'} Tab ${result.tabNumber}: ${result.status}${result.message ? ` (${result.message})` : ''}`).join('\n')
             : 'No tab feedback recorded.';
-        const pointsPerTask = creditedTaskTabs > 0 ? totalPoints / creditedTaskTabs : null;
+        const pointsPerTask = exactCreditedTaskCount !== null
+            ? singleValidRate
+            : null;
         const pointsPerTaskText = pointsPerTask === null
-            ? 'Unavailable'
-            : `$${(pointsPerTask / WSJOBS_POINTS_PER_DOLLAR).toFixed(2)} (${pointsPerTask.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} points)`;
+            ? validRates.length > 0
+                ? `Expected ${validRates.join(' or ')} points; mixed or unconfirmed credit`
+                : 'Unavailable'
+            : `$${(pointsPerTask / WSJOBS_POINTS_PER_DOLLAR).toFixed(2)} (${pointsPerTask.toLocaleString()} points)`;
         const dollarsEarnedText = `$${(totalPoints / WSJOBS_POINTS_PER_DOLLAR).toFixed(2)} (${totalPoints.toLocaleString()} points)`;
         await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nVerified successful tabs: ${creditedTaskTabs}\nEarned: ${dollarsEarnedText}\nPer Successful Task: ${pointsPerTaskText}\nBalance: ${formattedBalance}\n\nAll loop feedback:\n${finalFeedbackSummary}`);
 
