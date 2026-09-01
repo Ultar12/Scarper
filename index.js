@@ -19,6 +19,18 @@ const WSJOBS_BASE_URL = (process.env.WSJOBS_BASE_URL || 'https://ws.g.pro').repl
 const WSJOBS_LOGIN_PATH = '/login';
 const WSJOBS_ACCOUNT_PATH = '/account';
 const WSJOBS_POINTS_PER_DOLLAR = 10000;
+const WSJOBS_HIGH_RATE_POINTS = 520;
+const WSJOBS_LOW_RATE_POINTS = 320;
+const WSJOBS_RATE_TIME_ZONE = process.env.WSJOBS_RATE_TIME_ZONE || 'Europe/London';
+
+function getWsjobsExpectedPointsPerTask(date = new Date()) {
+    const hour = Number(new Intl.DateTimeFormat('en-GB', {
+        timeZone: WSJOBS_RATE_TIME_ZONE,
+        hour: '2-digit',
+        hour12: false
+    }).format(date));
+    return hour >= 14 || hour < 5 ? WSJOBS_HIGH_RATE_POINTS : WSJOBS_LOW_RATE_POINTS;
+}
 
 function formatWsjobsPointsBalance(points) {
     const numericPoints = typeof points === 'number'
@@ -2901,6 +2913,8 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             throw new Error('Could not read initial Today Points before the task loops started.');
         }
 
+        let totalObservedTabs = 0;
+        let expectedPointsThroughLoop = 0;
         let isLooping = true;
 
         while (isLooping) {
@@ -3043,6 +3057,8 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                 break;
             }
             const claimedNumberValues = claimedNumbers.map(result => result.number);
+            const expectedPointsPerTask = getWsjobsExpectedPointsPerTask();
+            expectedPointsThroughLoop += expectedPointsPerTask * activeTabsCount;
 
             const claimIndexByNumber = new Map();
             const duplicateClaims = [];
@@ -3097,6 +3113,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             const successfulFeedback = feedbackResults.filter(result => result.status === 'success').length;
             const failedFeedback = offlineTabResults.length + feedbackResults.filter(result => result.status === 'failed').length;
             const timedOutFeedback = feedbackResults.filter(result => result.status === 'timeout').length;
+            totalObservedTabs += successfulFeedback + timedOutFeedback;
 
             // Do not refresh or read Today Points here. This loop only records
             // tab feedback; accounting is performed once after all loops finish.
@@ -3106,12 +3123,32 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             // after the loop sequence ends, containing all completed loops.
             await updateStatus(`[SYSTEM] Loop ${loopCount} completed. Checking for remaining targets...`);
 
-            // Start another loop only when every worker reports success.
-            // Any failure, timeout, or offline target ends the sequence cleanly.
-            if (failedFeedback === 0 && timedOutFeedback === 0 && successfulFeedback === activeTabsCount) {
-                await updateStatus(`[SYSTEM] All ${activeTabsCount} tab(s) succeeded and were recorded. Starting Loop ${loopCount + 1} immediately...`);
+            // A timeout is provisional. Validate it against the cumulative
+            // Today Points increase before allowing the next loop to start.
+            let timeoutCreditConfirmed = timedOutFeedback === 0;
+            if (timedOutFeedback > 0 && failedFeedback === 0) {
+                await updateStatus(`[SYSTEM] Loop ${loopCount}: Timeout feedback detected. Verifying credited points...`);
+                await masterPage.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+                await delay(3000);
+                const pointsAfterTimeoutCheck = await readWsjobsTodayPointsPuppeteer(masterPage);
+                const pointsSinceStart = pointsAfterTimeoutCheck === null || initialTodayPoints === null
+                    ? null
+                    : pointsAfterTimeoutCheck - initialTodayPoints;
+                timeoutCreditConfirmed = Number.isFinite(pointsSinceStart)
+                    && pointsSinceStart >= expectedPointsThroughLoop;
+                console.log(`[TASK] Loop ${loopCount} timeout credit check: observed=${pointsSinceStart}, expectedAtLeast=${expectedPointsThroughLoop}, confirmed=${timeoutCreditConfirmed}`);
+            }
+
+            if (failedFeedback === 0 && timeoutCreditConfirmed) {
+                const timeoutNote = timedOutFeedback > 0
+                    ? ` (${timedOutFeedback} timeout${timedOutFeedback === 1 ? '' : 's'} verified by points)`
+                    : '';
+                await updateStatus(`[SYSTEM] Loop ${loopCount} recorded${timeoutNote}. Starting Loop ${loopCount + 1} immediately...`);
                 loopCount++;
             } else {
+                if (timedOutFeedback > 0 && !timeoutCreditConfirmed) {
+                    await updateStatus(`[SYSTEM] Loop ${loopCount} stopped: Today Points did not confirm the expected credit.`);
+                }
                 isLooping = false;
             }
         }
@@ -3126,10 +3163,13 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             throw new Error('Today Points were not available for final accounting.');
         }
         totalPoints = finalTodayPoints - initialTodayPoints;
+        const creditedTaskTabs = totalPoints > 0 && totalObservedTabs > totalSuccess
+            ? totalObservedTabs
+            : totalSuccess;
         if (Number.isFinite(totalPoints) && totalPoints > 0) {
             await recordWsjobsEarnings({
                 points: totalPoints,
-                successfulTabs: totalSuccess,
+                successfulTabs: creditedTaskTabs,
                 suffix: targetSuffix
             });
         }
@@ -3158,12 +3198,12 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
         const finalFeedbackSummary = feedbackHistory.length
             ? feedbackHistory.map(result => `Loop ${result.loopNumber || '?'} Tab ${result.tabNumber}: ${result.status}${result.message ? ` (${result.message})` : ''}`).join('\n')
             : 'No tab feedback recorded.';
-        const pointsPerTask = totalSuccess > 0 ? totalPoints / totalSuccess : null;
+        const pointsPerTask = creditedTaskTabs > 0 ? totalPoints / creditedTaskTabs : null;
         const pointsPerTaskText = pointsPerTask === null
             ? 'Unavailable'
             : `$${(pointsPerTask / WSJOBS_POINTS_PER_DOLLAR).toFixed(2)} (${pointsPerTask.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} points)`;
         const dollarsEarnedText = `$${(totalPoints / WSJOBS_POINTS_PER_DOLLAR).toFixed(2)} (${totalPoints.toLocaleString()} points)`;
-        await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nVerified successful tabs: ${totalSuccess}\nEarned: ${dollarsEarnedText}\nPer Successful Task: ${pointsPerTaskText}\nBalance: ${formattedBalance}\n\nAll loop feedback:\n${finalFeedbackSummary}`);
+        await updateStatus(`[SYSTEM] Strike Protocol Finished.\n\nVerified successful tabs: ${creditedTaskTabs}\nEarned: ${dollarsEarnedText}\nPer Successful Task: ${pointsPerTaskText}\nBalance: ${formattedBalance}\n\nAll loop feedback:\n${finalFeedbackSummary}`);
 
         // The edited status message above is the only user-facing task result.
         // Do not send a second screenshot/caption message for the same task.
