@@ -891,33 +891,34 @@ async function runAutoTaskScanner(chatId) {
                     && style.visibility !== 'hidden' && style.display !== 'none';
             };
             const isSendTaskButton = (el) =>
-                isVisible(el) && /^send(?:\s+task)?$/i.test((el.innerText || '').replace(/\s+/g, ' ').trim());
+                isVisible(el) && /\bsend(?:\s+task)?\b/i.test((el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim());
             const sendButtons = Array.from(document.querySelectorAll(
                 'button, [role="button"], [class*="btn"], [class*="button"]'
             )).filter(isSendTaskButton);
             const tracker = {};
 
             for (const button of sendButtons) {
-                // Pick the smallest ancestor that contains exactly this one
-                // visible Send Task button; that is the task-card boundary.
-                let card = null;
+                // Find the smallest visible ancestor containing this button,
+                // its phone-like card text, and a task suffix. Do not require
+                // the ancestor to contain exactly one button; responsive card
+                // layouts often nest action controls in shared wrappers.
+                let cardText = '';
                 let current = button.parentElement;
-                for (let level = 0; level < 10 && current; level++, current = current.parentElement) {
-                    const buttonsInCurrent = Array.from(current.querySelectorAll(
-                        'button, [role="button"], [class*="btn"], [class*="button"]'
-                    )).filter(isSendTaskButton);
-                    if (buttonsInCurrent.length === 1 && buttonsInCurrent[0] === button) {
-                        card = current;
+                for (let level = 0; level < 12 && current; level++, current = current.parentElement) {
+                    const text = (current.innerText || current.textContent || '').replace(/\s+/g, ' ').trim();
+                    const phoneCandidates = text.match(/(?:\+\s*)?\d[\d\s().*-]{6,}\d|\*{3,}[\d*]{2,}/g) || [];
+                    const hasPhone = phoneCandidates.some(candidate => {
+                        const digits = candidate.replace(/\D/g, '');
+                        return digits.length >= 8 && digits.length <= 18;
+                    });
+                    if (hasPhone) {
+                        cardText = text;
                         break;
                     }
                 }
-                if (!card) continue;
+                if (!cardText) continue;
 
-                const cardText = (card.innerText || '').replace(/\s+/g, ' ');
-                // Accept phone-like values only: a leading plus, or a masked
-                // number, followed by 8–15 digits. Never use arbitrary trailing
-                // digits from totals, counters, timestamps, or page headings.
-                const phoneCandidates = cardText.match(/(?:\+\s*[\d][\d\s().*-]{6,}[\d*]|\*{3,}[\d*]{2,})/g) || [];
+                const phoneCandidates = cardText.match(/(?:\+\s*)?\d[\d\s().*-]{6,}\d|\*{3,}[\d*]{2,}/g) || [];
                 const phoneCandidate = phoneCandidates.find(candidate => {
                     const digits = candidate.replace(/\D/g, '');
                     return digits.length >= 8 && digits.length <= 18;
