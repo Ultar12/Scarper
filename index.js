@@ -244,12 +244,23 @@ async function isPuppeteerBrowserHealthy(browser) {
 }
 
 // All Wsjobs workflows share one Chromium process and use separate tabs.
+let sharedWsjobsBrowserPromise = null;
 async function getSharedWsjobsBrowser() {
     if (await isPuppeteerBrowserHealthy(globalTaskBrowser)) return globalTaskBrowser;
-    if (globalTaskBrowser) await globalTaskBrowser.close().catch(() => {});
-    globalTaskBrowser = await launchScraperBrowser();
-    console.log('[SYSTEM] Shared Wsjobs Chromium browser launched.');
-    return globalTaskBrowser;
+    if (sharedWsjobsBrowserPromise) return sharedWsjobsBrowserPromise;
+
+    sharedWsjobsBrowserPromise = (async () => {
+        if (globalTaskBrowser) await globalTaskBrowser.close().catch(() => {});
+        globalTaskBrowser = await launchScraperBrowser();
+        console.log('[SYSTEM] Shared Wsjobs Chromium browser launched.');
+        return globalTaskBrowser;
+    })();
+
+    try {
+        return await sharedWsjobsBrowserPromise;
+    } finally {
+        sharedWsjobsBrowserPromise = null;
+    }
 }
 
 // --- 1. HEROKU POSTGRESQL SETUP ---
@@ -838,15 +849,14 @@ async function runAutoTaskScanner(chatId) {
 
     let scanPage = null;
     let targetsToStrike = [];
+    let scanError = null;
 
     try {
-        // RADAR must use the browser owned by Task Mode. It opens a new
-        // scanning tab, but never launches a second Chrome process.
-        if (!(await isPuppeteerBrowserHealthy(globalTaskBrowser))) {
-            throw new Error('Shared Task Mode Chrome browser is not available. Start Task Mode first.');
-        }
-
-        scanPage = await globalTaskBrowser.newPage();
+        // RADAR uses the same shared Chromium process as Task Mode. If the
+        // process died or startup raced with the first scan, the helper safely
+        // recreates it instead of treating the condition as an empty board.
+        const sharedBrowser = await getSharedWsjobsBrowser();
+        scanPage = await sharedBrowser.newPage();
         await scanPage.setViewport({ width: 412, height: 915 });
 
         // Start from the task route. If the site redirects to login, the Puppeteer
@@ -930,9 +940,16 @@ async function runAutoTaskScanner(chatId) {
         }
         targetsToStrike.sort((a, b) => b.count - a.count);
     } catch (err) {
+        scanError = err;
         console.log(`[RADAR ERROR] Scanner failed: ${err.message}`);
     } finally {
         if (scanPage) await scanPage.close().catch(() => {});
+    }
+
+    if (scanError) {
+        console.log('[RADAR] Scan skipped because the scanner could not load the shared browser/task board.');
+        isRadarScanning = false;
+        return;
     }
 
     // --- SEQUENTIAL EXECUTION QUEUE ---
@@ -2917,8 +2934,36 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
         let expectedPointsThroughLoop = 0;
         let isLooping = true;
 
+        let assignedPages = null;
+        let assignedTabsCount = 0;
+
         while (isLooping) {
-            await updateStatus(`[SYSTEM] Loop ${loopCount}: Scanning for target suffix ${targetSuffix}...`);
+            let activePages;
+            let activeTabsCount;
+
+            if (assignedPages && assignedPages.length > 0) {
+                activePages = assignedPages;
+                activeTabsCount = assignedTabsCount;
+                await updateStatus(`[SYSTEM] Loop ${loopCount}: Reusing ${activeTabsCount} assigned tab(s); waiting for the next Send state...`);
+                const reuseResults = await Promise.all(activePages.map(async (page, idx) => {
+                    try {
+                        await waitForWsjobsTaskStep(page, idx + 1, 'task');
+                        return null;
+                    } catch (error) {
+                        const accountScreen = await page.evaluate(() => /WhatsApp Account|Get Pair Code|You can link multiple WhatsApp numbers/i.test(document.body?.innerText || '')).catch(() => false);
+                        if (!accountScreen) throw error;
+                        return { tabNumber: idx + 1, status: 'offline', message: 'Assigned task card is no longer available.' };
+                    }
+                }));
+                const unavailableAssignedTabs = reuseResults.filter(Boolean);
+                if (unavailableAssignedTabs.length > 0) {
+                    lastFeedbackResults = [...lastFeedbackResults, ...unavailableAssignedTabs];
+                    feedbackHistory.push(...unavailableAssignedTabs.map(result => ({ ...result, loopNumber: loopCount })));
+                    await updateStatus(`[SYSTEM] Assigned tab card unavailable. Ending task sequence and preparing final report.`);
+                    break;
+                }
+            } else {
+                await updateStatus(`[SYSTEM] Loop ${loopCount}: Scanning for target suffix ${targetSuffix}...`);
 
             await masterPage.goto(wsjobsUrl(WSJOBS_TASK_PATH), { waitUntil: 'domcontentloaded' });
 
@@ -2961,7 +3006,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             }
 
             // Cap the tabs to 4 maximum per run
-            let activeTabsCount = Math.min(targetCount, 4);
+            activeTabsCount = Math.min(targetCount, 4);
             await updateStatus(`[SYSTEM] Loop ${loopCount}: Found targets. Preparing ${activeTabsCount} tab(s)...`);
 
             while (pages.length < activeTabsCount) {
@@ -2971,7 +3016,7 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                 pages.push(p);
             }
 
-            let activePages = pages.slice(0, activeTabsCount);
+            activePages = pages.slice(0, activeTabsCount);
 
             // Each tab prepares independently. A single slow tab no longer
             // blocks the other workers from reaching the Send step.
@@ -3004,6 +3049,10 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                 break;
             }
             await delay(500);
+
+                assignedPages = activePages;
+                assignedTabsCount = activeTabsCount;
+            }
 
             // CLAIM NUMBERS & LOG WHO TOOK WHAT
             await updateStatus(`[SYSTEM] Loop ${loopCount}: Workers tapping Send...`);
