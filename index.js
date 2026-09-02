@@ -543,6 +543,7 @@ let taskModeTimer = null;
 let autoScannerInterval = null;
 let isTaskExecuting = false;    // Traffic light for the /task command
 let isRadarScanning = false;    // Traffic light for the background queue
+const radarTriggeredSuffixes = new Set(); // Prevent repeated triggers while a suffix remains eligible
 
 
   // Variables to track profit
@@ -934,12 +935,24 @@ async function runAutoTaskScanner(chatId) {
             return tracker;
         });
 
-        // The latest /task flow can work with 1–4 available tabs. Any positive
-        // count is therefore eligible; the old count >= 3 rule is obsolete.
-        for (const [suffix, count] of Object.entries(counts)) {
-            if (count > 0) targetsToStrike.push({ suffix, count });
+        // RADAR may trigger a suffix only when exactly four matching cards
+        // are visible. This prevents incomplete target sets from launching a
+        // strike and avoids consuming a suffix on a partial card match.
+        const exactFourSuffixes = new Set(
+            Object.entries(counts)
+                .filter(([, count]) => count === 4)
+                .map(([suffix]) => suffix)
+        );
+
+        // A suffix is session-lifetime de-duplicated. Once RADAR triggers
+        // it, later scans must never trigger that suffix again, even if it
+        // returns with exactly four matching cards.
+        for (const suffix of exactFourSuffixes) {
+            if (!radarTriggeredSuffixes.has(suffix)) {
+                targetsToStrike.push({ suffix, count: 4 });
+            }
         }
-        targetsToStrike.sort((a, b) => b.count - a.count);
+        targetsToStrike.sort((a, b) => a.suffix.localeCompare(b.suffix));
     } catch (err) {
         scanError = err;
         console.log(`[RADAR ERROR] Scanner failed: ${err.message}`);
@@ -961,6 +974,7 @@ async function runAutoTaskScanner(chatId) {
         for (const target of targetsToStrike) {
             if (!taskModeActive) break;
             resetTaskModeTimer(chatId);
+            radarTriggeredSuffixes.add(target.suffix);
             console.log(`[RADAR QUEUE] Triggering /task ${target.suffix} with ${target.count} available target(s).`);
 
             bot.processUpdate({
@@ -3191,16 +3205,23 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
             // Today Points increase before allowing the next loop to start.
             let timeoutCreditConfirmed = timedOutFeedback === 0;
             if (timedOutFeedback > 0 && failedFeedback === 0) {
-                await updateStatus(`[SYSTEM] Loop ${loopCount}: Timeout feedback detected. Verifying credited points...`);
-                await masterPage.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
-                await delay(3000);
-                const pointsAfterTimeoutCheck = await readWsjobsTodayPointsPuppeteer(masterPage);
-                const pointsSinceStart = pointsAfterTimeoutCheck === null || initialTodayPoints === null
-                    ? null
-                    : pointsAfterTimeoutCheck - initialTodayPoints;
-                timeoutCreditConfirmed = Number.isFinite(pointsSinceStart)
-                    && pointsSinceStart >= expectedPointsThroughLoop;
-                console.log(`[TASK] Loop ${loopCount} timeout credit check: observed=${pointsSinceStart}, expectedAtLeast=${expectedPointsThroughLoop}, confirmed=${timeoutCreditConfirmed}`);
+                await updateStatus(`[SYSTEM] Loop ${loopCount}: Timeout feedback detected. Waiting for credited points...`);
+                let pointsSinceStart = null;
+                for (let attempt = 1; attempt <= 10; attempt++) {
+                    await masterPage.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+                    await delay(3000);
+                    const pointsAfterTimeoutCheck = await readWsjobsTodayPointsPuppeteer(masterPage);
+                    pointsSinceStart = pointsAfterTimeoutCheck === null || initialTodayPoints === null
+                        ? null
+                        : pointsAfterTimeoutCheck - initialTodayPoints;
+                    console.log(`[TASK] Loop ${loopCount} timeout credit check ${attempt}/10: observed=${pointsSinceStart}, expectedAtLeast=${expectedPointsThroughLoop}`);
+                    if (Number.isFinite(pointsSinceStart) && pointsSinceStart >= expectedPointsThroughLoop) {
+                        timeoutCreditConfirmed = true;
+                        break;
+                    }
+                    await delay(2000);
+                }
+                console.log(`[TASK] Loop ${loopCount} timeout credit confirmed=${timeoutCreditConfirmed}`);
             }
 
             if (failedFeedback === 0 && timeoutCreditConfirmed) {
@@ -4056,16 +4077,57 @@ async function clickWsjobsCountry(page, countryCode) {
 }
 
 async function clickWsjobsGetPairCode(page) {
-    const clicked = await page.evaluate(() => {
-        const visible = (el) => el && el.offsetHeight > 0 && getComputedStyle(el).visibility !== 'hidden';
-        const target = Array.from(document.querySelectorAll('button, [role="button"]'))
-            .filter(visible)
-            .find((el) => (el.innerText || '').replace(/\s+/g, ' ').trim().toLowerCase() === 'get pair code');
-        if (!target || target.disabled) return false;
-        target.click();
-        return true;
-    });
-    if (!clicked) throw new Error('Get Pair Code button was not found or is disabled.');
+    const deadline = Date.now() + 120000;
+    let lastCooldown = null;
+    while (Date.now() < deadline) {
+        const state = await page.evaluate(() => {
+            const visible = (el) => {
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0
+                    && style.visibility !== 'hidden' && style.display !== 'none';
+            };
+            const buttons = Array.from(document.querySelectorAll('button, [role="button"]')).filter(visible);
+            const target = buttons.find((el) => {
+                const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+                return /^get pair code$/i.test(text) || /^retry(?:\s+in\s+\d+\s*s?)?$/i.test(text);
+            });
+            const body = (document.body?.innerText || '').replace(/\s+/g, ' ');
+            const retryMatch = body.match(/retry\s+in\s+(\d+)\s*s?/i);
+            const retrySeconds = retryMatch ? Number(retryMatch[1]) : null;
+            const enabled = Boolean(target)
+                && !target.disabled
+                && target.getAttribute('aria-disabled') !== 'true'
+                && !/retry\s+in\s+\d+/i.test((target.innerText || target.textContent || '').trim());
+            return { enabled, retrySeconds, buttonText: target ? (target.innerText || target.textContent || '').trim() : null };
+        }).catch(() => ({ enabled: false, retrySeconds: null, buttonText: null }));
+
+        if (state.enabled) {
+            const clicked = await page.evaluate(() => {
+                const visible = (el) => {
+                    const rect = el.getBoundingClientRect();
+                    const style = getComputedStyle(el);
+                    return rect.width > 0 && rect.height > 0
+                        && style.visibility !== 'hidden' && style.display !== 'none';
+                };
+                const target = Array.from(document.querySelectorAll('button, [role="button"]'))
+                    .filter(visible)
+                    .find((el) => /^get pair code$/i.test((el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim())
+                        && !el.disabled && el.getAttribute('aria-disabled') !== 'true');
+                if (!target) return false;
+                target.click();
+                return true;
+            }).catch(() => false);
+            if (clicked) return;
+        }
+
+        if (state.retrySeconds !== null && state.retrySeconds !== lastCooldown) {
+            lastCooldown = state.retrySeconds;
+            console.log(`[PAIRING] Get Pair Code is cooling down; retrying when available in about ${state.retrySeconds}s.`);
+        }
+        await delay(1000);
+    }
+    throw new Error('Get Pair Code did not become enabled within 120 seconds.');
 }
 
 async function startWsjobsPairingRecording(runtime) {
