@@ -841,6 +841,113 @@ function resetTaskModeTimer(chatId) {
 
 
 
+// Remove only a stale linked account whose suffix has exactly one card.
+// Cards with two or three numbers sharing a suffix are left untouched.
+async function cleanupLoneStaleWsjobsAccount(page) {
+    const staleCards = await page.evaluate((nowMs) => {
+        const visible = (el) => {
+            const rect = el.getBoundingClientRect();
+            const style = getComputedStyle(el);
+            return rect.width > 0 && rect.height > 0
+                && style.visibility !== 'hidden' && style.display !== 'none';
+        };
+        const phonePattern = /(?:\+\s*)?\d[\d\s().*-]{6,}\d|\*{3,}[\d*]{2,}/g;
+        const deleteButtons = Array.from(document.querySelectorAll(
+            'button, [role="button"], [aria-label], [title]'
+        )).filter((el) => {
+            if (!visible(el)) return false;
+            const metadata = `${el.innerText || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('title') || ''} ${el.className || ''}`;
+            return /delete|remove|trash|unlink/i.test(metadata) || /🗑|🗑️/.test(metadata);
+        });
+        const cards = [];
+        for (const deleteButton of deleteButtons) {
+            let card = deleteButton;
+            let cardText = '';
+            for (let depth = 0; depth < 12 && card; depth++, card = card.parentElement) {
+                const text = (card.innerText || card.textContent || '').replace(/\s+/g, ' ').trim();
+                if (/last\s+active\s*:/i.test(text) && phonePattern.test(text)) {
+                    cardText = text;
+                    phonePattern.lastIndex = 0;
+                    break;
+                }
+                phonePattern.lastIndex = 0;
+            }
+            if (!cardText) continue;
+            const phoneCandidates = cardText.match(phonePattern) || [];
+            phonePattern.lastIndex = 0;
+            const digits = phoneCandidates
+                .map(value => value.replace(/\D/g, ''))
+                .filter(value => value.length >= 8 && value.length <= 18)
+                .sort((a, b) => b.length - a.length)[0] || '';
+            const activeMatch = cardText.match(/last\s+active\s*:\s*([^|]+?)(?=\s+(?:credited|today\s+points|total\s+points|online|offline|linked|send\s+task)\b|$)/i);
+            const activeAt = activeMatch ? Date.parse(activeMatch[1].trim()) : NaN;
+            if (!digits || !Number.isFinite(activeAt)) continue;
+            const suffix = digits.slice(-2);
+            cards.push({ number: `+${digits}`, suffix, activeAt, ageMs: nowMs - activeAt });
+        }
+
+        const counts = new Map();
+        for (const card of cards) counts.set(card.suffix, (counts.get(card.suffix) || 0) + 1);
+        return cards
+            .filter(card => counts.get(card.suffix) === 1 && card.ageMs > 30 * 60 * 1000)
+            .map(card => ({ ...card, ageMinutes: Math.floor(card.ageMs / 60000) }));
+    }, Date.now()).catch(() => []);
+
+    let removed = 0;
+    for (const staleCard of staleCards) {
+        const clicked = await page.evaluate((targetNumber) => {
+            const visible = (el) => {
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0
+                    && style.visibility !== 'hidden' && style.display !== 'none';
+            };
+            const buttons = Array.from(document.querySelectorAll('button, [role="button"], [aria-label], [title]'))
+                .filter(visible)
+                .filter((el) => {
+                    const metadata = `${el.innerText || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('title') || ''} ${el.className || ''}`;
+                    return /delete|remove|trash|unlink/i.test(metadata) || /🗑|🗑️/.test(metadata);
+                });
+            for (const button of buttons) {
+                let card = button;
+                for (let depth = 0; depth < 12 && card; depth++, card = card.parentElement) {
+                    const text = (card.innerText || card.textContent || '').replace(/\s+/g, ' ').trim();
+                    const phoneCandidates = text.match(/(?:\+\s*)?\d[\d\s().*-]{6,}\d|\*{3,}[\d*]{2,}/g) || [];
+                    const numbers = phoneCandidates.map(value => `+${value.replace(/\D/g, '')}`);
+                    if (numbers.includes(targetNumber) && /last\s+active\s*:/i.test(text)) {
+                        button.click();
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }, staleCard.number).catch(() => false);
+        if (!clicked) continue;
+
+        await page.waitForFunction(() => Array.from(document.querySelectorAll(
+            'button, [role="button"]'
+        )).some((el) => {
+            const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+            return /^confirm$/i.test(text) && el.offsetHeight > 0;
+        }), { timeout: 10000 }).catch(() => {});
+        const confirmed = await page.evaluate(() => {
+            const visible = (el) => el.offsetHeight > 0 && getComputedStyle(el).visibility !== 'hidden';
+            const confirmButton = Array.from(document.querySelectorAll('button, [role="button"]'))
+                .filter(visible)
+                .find((el) => /^confirm$/i.test((el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim()));
+            if (!confirmButton) return false;
+            confirmButton.click();
+            return true;
+        }).catch(() => false);
+        if (confirmed) {
+            removed++;
+            console.log(`[RADAR CLEANUP] Removed lone stale account ${staleCard.number} (suffix ${staleCard.suffix}, inactive ${staleCard.ageMinutes} minutes).`);
+            await delay(1000);
+        }
+    }
+    return removed;
+}
+
 // --- AUTONOMOUS TASK RADAR ENGINE (SEQUENTIAL MULTI-TARGET) ---
 async function runAutoTaskScanner(chatId) {
     // Abort if task mode is off, if a strike is running, or if the radar is already busy.
@@ -880,6 +987,12 @@ async function runAutoTaskScanner(chatId) {
             timeout: 15000
         }).catch(() => {});
         await delay(1000);
+
+        const removedStaleAccounts = await cleanupLoneStaleWsjobsAccount(scanPage);
+        if (removedStaleAccounts > 0) {
+            console.log(`[RADAR CLEANUP] Removed ${removedStaleAccounts} lone stale account(s) before scanning task targets.`);
+            await delay(1000);
+        }
 
         // Count only real task cards. The old scanner climbed arbitrary
         // ancestors and could read points, counters, or linked-account text
@@ -3084,47 +3197,73 @@ bot.onText(/^\/task\s+(\d{2,3})$/i, async (msg, match) => {
                 assignedTabsCount = activeTabsCount;
             }
 
-            // CLAIM NUMBERS & LOG WHO TOOK WHAT
-            await updateStatus(`[SYSTEM] Loop ${loopCount}: Workers tapping Send...`);
-            const claimedNumbers = await Promise.all(activePages.map((p, idx) => p.evaluate((suffix, index) => {
-                    const btns = Array.from(document.querySelectorAll('button, [class*="btn"], [class*="button"]'))
-                        .filter(el => /Send Task|SEND/i.test(el.innerText?.trim()) && el.offsetHeight > 0);
-                    let matches = 0;
-                    const diagnostics = [];
-                    for (const btn of btns) {
-                        let curr = btn;
-                        let matched = false;
-                        let matchedDepth = -1;
-                        for (let depth = 0; depth < 10 && curr; depth++, curr = curr.parentElement) {
-                            const text = (curr.innerText || curr.textContent || '').replace(/\s+/g, ' ').trim();
-                            if (text.includes(suffix)) {
-                                matched = true;
-                                matchedDepth = depth;
-                                break;
-                            }
-                        }
-                        if (!matched) continue;
-                        const cardText = (curr.innerText || curr.textContent || '').replace(/\s+/g, ' ').trim();
-                        diagnostics.push({ match: matches + 1, depth: matchedDepth, button: (btn.innerText || '').trim(), cardText: cardText.slice(0, 500) });
-                        if (matches === index) {
-                            const phoneCandidates = cardText.match(/(?:\+?\s*)?\d[\d\s().-]{7,}\d/g) || [];
-                            const normalizedNumber = phoneCandidates
+            // Discover all visible cards before clicking. Every worker page
+            // can expose the same card list, so assigning by tab index alone
+            // can make two tabs claim the same number when card order shifts.
+            await updateStatus(`[SYSTEM] Loop ${loopCount}: Assigning unique task cards...`);
+            const candidateLists = await Promise.all(activePages.map((p) => p.evaluate((suffix) => {
+                const buttons = Array.from(document.querySelectorAll('button, [role="button"], [class*="btn"], [class*="button"]'))
+                    .filter(el => /\bsend(?:\s+task)?\b/i.test((el.innerText || el.textContent || '').trim()) && el.offsetHeight > 0);
+                const candidates = [];
+                for (const btn of buttons) {
+                    let card = btn;
+                    let cardText = '';
+                    for (let depth = 0; depth < 12 && card; depth++, card = card.parentElement) {
+                        const text = (card.innerText || card.textContent || '').replace(/\s+/g, ' ').trim();
+                        if (text.includes(suffix)) {
+                            const phoneCandidates = text.match(/(?:\+?\s*)?\d[\d\s().-]{7,}\d/g) || [];
+                            const number = phoneCandidates
                                 .map(value => value.replace(/\D/g, ''))
                                 .filter(value => value.length >= 8 && value.length <= 18)
                                 .sort((a, b) => b.length - a.length)[0] || '';
-                            if (!normalizedNumber) return { number: 'Unknown', diagnostics };
-                            const foundNumber = `+${normalizedNumber}`;
-                            btn.click();
-                            btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                            return { number: foundNumber, diagnostics };
+                            if (number && !candidates.some(candidate => candidate.number === `+${number}`)) {
+                                candidates.push({ number: `+${number}`, cardText: text.slice(0, 800) });
+                            }
+                            break;
                         }
-                        matches++;
                     }
-                    return { number: 'Unknown', diagnostics };
-                }, targetSuffix, idx)));
+                }
+                return candidates;
+            }, targetSuffix)));
+
+            const assignedNumbers = [];
+            const globallyAssigned = new Set();
+            for (let idx = 0; idx < activeTabsCount; idx++) {
+                const candidate = (candidateLists[idx] || []).find(item => !globallyAssigned.has(item.number));
+                if (candidate) {
+                    globallyAssigned.add(candidate.number);
+                    assignedNumbers.push(candidate.number);
+                } else {
+                    assignedNumbers.push('Unknown');
+                }
+            }
+
+            const claimedNumbers = await Promise.all(activePages.map((p, idx) => p.evaluate((suffix, targetNumber) => {
+                if (targetNumber === 'Unknown') return { number: 'Unknown' };
+                const buttons = Array.from(document.querySelectorAll('button, [role="button"], [class*="btn"], [class*="button"]'))
+                    .filter(el => /\bsend(?:\s+task)?\b/i.test((el.innerText || el.textContent || '').trim()) && el.offsetHeight > 0);
+                for (const btn of buttons) {
+                    let card = btn;
+                    for (let depth = 0; depth < 12 && card; depth++, card = card.parentElement) {
+                        const text = (card.innerText || card.textContent || '').replace(/\s+/g, ' ').trim();
+                        if (!text.includes(suffix)) continue;
+                        const phoneCandidates = text.match(/(?:\+?\s*)?\d[\d\s().-]{7,}\d/g) || [];
+                        const number = phoneCandidates
+                            .map(value => value.replace(/\D/g, ''))
+                            .filter(value => value.length >= 8 && value.length <= 18)
+                            .sort((a, b) => b.length - a.length)[0] || '';
+                        if (`+${number}` === targetNumber) {
+                            // Exactly one native click per assigned card.
+                            btn.click();
+                            return { number: targetNumber };
+                        }
+                    }
+                }
+                return { number: 'Unknown' };
+            }, targetSuffix, assignedNumbers[idx])));
             const offlineTabResults = claimedNumbers
                 .map((result, index) => result.number === 'Unknown'
-                    ? { tabNumber: index + 1, status: 'offline', message: 'Target number unavailable or already offline.' }
+                    ? { tabNumber: index + 1, status: 'offline', message: 'Unique target number unavailable or already offline.' }
                     : null)
                 .filter(Boolean);
             if (offlineTabResults.length > 0) {
